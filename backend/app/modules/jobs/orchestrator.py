@@ -207,6 +207,7 @@ class JobOrchestrator:
                 initial_details = dict(job.details or {})
                 created_files = list(initial_details.get("files", []))
                 job.details = {**initial_details, "started_at": datetime.utcnow().isoformat()}
+                job_cfg = job.config_snapshot or (await get_active_settings(db))
                 await db.commit()
 
                 self._broadcast(job_id, {

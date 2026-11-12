@@ -688,73 +688,111 @@ export const ScreenProgress: React.FC<Props> = ({
             <div style={{ lineHeight: 1.5 }}>
               {errorMessage}
             </div>
-            {errorMessage.toLowerCase().includes('1 phiên') || errorMessage.toLowerCase().includes('đăng nhập') ? (
-              <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
-                <LightbulbIcon size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
-                <span><em>Lưu ý:</em> FUOverflow chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc. Nếu bạn vừa mở FUOverflow trên trình duyệt khác, phiên hiện tại sẽ bị ngắt. Hãy đăng nhập lại rồi bấm <strong>"Chạy tiếp từ chỗ dừng"</strong> bên dưới để tiếp tục từ đúng câu hỏi dang dở mà không bị mất dữ liệu đã tải.</span>
-              </div>
-            ) : null}
-            <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                onClick={() => {
-                  setLoginError(null);
-                  setLoginMessage(null);
-                  setShowLoginModal(true);
-                }}
-                style={{
-                  fontSize: 'var(--text-xs)',
-                  padding: 'var(--space-2) var(--space-4)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontWeight: 600,
-                  backgroundColor: '#C53030',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: 'pointer',
-                  boxShadow: 'var(--shadow-sm)',
-                }}
-              >
-                <KeyIcon size={13} />
-                <span>Đăng nhập lại tài khoản</span>
-              </button>
+            {(() => {
+              const lowerMsg = errorMessage.toLowerCase();
+              const isAuthError = lowerMsg.includes('1 phiên') || lowerMsg.includes('đăng nhập') || lowerMsg.includes('phiên hết hạn') || lowerMsg.includes('auth');
+              return (
+                <>
+                  {isAuthError && (
+                    <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                      <LightbulbIcon size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
+                      <span><em>Lưu ý:</em> FUOverflow chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc. Nếu bạn vừa mở FUOverflow trên trình duyệt khác, phiên hiện tại sẽ bị ngắt. Hãy đăng nhập lại rồi bấm <strong>"Chạy tiếp từ chỗ dừng"</strong> bên dưới để tiếp tục từ đúng câu hỏi dang dở mà không bị mất dữ liệu đã tải.</span>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
+                    {isAuthError ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoginError(null);
+                          setLoginMessage(null);
+                          setShowLoginModal(true);
+                        }}
+                        style={{
+                          fontSize: 'var(--text-xs)',
+                          padding: 'var(--space-2) var(--space-4)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontWeight: 600,
+                          backgroundColor: '#C53030',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: 'var(--radius-sm)',
+                          cursor: 'pointer',
+                          boxShadow: 'var(--shadow-sm)',
+                        }}
+                      >
+                        <KeyIcon size={13} />
+                        <span>Đăng nhập lại tài khoản</span>
+                      </button>
+                    ) : null}
 
-              <button
-                onClick={handleResume}
-                disabled={isResuming}
-                className="btn-primary"
-                style={{
-                  fontSize: 'var(--text-xs)',
-                  padding: 'var(--space-2) var(--space-4)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontWeight: 600,
-                  cursor: isResuming ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {isResuming ? (
-                  <>
-                    <RefreshIcon size={13} className="spin" />
-                    <span>Đang khôi phục...</span>
-                  </>
-                ) : (
-                  <>
-                    <RefreshIcon size={13} />
-                    <span>Chạy tiếp từ chỗ dừng</span>
-                  </>
-                )}
-              </button>
-              <button
-                onClick={onCancel}
-                className="btn-secondary"
-                style={{ fontSize: 'var(--text-xs)', padding: 'var(--space-2) var(--space-3)' }}
-              >
-                Quay lại màn hình chọn môn
-              </button>
-            </div>
+                    <button
+                      onClick={handleResume}
+                      disabled={isResuming}
+                      className="btn-primary"
+                      style={{
+                        fontSize: 'var(--text-xs)',
+                        padding: 'var(--space-2) var(--space-4)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        fontWeight: 600,
+                        cursor: isResuming ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {isResuming ? (
+                        <>
+                          <RefreshIcon size={13} className="spin" />
+                          <span>Đang khôi phục...</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshIcon size={13} />
+                          <span>Chạy tiếp từ chỗ dừng</span>
+                        </>
+                      )}
+                    </button>
+
+                    {!isAuthError && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLoginError(null);
+                          setLoginMessage(null);
+                          setShowLoginModal(true);
+                        }}
+                        style={{
+                          fontSize: 'var(--text-xs)',
+                          padding: 'var(--space-2) var(--space-3)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontWeight: 500,
+                          backgroundColor: 'var(--bg-card)',
+                          color: 'var(--text-secondary)',
+                          border: '1px solid var(--border-strong)',
+                          borderRadius: 'var(--radius-sm)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <KeyIcon size={13} />
+                        <span>Đổi tài khoản</span>
+                      </button>
+                    )}
+
+                    <button
+                      onClick={onCancel}
+                      className="btn-secondary"
+                      style={{ fontSize: 'var(--text-xs)', padding: 'var(--space-2) var(--space-3)' }}
+                    >
+                      Quay lại màn hình chọn môn
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 
