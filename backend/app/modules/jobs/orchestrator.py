@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-from backend.app.db.models import Answer, Comment, ExamType, Job, JobStatus, Subject
+from backend.app.db.models import Answer, Comment, ExamType, Job, JobStatus, Question, Subject
 from backend.app.db.session import async_session_factory
 from backend.app.modules.analysis.ai_check import get_ai_check_service
 from backend.app.modules.analysis.voting import tally_votes
@@ -337,8 +337,12 @@ class JobOrchestrator:
 
                     # Calculate latest comment time for questions in this exam
                     latest_comment_ts = 0.0
-                    if exam.questions:
-                        q_ids = [q.id for q in exam.questions]
+                    q_stmt = select(Question).where(Question.exam_id == exam.id).order_by(Question.index)
+                    q_res = await db.execute(q_stmt)
+                    existing_questions = list(q_res.scalars().all())
+
+                    if existing_questions:
+                        q_ids = [q.id for q in existing_questions]
                         c_res = await db.execute(
                             select(func.max(Comment.created_at)).where(Comment.question_id.in_(q_ids))
                         )
@@ -357,7 +361,7 @@ class JobOrchestrator:
                                         cached_time_str = meta.get("created_at_formatted") or datetime.fromtimestamp(cached_path.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
                             except Exception:
                                 pass
-                        elif len(exam.questions) >= max(exam.question_count or 10, 10) and all(q.local_image_path and Path(q.local_image_path).exists() for q in exam.questions):
+                        elif len(existing_questions) >= max(exam.question_count or 10, 10) and all(q.local_image_path and Path(q.local_image_path).exists() for q in existing_questions):
                             has_cached_doc = True
                             cached_time_str = datetime.fromtimestamp(cached_path.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
 
@@ -374,7 +378,7 @@ class JobOrchestrator:
                             "filename": cached_path.name,
                             "path": rel_output,
                             "exam_title": exam.title,
-                            "questions_count": len(exam.questions),
+                            "questions_count": len(existing_questions),
                             "size_bytes": cached_path.stat().st_size,
                             "cached": True,
                             "cached_at": cached_time_str,
@@ -400,7 +404,7 @@ class JobOrchestrator:
                             "completed_file": file_info,
                             "files": list(created_files),
                         })
-                        all_exam_question_pairs.append((exam, exam.questions))
+                        all_exam_question_pairs.append((exam, existing_questions))
                         continue
 
                     self._broadcast(job_id, {
