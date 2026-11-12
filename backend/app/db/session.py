@@ -114,5 +114,9 @@ async def init_db() -> None:
             await conn.execute(text("ALTER TABLE jobs ADD COLUMN user_id INTEGER"))
         except Exception:
             pass  # Already exists
+        try:
+            await conn.execute(text("DELETE FROM subjects WHERE UPPER(code) = 'RSS' OR UPPER(name) = 'RSS' OR code = '-'"))
+        except Exception:
+            pass
     logger.info("Database tables initialized successfully.")
 

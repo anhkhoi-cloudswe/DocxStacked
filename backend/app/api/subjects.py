@@ -131,7 +131,11 @@ async def lookup_subject(
     return SubjectOut.from_orm(subj)
 
 
-def get_semester_sort_key(term: Optional[str], post_date: Optional[datetime] = None) -> Tuple[int, int, float]:
+def get_semester_sort_key(
+    term: Optional[str],
+    post_date: Optional[datetime] = None,
+    title: Optional[str] = None,
+) -> Tuple[int, int, float]:
     """
     Sort key for academic semester ordering: SU26 > SP26 > FA25 > SU25...
     Seasons: FA (Fall/Thu) = 3, SU (Summer/Hè) = 2, SP (Spring/Xuân) = 1, WI (Winter) = 0.
@@ -140,8 +144,9 @@ def get_semester_sort_key(term: Optional[str], post_date: Optional[datetime] = N
     year = 0
     season_weight = 0
 
-    if term:
-        m = re.search(r"\b(SU|FA|SP|WI)\s*(\d{2,4})\b", term, re.IGNORECASE)
+    text_to_search = f"{term or ''} {title or ''}".strip()
+    if text_to_search:
+        m = re.search(r"\b(SU|FA|SP|WI)\s*(\d{2,4})\b", text_to_search, re.IGNORECASE)
         if m:
             s_code = m.group(1).upper()
             y_val = int(m.group(2))
@@ -202,7 +207,7 @@ async def list_subject_exams(
     # Sort exams newest first by semester (SU26 > SP26 > FA25)
     sorted_exams = sorted(
         exams,
-        key=lambda e: get_semester_sort_key(e.term, e.post_date),
+        key=lambda e: get_semester_sort_key(e.term, e.post_date, e.title),
         reverse=True,
     )
 

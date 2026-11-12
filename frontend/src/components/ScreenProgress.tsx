@@ -1,5 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { JobDetails, JobFile, SSEEvent } from '../types';
+import {
+  CheckIcon,
+  CookieIcon,
+  CrossIcon,
+  DownloadIcon,
+  EyeIcon,
+  FileTextIcon,
+  GlobeIcon,
+  KeyIcon,
+  LightbulbIcon,
+  RefreshIcon,
+  UserIcon,
+  WarningIcon,
+  ZapIcon,
+} from './icons';
 
 interface Props {
   jobId: string;
@@ -46,6 +61,76 @@ export const ScreenProgress: React.FC<Props> = ({
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
   const [loginMessage, setLoginMessage] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
+
+  // Answer Review Modal State
+  const [showAnswerReview, setShowAnswerReview] = useState<boolean>(false);
+  const [answersList, setAnswersList] = useState<any[]>([]);
+  const [isLoadingAnswers, setIsLoadingAnswers] = useState<boolean>(false);
+  const [savingAnswerId, setSavingAnswerId] = useState<number | null>(null);
+  const [editChoiceMap, setEditChoiceMap] = useState<Record<number, string>>({});
+
+  const handleOpenAnswerReview = async () => {
+    setShowAnswerReview(true);
+    setIsLoadingAnswers(true);
+    try {
+      const resp = await fetch(`/api/jobs/${jobId}/answers`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setAnswersList(data || []);
+      }
+    } catch (e) {
+      console.error('Failed to load job answers:', e);
+    } finally {
+      setIsLoadingAnswers(false);
+    }
+  };
+
+  const handleSaveAnswerOverride = async (questionId: number, answerChoice: string) => {
+    setSavingAnswerId(questionId);
+    try {
+      const resp = await fetch(`/api/jobs/${jobId}/answers`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          answers: [{ question_id: questionId, answer: answerChoice.trim().toUpperCase() }],
+        }),
+      });
+      if (resp.ok) {
+        setAnswersList((prev) =>
+          prev.map((a) =>
+            a.question_id === questionId
+              ? { ...a, final_answer: [answerChoice.trim().toUpperCase()], manual_override: true, status: 'confident' }
+              : a
+          )
+        );
+      }
+    } catch (e) {
+      console.error('Error updating answer override:', e);
+    } finally {
+      setSavingAnswerId(null);
+    }
+  };
+
+  const handleForceRebuild = async (file: JobFile) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn tạo lại đề "${file.exam_title || file.filename}" bỏ qua bộ nhớ đệm không?`)) return;
+    try {
+      const resp = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject_code: subjectCode,
+          exam_type: examType,
+          limit: limit,
+          force_refresh: true,
+        }),
+      });
+      if (resp.ok) {
+        window.location.reload();
+      }
+    } catch (e) {
+      console.error('Error triggering force rebuild:', e);
+    }
+  };
 
   // Handle Escape key to close modal
   useEffect(() => {
@@ -181,7 +266,7 @@ export const ScreenProgress: React.FC<Props> = ({
           if (data.message) {
             setLogs((prev) => [
               ...prev,
-              { id: Math.random().toString(), time: timeStr, text: `✅ ${data.message!}`, step: data.step },
+              { id: Math.random().toString(), time: timeStr, text: data.message!, step: data.step },
             ]);
             setCurrentStep(data.message);
           }
@@ -259,7 +344,7 @@ export const ScreenProgress: React.FC<Props> = ({
       {
         id: Math.random().toString(),
         time: new Date().toLocaleTimeString('vi-VN', { hour12: false }),
-        text: '🔄 Đang gửi yêu cầu tiếp tục tiến trình từ điểm dừng...',
+        text: 'Đang gửi yêu cầu tiếp tục tiến trình từ điểm dừng...',
       },
     ]);
 
@@ -448,8 +533,9 @@ export const ScreenProgress: React.FC<Props> = ({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <FileTextIcon size={16} />
                 <span style={{ fontSize: 'var(--text-base)', fontWeight: 700, color: 'var(--text-primary)' }}>
-                  📄 Đề đã hoàn thành ({completedFiles.length} đề)
+                  Đề đã hoàn thành ({completedFiles.length} đề)
                 </span>
                 <span
                   style={{
@@ -482,9 +568,10 @@ export const ScreenProgress: React.FC<Props> = ({
                     border: '1px solid var(--border-subtle)',
                     borderRadius: 'var(--radius-sm)',
                     gap: 'var(--space-3)',
+                    flexWrap: 'wrap',
                   }}
                 >
-                  <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ minWidth: '220px', flex: 1 }}>
                     <div
                       style={{
                         fontWeight: 600,
@@ -503,22 +590,64 @@ export const ScreenProgress: React.FC<Props> = ({
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{file.questions_count} câu</span> ·{' '}
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{formatFileSize(file.size_bytes)}</span>
                     </div>
+                    {file.cached && (
+                      <div style={{ fontSize: '11px', color: 'var(--status-weak-text)', marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <ZapIcon size={12} />
+                        <span>Tạo từ bộ nhớ đệm lúc {file.cached_at || 'trước đó'}</span>
+                      </div>
+                    )}
                   </div>
 
-                  <button
-                    onClick={() => handleDownload(file.path)}
-                    className="btn-primary"
-                    style={{
-                      fontSize: 'var(--text-xs)',
-                      padding: 'var(--space-2) var(--space-3)',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      flexShrink: 0,
-                    }}
-                  >
-                    📥 Tải file Word (.docx)
-                  </button>
+                  <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    {file.cached && (
+                      <button
+                        type="button"
+                        onClick={() => handleForceRebuild(file)}
+                        className="btn-secondary"
+                        style={{
+                          fontSize: 'var(--text-xs)',
+                          padding: 'var(--space-2) var(--space-3)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                        title="Tạo lại file này bỏ qua bộ nhớ đệm"
+                      >
+                        <RefreshIcon size={12} />
+                        <span>Tạo lại</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleOpenAnswerReview}
+                      className="btn-secondary"
+                      style={{
+                        fontSize: 'var(--text-xs)',
+                        padding: 'var(--space-2) var(--space-3)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <EyeIcon size={13} />
+                      <span>Xem & duyệt đáp án</span>
+                    </button>
+                    <button
+                      onClick={() => handleDownload(file.path)}
+                      className="btn-primary"
+                      style={{
+                        fontSize: 'var(--text-xs)',
+                        padding: 'var(--space-2) var(--space-3)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <DownloadIcon size={13} />
+                      <span>Tải file Word</span>
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -538,19 +667,31 @@ export const ScreenProgress: React.FC<Props> = ({
               fontSize: 'var(--text-sm)',
             }}
           >
-            <div style={{ fontWeight: 700, marginBottom: 'var(--space-1)' }}>
-              {errorMessage.toLowerCase().includes('đăng nhập') || errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('session') || errorMessage.toLowerCase().includes('1 phiên')
-                ? '⚠️ Cần đăng nhập lại (Chính sách 1 phiên duy nhất của FUOverflow):'
-                : errorMessage.toLowerCase().includes('kết nối') || errorMessage.toLowerCase().includes('mạng')
-                ? '🌐 Lỗi kết nối mạng:'
-                : '❌ Đã xảy ra lỗi:'}
+            <div style={{ fontWeight: 700, marginBottom: 'var(--space-1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {errorMessage.toLowerCase().includes('đăng nhập') || errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('session') || errorMessage.toLowerCase().includes('1 phiên') ? (
+                <>
+                  <WarningIcon size={16} />
+                  <span>Cần đăng nhập lại (Chính sách 1 phiên duy nhất của FUOverflow):</span>
+                </>
+              ) : errorMessage.toLowerCase().includes('kết nối') || errorMessage.toLowerCase().includes('mạng') ? (
+                <>
+                  <GlobeIcon size={16} />
+                  <span>Lỗi kết nối mạng:</span>
+                </>
+              ) : (
+                <>
+                  <CrossIcon size={16} />
+                  <span>Đã xảy ra lỗi:</span>
+                </>
+              )}
             </div>
             <div style={{ lineHeight: 1.5 }}>
               {errorMessage}
             </div>
             {errorMessage.toLowerCase().includes('1 phiên') || errorMessage.toLowerCase().includes('đăng nhập') ? (
-              <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                💡 <em>Lưu ý:</em> FUOverflow chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc. Nếu bạn vừa mở FUOverflow trên trình duyệt khác, phiên hiện tại sẽ bị ngắt. Hãy đăng nhập lại rồi bấm <strong>"Chạy tiếp từ chỗ dừng"</strong> bên dưới để tiếp tục từ đúng câu hỏi dang dở mà không bị mất dữ liệu đã tải.
+              <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+                <LightbulbIcon size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span><em>Lưu ý:</em> FUOverflow chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc. Nếu bạn vừa mở FUOverflow trên trình duyệt khác, phiên hiện tại sẽ bị ngắt. Hãy đăng nhập lại rồi bấm <strong>"Chạy tiếp từ chỗ dừng"</strong> bên dưới để tiếp tục từ đúng câu hỏi dang dở mà không bị mất dữ liệu đã tải.</span>
               </div>
             ) : null}
             <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
@@ -576,7 +717,8 @@ export const ScreenProgress: React.FC<Props> = ({
                   boxShadow: 'var(--shadow-sm)',
                 }}
               >
-                🔑 Đăng nhập lại tài khoản
+                <KeyIcon size={13} />
+                <span>Đăng nhập lại tài khoản</span>
               </button>
 
               <button
@@ -593,7 +735,17 @@ export const ScreenProgress: React.FC<Props> = ({
                   cursor: isResuming ? 'not-allowed' : 'pointer',
                 }}
               >
-                {isResuming ? '⏳ Đang khôi phục...' : '🔄 Chạy tiếp từ chỗ dừng'}
+                {isResuming ? (
+                  <>
+                    <RefreshIcon size={13} className="spin" />
+                    <span>Đang khôi phục...</span>
+                  </>
+                ) : (
+                  <>
+                    <RefreshIcon size={13} />
+                    <span>Chạy tiếp từ chỗ dừng</span>
+                  </>
+                )}
               </button>
               <button
                 onClick={onCancel}
@@ -697,8 +849,9 @@ export const ScreenProgress: React.FC<Props> = ({
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
-              <h3 id="login-dialog-title" style={{ margin: 0, fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)' }}>
-                🔑 Đăng nhập lại FUOverflow
+              <h3 id="login-dialog-title" style={{ margin: 0, fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <KeyIcon size={16} />
+                <span>Đăng nhập lại FUOverflow</span>
               </h3>
               <button
                 type="button"
@@ -707,12 +860,14 @@ export const ScreenProgress: React.FC<Props> = ({
                 style={{
                   background: 'none',
                   border: 'none',
-                  fontSize: '20px',
                   cursor: isLoggingIn ? 'not-allowed' : 'pointer',
                   color: 'var(--text-muted)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
                 }}
+                aria-label="Đóng hộp thoại"
               >
-                ✕
+                <CrossIcon size={14} />
               </button>
             </div>
 
@@ -735,9 +890,14 @@ export const ScreenProgress: React.FC<Props> = ({
                   border: '1px solid var(--border-subtle)',
                   borderRadius: 'var(--radius-sm)',
                   cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
                 }}
               >
-                👤 Tài khoản FUOverflow
+                <UserIcon size={13} />
+                <span>Tài khoản FUOverflow</span>
               </button>
               <button
                 type="button"
@@ -752,9 +912,14 @@ export const ScreenProgress: React.FC<Props> = ({
                   border: '1px solid var(--border-subtle)',
                   borderRadius: 'var(--radius-sm)',
                   cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '4px',
                 }}
               >
-                🍪 Dán Cookie
+                <CookieIcon size={13} />
+                <span>Dán Cookie</span>
               </button>
             </div>
 
@@ -811,9 +976,20 @@ export const ScreenProgress: React.FC<Props> = ({
                     fontSize: '13px',
                     fontWeight: 600,
                     cursor: isLoggingIn ? 'not-allowed' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
                   }}
                 >
-                  {isLoggingIn ? '⏳ Đang đăng nhập...' : 'Đăng nhập & Tiếp tục'}
+                  {isLoggingIn ? (
+                    <>
+                      <RefreshIcon size={14} className="spin" />
+                      <span>Đang đăng nhập...</span>
+                    </>
+                  ) : (
+                    <span>Đăng nhập & Tiếp tục</span>
+                  )}
                 </button>
               </div>
             ) : (
@@ -844,24 +1020,259 @@ export const ScreenProgress: React.FC<Props> = ({
                     fontSize: '13px',
                     fontWeight: 600,
                     cursor: isLoggingIn ? 'not-allowed' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
                   }}
                 >
-                  {isLoggingIn ? '⏳ Đang kiểm tra cookie...' : 'Lưu Cookie & Tiếp tục'}
+                  {isLoggingIn ? (
+                    <>
+                      <RefreshIcon size={14} className="spin" />
+                      <span>Đang kiểm tra cookie...</span>
+                    </>
+                  ) : (
+                    <span>Lưu Cookie & Tiếp tục</span>
+                  )}
                 </button>
               </div>
             )}
 
             {loginMessage && (
-              <div style={{ marginTop: '10px', padding: '8px', backgroundColor: 'var(--status-confident-bg)', color: 'var(--status-confident-text)', borderRadius: 'var(--radius-sm)', fontSize: '12px', fontWeight: 600 }}>
-                {loginMessage}
+              <div style={{ marginTop: '10px', padding: '8px', backgroundColor: 'var(--status-confident-bg)', color: 'var(--status-confident-text)', borderRadius: 'var(--radius-sm)', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <CheckIcon size={14} />
+                <span>{loginMessage}</span>
               </div>
             )}
 
             {loginError && (
-              <div style={{ marginTop: '10px', padding: '8px', backgroundColor: 'var(--status-conflict-bg)', color: 'var(--status-conflict-text)', borderRadius: 'var(--radius-sm)', fontSize: '12px' }}>
-                ❌ {loginError}
+              <div style={{ marginTop: '10px', padding: '8px', backgroundColor: 'var(--status-conflict-bg)', color: 'var(--status-conflict-text)', borderRadius: 'var(--radius-sm)', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <CrossIcon size={14} />
+                <span>{loginError}</span>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Answer Review Modal */}
+      {showAnswerReview && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.65)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: '16px',
+          }}
+          onClick={() => setShowAnswerReview(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              backgroundColor: 'var(--bg-surface)',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--border-subtle)',
+              maxWidth: '880px',
+              width: '100%',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: 'var(--shadow-md)',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Modal Header */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: 'var(--space-4)',
+                borderBottom: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-subtle)',
+              }}
+            >
+              <div>
+                <h3 className="serif-title" style={{ fontSize: 'var(--text-lg)', margin: 0 }}>
+                  Xem & duyệt đáp án ({subjectCode})
+                </h3>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
+                  Đồng thuận cộng đồng & đề xuất AI trước khi xuất tài liệu
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAnswerReview(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center' }}
+                aria-label="Đóng bảng xem đáp án"
+              >
+                <CrossIcon size={16} />
+              </button>
+            </div>
+
+            {/* Modal Body / Table */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-3)' }}>
+              {isLoadingAnswers ? (
+                <div style={{ textAlign: 'center', padding: 'var(--space-8)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                  <RefreshIcon size={16} className="spin" />
+                  <span>Đang tải bảng đáp án chi tiết...</span>
+                </div>
+              ) : answersList.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 'var(--space-6)', color: 'var(--text-muted)' }}>
+                  Chưa có dữ liệu đáp án hoặc đề đang được crawl. Vui lòng thử lại sau giây lát.
+                </div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--text-xs)', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Câu</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Đáp án chốt</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Độ tin cậy</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Cộng đồng (Votes)</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Đề xuất AI</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600, textAlign: 'right' }}>Chỉnh sửa thủ công</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {answersList.map((item, qIdx) => {
+                      const ansStr = (item.final_answer || []).join(', ') || '?';
+                      const status = item.status || 'no_data';
+                      const statusBg =
+                        status === 'confident'
+                          ? 'var(--status-confident-bg)'
+                          : status === 'weak'
+                          ? 'var(--status-weak-bg)'
+                          : status === 'conflict'
+                          ? 'var(--status-conflict-bg)'
+                          : 'var(--bg-subtle)';
+                      const statusColor =
+                        status === 'confident'
+                          ? 'var(--status-confident-text)'
+                          : status === 'weak'
+                          ? 'var(--status-weak-text)'
+                          : status === 'conflict'
+                          ? 'var(--status-conflict-text)'
+                          : 'var(--text-muted)';
+
+                      const voteEntries = Object.entries(item.community_votes || {})
+                        .filter(([k]) => !k.startsWith('_'))
+                        .map(([k, v]) => `${k}: ${v}`);
+
+                      const aiText = item.ai_vote ? item.ai_vote.join(', ') : 'Chờ khoá API';
+
+                      const currentEdit = editChoiceMap[item.question_id] !== undefined
+                        ? editChoiceMap[item.question_id]
+                        : ansStr;
+
+                      return (
+                        <tr
+                          key={item.question_id || qIdx}
+                          style={{
+                            borderBottom: '1px solid var(--border-subtle)',
+                            backgroundColor: qIdx % 2 === 0 ? 'var(--bg-surface)' : 'var(--bg-canvas)',
+                          }}
+                        >
+                          <td style={{ padding: '8px 10px', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                            Câu {item.question_index || qIdx + 1}
+                          </td>
+                          <td style={{ padding: '8px 10px', fontWeight: 700, color: 'var(--primary)', fontSize: '14px' }}>
+                            {ansStr}
+                            {item.manual_override && (
+                              <span style={{ fontSize: '10px', marginLeft: '4px', color: 'var(--text-muted)' }}>(đã sửa)</span>
+                            )}
+                          </td>
+                          <td style={{ padding: '8px 10px' }}>
+                            <span
+                              style={{
+                                padding: '2px 6px',
+                                borderRadius: 'var(--radius-sm)',
+                                fontSize: '11px',
+                                fontWeight: 600,
+                                backgroundColor: statusBg,
+                                color: statusColor,
+                              }}
+                            >
+                              {status.toUpperCase()}
+                            </span>
+                          </td>
+                          <td style={{ padding: '8px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                            {voteEntries.length > 0 ? voteEntries.join(' · ') : '0 phiếu'}
+                          </td>
+                          <td style={{ padding: '8px 10px', color: 'var(--text-secondary)' }}>
+                            {aiText}
+                          </td>
+                          <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <select
+                                value={currentEdit}
+                                onChange={(e) =>
+                                  setEditChoiceMap({ ...editChoiceMap, [item.question_id]: e.target.value })
+                                }
+                                style={{
+                                  padding: '2px 4px',
+                                  fontSize: '11px',
+                                  borderRadius: 'var(--radius-sm)',
+                                  border: '1px solid var(--border-strong)',
+                                  backgroundColor: 'var(--bg-surface)',
+                                }}
+                              >
+                                {['A', 'B', 'C', 'D', 'A, B', 'A, C', 'B, D', 'A, B, C', 'A, B, C, D', '?'].map((opt) => (
+                                  <option key={opt} value={opt}>
+                                    {opt}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                disabled={savingAnswerId === item.question_id}
+                                onClick={() => handleSaveAnswerOverride(item.question_id, currentEdit)}
+                                style={{
+                                  padding: '2px 8px',
+                                  fontSize: '11px',
+                                  backgroundColor: 'var(--primary)',
+                                  color: '#fff',
+                                  border: 'none',
+                                  borderRadius: 'var(--radius-sm)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {savingAnswerId === item.question_id ? 'Lưu...' : 'Lưu'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                padding: 'var(--space-3) var(--space-4)',
+                borderTop: '1px solid var(--border-subtle)',
+                backgroundColor: 'var(--bg-subtle)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setShowAnswerReview(false)}
+                className="btn-secondary"
+                style={{ fontSize: 'var(--text-xs)', padding: '6px 14px' }}
+              >
+                Đóng
+              </button>
+            </div>
           </div>
         </div>
       )}

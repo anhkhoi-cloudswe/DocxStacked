@@ -47,6 +47,8 @@ export interface JobFile {
   exam_title: string;
   questions_count: number;
   size_bytes: number;
+  cached?: boolean;
+  cached_at?: string | null;
 }
 
 export interface JobDetails {
@@ -106,6 +108,8 @@ export interface AppSettings {
     highlight_low_confidence: boolean;
     answer_format: 'letter' | 'letter_keyword';
     merge: boolean;
+    show_question_number?: boolean;
+    show_separator_line?: boolean;
   };
   ai: {
     enabled: boolean;

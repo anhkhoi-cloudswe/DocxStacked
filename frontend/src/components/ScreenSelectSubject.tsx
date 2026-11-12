@@ -1,5 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import type { Subject, ExamItem, AuthStatus } from '../types';
+import {
+  ArrowRightIcon,
+  BookIcon,
+  CheckIcon,
+  CookieIcon,
+  CrossIcon,
+  FileTextIcon,
+  FolderIcon,
+  GlobeIcon,
+  KeyIcon,
+  RefreshIcon,
+  SearchIcon,
+  UserIcon,
+  WarningIcon,
+} from './icons';
 
 interface Props {
   onStartJob: (subjectCode: string, examType: 'FE' | 'PE', limit: number) => void;
@@ -343,9 +358,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
       })
     : null;
 
+  const cleanSubjects = subjects.filter(
+    (s) => s.code.toUpperCase() !== 'RSS' && s.name.toUpperCase() !== 'RSS' && s.code !== '-'
+  );
+
   const displayedSubjects = filterSelectedOnly
-    ? subjects.filter((s) => selectedCodes.includes(s.code))
-    : subjects;
+    ? cleanSubjects.filter((s) => selectedCodes.includes(s.code))
+    : cleanSubjects;
 
   return (
     <div className="select-subject-layout">
@@ -385,10 +404,8 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                   minHeight: '34px',
                 }}
               >
-                <span style={{ display: 'inline-block', transform: isSyncing ? 'rotate(360deg)' : 'none', transition: 'transform 1s linear' }}>
-                  🔄
-                </span>
-                {isSyncing ? 'Đang cập nhật...' : 'Cập nhật danh sách môn'}
+                <RefreshIcon size={14} className={isSyncing ? 'spin' : ''} />
+                <span>{isSyncing ? 'Đang cập nhật...' : 'Cập nhật danh sách môn'}</span>
               </button>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
                 {totalSubjects > 0 && `${totalSubjects} môn học`}
@@ -522,9 +539,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                   cursor: 'pointer',
                   fontSize: '14px',
                   padding: '4px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
                 }}
               >
-                ✕
+                <CrossIcon size={12} />
               </button>
             )}
             {isSearching && (
@@ -534,11 +553,12 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                   right: '12px',
                   top: '50%',
                   transform: 'translateY(-50%)',
-                  fontSize: 'var(--text-xs)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
                   color: 'var(--text-muted)',
                 }}
               >
-                ⏳
+                <RefreshIcon size={13} className="spin" />
               </span>
             )}
           </div>
@@ -589,9 +609,19 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                       fontSize: 'var(--text-xs)',
                       fontWeight: 600,
                       cursor: isLookingUp ? 'not-allowed' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
                     }}
                   >
-                    {isLookingUp ? 'Đang tìm kiếm...' : `🔍 Thử tìm mã "${searchQuery.trim()}" trên diễn đàn`}
+                    {isLookingUp ? (
+                      'Đang tìm kiếm...'
+                    ) : (
+                      <>
+                        <SearchIcon size={13} />
+                        <span>Thử tìm mã "{searchQuery.trim()}" trên diễn đàn</span>
+                      </>
+                    )}
                   </button>
                 )}
               </div>
@@ -638,8 +668,8 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                       >
                         {subject.code}
                       </span>
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
-                        {subject.name}
+                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
+                        {subject.name && subject.name.trim().toUpperCase() !== subject.code.trim().toUpperCase() ? subject.name : ''}
                       </span>
                     </div>
 
@@ -659,7 +689,9 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
         <div className="card-paper">
           {!activeCode ? (
             <div style={{ textAlign: 'center', padding: 'var(--space-6) var(--space-4)', color: 'var(--text-muted)' }}>
-              <div style={{ fontSize: '28px', marginBottom: '8px' }}>📂</div>
+              <div style={{ marginBottom: '8px', display: 'flex', justifyContent: 'center' }}>
+                <FolderIcon size={32} />
+              </div>
               <div style={{ fontWeight: 600, fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }}>
                 Chưa chọn môn học nào
               </div>
@@ -689,9 +721,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     fontSize: '11px',
                     color: 'var(--status-weak-text)',
                     fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}
                 >
-                  ⚠️ Môn này chỉ có {exams.length} đề {examType}
+                  <WarningIcon size={13} />
+                  <span>Môn này chỉ có {exams.length} đề {examType}</span>
                 </div>
               )}
             </div>
@@ -871,8 +907,8 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
             </div>
           </div>
 
-          {/* PE Explanation Card */}
-          {examType === 'PE' ? (
+          {/* PE Guidance Note */}
+          {examType === 'PE' && (
             <div
               style={{
                 padding: 'var(--space-3)',
@@ -885,18 +921,20 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                 lineHeight: 'var(--leading-relaxed)',
               }}
             >
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
-                📘 Quy tắc tải đề PE (Thực hành)
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <BookIcon size={14} />
+                <span>Quy tắc tải đề PE (Thực hành)</span>
               </div>
               Đề PE là bài thi thực hành lập trình. DocxStacked chỉ tải trực tiếp tệp đề bài gốc (.pdf) và mã nguồn mẫu (.zip) về thư mục lưu trữ, không có ảnh từng câu, không gọi AI và không tạo tệp .docx.
             </div>
-          ) : (
-            /* Limit Number Selector (adaptive to exams.length) for FE */
-            (() => {
-              const maxAvailable = exams.length;
-              const isLocked = maxAvailable <= 1;
-              const canDecrease = !isLocked && limit > 1;
-              const canIncrease = !isLocked && limit < Math.min(20, maxAvailable);
+          )}
+
+          {/* Limit Number Selector (adaptive to exams.length) */}
+          {(() => {
+            const maxAvailable = exams.length;
+            const isLocked = maxAvailable <= 1;
+            const canDecrease = !isLocked && limit > 1;
+            const canIncrease = !isLocked && limit < Math.min(20, maxAvailable);
 
               const handleDecrease = () => {
                 if (canDecrease) {
@@ -1039,8 +1077,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                   </div>
                 </div>
               );
-            })()
-          )}
+            })()}
 
           {/* Step 3: Tóm tắt kế hoạch & Bắt đầu */}
           <div style={{ marginTop: 'var(--space-4)', borderTop: '1px solid var(--border-subtle)', paddingTop: 'var(--space-4)' }}>
@@ -1049,8 +1086,9 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                 <span className="step-badge">3</span> Kế hoạch & Bắt đầu
               </h4>
               {authStatus?.logged_in ? (
-                <span style={{ fontSize: '11px', color: 'var(--status-confident-text)', fontWeight: 600 }}>
-                  🟢 {authStatus.username || 'Đã đăng nhập'}
+                <span style={{ fontSize: '11px', color: 'var(--status-confident-text)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#2D6A4F', display: 'inline-block' }} />
+                  <span>{authStatus.username || 'Đã đăng nhập'}</span>
                 </span>
               ) : (
                 <button
@@ -1064,9 +1102,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     color: 'var(--primary)',
                     cursor: 'pointer',
                     textDecoration: 'underline',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}
                 >
-                  🔑 Đăng nhập
+                  <KeyIcon size={12} />
+                  <span>Đăng nhập</span>
                 </button>
               )}
             </div>
@@ -1082,8 +1124,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                 fontSize: 'var(--text-xs)',
               }}
             >
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '2px' }}>
-                📋 {selectedCodes.length} môn · {totalExamsSelected} đề {examType} · tạo {examType === 'FE' ? totalExamsSelected : 0} file .docx
+              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <FileTextIcon size={14} />
+                <span>
+                  {selectedCodes.length} môn · {totalExamsSelected} đề {examType} · {examType === 'FE' ? `tạo ${totalExamsSelected} file .docx` : `tải ${totalExamsSelected} file .pdf / .zip gốc`}
+                </span>
               </div>
               <div style={{ color: 'var(--text-secondary)' }}>
                 {selectedCodes.length > 0 ? `Đang chọn: ${selectedCodes.join(', ')}` : 'Chưa chọn môn học nào'}
@@ -1099,9 +1144,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     color: 'var(--status-weak-text)',
                     fontWeight: 600,
                     fontSize: '11px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}
                 >
-                  ⚠️ Môn {activeCode} chỉ có {exams.length} đề (yêu cầu {limit} đề).
+                  <WarningIcon size={12} />
+                  <span>Môn {activeCode} chỉ có {exams.length} đề (yêu cầu {limit} đề).</span>
                 </div>
               )}
             </div>
@@ -1145,7 +1194,8 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     gap: '8px',
                   }}
                 >
-                  🔑 Đăng nhập để bắt đầu biên soạn
+                  <KeyIcon size={15} />
+                  <span>Đăng nhập để bắt đầu biên soạn</span>
                 </button>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', fontSize: '11px' }}>
                   <span style={{ color: 'var(--text-muted)' }}>Cần tài khoản FUOverflow để tải đề</span>
@@ -1154,7 +1204,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     onClick={handleOpenFuOverflow}
                     style={{ background: 'none', border: 'none', color: 'var(--ink-blue)', cursor: 'pointer', textDecoration: 'underline' }}
                   >
-                    Mở web ↗
+                    Mở trang chủ FUOverflow
                   </button>
                 </div>
               </div>
@@ -1170,13 +1220,29 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     fontSize: 'var(--text-base)',
                     cursor: isLoading || totalExamsSelected === 0 ? 'not-allowed' : 'pointer',
                     opacity: isLoading || totalExamsSelected === 0 ? 0.6 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
                   }}
                 >
-                  {isLoading
-                    ? '⏳ Đang khởi tạo...'
-                    : totalExamsSelected === 0
-                    ? 'Chưa có đề để biên soạn'
-                    : `🚀 Bắt đầu biên soạn (${totalExamsSelected} đề)`}
+                  {isLoading ? (
+                    <>
+                      <RefreshIcon size={16} className="spin" />
+                      <span>Đang khởi tạo...</span>
+                    </>
+                  ) : totalExamsSelected === 0 ? (
+                    'Chưa có đề để biên soạn'
+                  ) : (
+                    <>
+                      <ArrowRightIcon size={16} />
+                      <span>
+                        {examType === 'FE'
+                          ? `Bắt đầu biên soạn (${totalExamsSelected} đề)`
+                          : `Bắt đầu tải đề PE (${totalExamsSelected} đề)`}
+                      </span>
+                    </>
+                  )}
                 </button>
               </div>
             )}
@@ -1231,9 +1297,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     cursor: 'pointer',
                     color: loginModalMode === 'account' ? 'var(--primary)' : 'var(--text-secondary)',
                     boxShadow: loginModalMode === 'account' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}
                 >
-                  🔑 Tài khoản
+                  <UserIcon size={12} />
+                  <span>Tài khoản</span>
                 </button>
                 <button
                   type="button"
@@ -1248,9 +1318,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     cursor: 'pointer',
                     color: loginModalMode === 'cookie' ? 'var(--primary)' : 'var(--text-secondary)',
                     boxShadow: loginModalMode === 'cookie' ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}
                 >
-                  🍪 Cookie (F12)
+                  <CookieIcon size={12} />
+                  <span>Cookie (F12)</span>
                 </button>
               </div>
             </div>
@@ -1311,8 +1385,9 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                 </div>
 
                 {accountError && (
-                  <div style={{ color: 'var(--status-conflict-text)', fontSize: '12px', marginBottom: '10px', lineHeight: 1.4 }}>
-                    ⚠️ {accountError}
+                  <div style={{ color: 'var(--status-conflict-text)', fontSize: '12px', marginBottom: '10px', lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <WarningIcon size={13} />
+                    <span>{accountError}</span>
                   </div>
                 )}
 
@@ -1346,9 +1421,22 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                       fontWeight: 600,
                       cursor: isLoggingInAccount ? 'not-allowed' : 'pointer',
                       opacity: isLoggingInAccount ? 0.7 : 1,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
                     }}
                   >
-                    {isLoggingInAccount ? '⏳ Đang đăng nhập...' : '🚀 Đăng nhập ngay'}
+                    {isLoggingInAccount ? (
+                      <>
+                        <RefreshIcon size={13} className="spin" />
+                        <span>Đang đăng nhập...</span>
+                      </>
+                    ) : (
+                      <>
+                        <ArrowRightIcon size={14} />
+                        <span>Đăng nhập ngay</span>
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
@@ -1400,8 +1488,9 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                   }}
                 />
                 {cookieError && (
-                  <div style={{ color: 'var(--status-conflict-text)', fontSize: '12px', marginTop: '6px', lineHeight: 1.4 }}>
-                    ⚠️ {cookieError}
+                  <div style={{ color: 'var(--status-conflict-text)', fontSize: '12px', marginTop: '6px', lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <WarningIcon size={13} />
+                    <span>{cookieError}</span>
                   </div>
                 )}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginTop: '14px' }}>
@@ -1409,9 +1498,10 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                     href="https://fuoverflow.com/login/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    style={{ fontSize: '11px', color: 'var(--primary)', textDecoration: 'none' }}
+                    style={{ fontSize: '11px', color: 'var(--primary)', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                   >
-                    🌐 Mở FUOverflow ↗
+                    <GlobeIcon size={13} />
+                    <span>Mở trang FUOverflow</span>
                   </a>
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button
@@ -1443,9 +1533,22 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                         fontWeight: 600,
                         cursor: isSavingCookie ? 'not-allowed' : 'pointer',
                         opacity: isSavingCookie ? 0.7 : 1,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
                       }}
                     >
-                      {isSavingCookie ? '⏳ Đang kiểm tra...' : '✅ Lưu & Xác thực'}
+                      {isSavingCookie ? (
+                        <>
+                          <RefreshIcon size={13} className="spin" />
+                          <span>Đang kiểm tra...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckIcon size={14} />
+                          <span>Lưu & Xác thực</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>

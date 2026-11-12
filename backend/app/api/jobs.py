@@ -18,6 +18,7 @@ class JobCreateRequest(BaseModel):
     subject_code: str = Field(..., description="Subject code, e.g. CSD202")
     exam_type: str = Field(default="FE", description="FE or PE")
     limit: int = Field(default=4, ge=1, le=50, description="Number of exams to compile (1-50)")
+    force_refresh: bool = Field(default=False, description="Bypass document cache and force re-compilation")
 
 
 class JobResponse(BaseModel):
@@ -87,6 +88,7 @@ async def create_job(payload: JobCreateRequest):
         subject_code=payload.subject_code,
         exam_type=e_type,
         limit=payload.limit,
+        force_refresh=payload.force_refresh,
     )
     return JobResponse.from_orm(job)
 

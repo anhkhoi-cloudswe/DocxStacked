@@ -102,20 +102,30 @@ async def download_export_file(
     file: Optional[str] = Query(None, description="Alternative param name for relative path"),
 ):
     """
-    Download an exported .docx document.
-    Enforces path traversal safety checking that the file is inside settings.STORAGE_DIR.
+    Download an exported document.
+    Enforces strict path traversal safety: file MUST be inside settings.OUTPUT_DIR (data/output).
     """
     target = path or file
     if not target:
         raise HTTPException(status_code=400, detail="Missing required query parameter: path or file")
     try:
-        resolved_path = (settings.BASE_DIR / target).resolve()
-        storage_resolved = settings.STORAGE_DIR.resolve()
+        out_resolved = settings.OUTPUT_DIR.resolve()
+        target_str = target.replace("\\", "/")
 
-        # Check path traversal
-        if not str(resolved_path).startswith(str(storage_resolved)):
-            logger.warning(f"Attempted path traversal access: {path}")
-            raise HTTPException(status_code=403, detail="Access denied: invalid file path")
+        if target_str.startswith("data/") or ".." in target_str or target_str.startswith("/"):
+            resolved_path = (settings.BASE_DIR / target_str.lstrip("/")).resolve()
+        else:
+            resolved_path = (out_resolved / target).resolve()
+
+        # Enforce path traversal check: strictly inside OUTPUT_DIR
+        try:
+            is_inside = resolved_path.is_relative_to(out_resolved) and resolved_path != out_resolved
+        except AttributeError:
+            is_inside = str(resolved_path).startswith(str(out_resolved)) and resolved_path != out_resolved
+
+        if not is_inside:
+            logger.warning(f"Attempted path traversal access outside output directory: {target}")
+            raise HTTPException(status_code=403, detail="Access denied: path must be inside output directory")
 
         if not resolved_path.exists() or not resolved_path.is_file():
             raise HTTPException(status_code=404, detail="Requested file does not exist")

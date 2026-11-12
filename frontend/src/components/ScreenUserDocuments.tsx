@@ -1,4 +1,16 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import {
+  ArrowLeftIcon,
+  BookIcon,
+  CheckIcon,
+  CrossIcon,
+  DownloadIcon,
+  RefreshIcon,
+  TagIcon,
+  TrashIcon,
+  WarningIcon,
+  ZapIcon,
+} from './icons';
 
 interface DocumentItem {
   filename: string;
@@ -131,13 +143,17 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
             boxShadow: 'var(--shadow-sm)',
           }}
         >
-          <span>{toast.type === 'success' ? '✅' : '⚠️'} {toast.message}</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            {toast.type === 'success' ? <CheckIcon size={16} /> : <WarningIcon size={16} />}
+            <span>{toast.message}</span>
+          </span>
           <button
             type="button"
             onClick={() => setToast(null)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 700 }}
+            aria-label="Đóng thông báo"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 700, display: 'inline-flex', alignItems: 'center' }}
           >
-            ✕
+            <CrossIcon size={14} />
           </button>
         </div>
       )}
@@ -168,9 +184,13 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
                 borderRadius: 'var(--radius-sm)',
                 fontWeight: 600,
                 border: '1px solid var(--status-confident-border)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
               }}
             >
-              ⚡ Trích xuất tức thì (Không cần cào lại)
+              <ZapIcon size={12} />
+              <span>Trích xuất tức thì (Không cần cào lại)</span>
             </span>
           </div>
           <p style={{ margin: 0, fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
@@ -196,14 +216,15 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
           <button
             onClick={onBack}
             className="btn-secondary"
-            style={{ fontSize: 'var(--text-sm)', padding: 'var(--space-2) var(--space-4)', minHeight: '38px' }}
+            style={{ fontSize: 'var(--text-sm)', padding: 'var(--space-2) var(--space-4)', minHeight: '38px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
-            ⬅ Về trang chọn môn
+            <ArrowLeftIcon size={14} />
+            <span>Về trang chọn môn</span>
           </button>
         </div>
       </div>
 
-      {/* Subject Filter Boxes (Hiển thị các ô chứa tên môn để chọn & lọc nhanh) */}
+      {/* Subject Filter Boxes */}
       {subjectsWithCounts.length > 0 && (
         <div
           className="card-paper"
@@ -214,7 +235,7 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)', flexWrap: 'wrap', gap: '6px' }}>
             <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span>🏷️</span>
+              <TagIcon size={14} />
               <span>Lọc theo môn học:</span>
             </span>
             {selectedSubject !== 'ALL' && (
@@ -367,8 +388,9 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
 
       {/* Content Area */}
       {isLoading ? (
-        <div style={{ textAlign: 'center', padding: 'var(--space-8)', color: 'var(--text-secondary)' }}>
-          ⏳ Đang tải danh sách tài liệu...
+        <div style={{ textAlign: 'center', padding: 'var(--space-8)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+          <RefreshIcon size={16} className="spin" />
+          <span>Đang tải danh sách tài liệu...</span>
         </div>
       ) : filteredDocs.length === 0 ? (
         <div
@@ -379,7 +401,9 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
             color: 'var(--text-secondary)',
           }}
         >
-          <div style={{ fontSize: '36px', marginBottom: 'var(--space-3)' }}>📚</div>
+          <div style={{ marginBottom: 'var(--space-3)', display: 'flex', justifyContent: 'center' }}>
+            <BookIcon size={36} />
+          </div>
           <h3 className="serif-title" style={{ fontSize: 'var(--text-lg)', marginBottom: 'var(--space-2)' }}>
             Chưa có tài liệu nào trong kho
           </h3>
@@ -404,7 +428,7 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
               className="btn-primary"
               style={{ fontSize: 'var(--text-sm)' }}
             >
-              🚀 Chọn môn và biên soạn đề mới
+              Chọn môn và biên soạn đề mới
             </button>
           )}
         </div>
@@ -484,7 +508,8 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
                           textDecoration: 'none',
                         }}
                       >
-                        📥 Tải file Word
+                        <DownloadIcon size={13} />
+                        <span>Tải file Word</span>
                       </a>
                       <button
                         type="button"
@@ -504,7 +529,8 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
                         }}
                         title="Xóa tài liệu này khỏi bộ nhớ"
                       >
-                        🗑️ Xóa
+                        <TrashIcon size={13} />
+                        <span>Xóa</span>
                       </button>
                     </div>
                   </td>

@@ -54,6 +54,9 @@ def get_default_settings() -> Dict[str, Any]:
             "image_zoom_percent": int(getattr(yaml_cfg.export, "image_zoom_percent", 100)),
             "highlight_low_confidence": bool(getattr(yaml_cfg.export, "highlight_low_confidence", True)),
             "answer_format": "letter_keyword",  # 'letter' or 'letter_keyword'
+            "show_question_number": True,  # 'Câu 1:', 'Câu 2:' prefix
+            "show_separator_line": True,  # '===' double border divider
+            "page_size": "letter",  # Standard Letter 8.5 x 11 inch
             "merge": False,  # whether to merge multiple exams into one docx
         },
         "ai": {

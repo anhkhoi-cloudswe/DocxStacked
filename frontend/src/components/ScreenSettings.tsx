@@ -1,5 +1,19 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import type { AppSettings, AIProviderSetting } from '../types';
+import {
+  FolderIcon,
+  CpuIcon,
+  ZapIcon,
+  LightbulbIcon,
+  ShieldIcon,
+  ScaleIcon,
+  LeafIcon,
+  TrashIcon,
+  RefreshIcon,
+  CheckIcon,
+  CrossIcon,
+  WarningIcon,
+} from './icons';
 
 interface ScreenSettingsProps {
   onBack: () => void;
@@ -488,7 +502,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
             minHeight: '38px',
           }}
         >
-          <span>📁</span>
+          <FolderIcon size={16} />
           <span>1. Cơ bản (Xuất file Word)</span>
         </button>
 
@@ -510,7 +524,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
             minHeight: '38px',
           }}
         >
-          <span>🤖</span>
+          <CpuIcon size={16} />
           <span>2. Trí tuệ nhân tạo (AI Engine)</span>
         </button>
 
@@ -532,22 +546,27 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
             minHeight: '38px',
           }}
         >
-          <span>⚡</span>
+          <ZapIcon size={16} />
           <span>3. Nâng cao (Voting & Thu thập)</span>
         </button>
       </div>
 
       <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-        <span>💡</span>
+        <LightbulbIcon size={16} />
         <span>Cài đặt được lưu vào cơ sở dữ liệu và tự động áp dụng cho các phiên biên soạn tiếp theo.</span>
       </div>
 
       {/* Group 1: Xuất file Word */}
       {activeSection === 'basic' && (
       <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>
-        <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)', fontWeight: 700, margin: '0 0 var(--space-4) 0', color: 'var(--text-primary)' }}>
-          1. Xuất file Word (.docx)
-        </h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
+          <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
+            1. Xuất file Word (.docx)
+          </h2>
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)', backgroundColor: 'var(--bg-card)', padding: '3px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+            Khổ giấy: <strong>Letter (8.5 x 11 inch)</strong> chuẩn Word
+          </span>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 'var(--space-4)' }}>
           <div>
             <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 'var(--space-1)' }}>
@@ -597,6 +616,24 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', justifyContent: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', cursor: 'pointer', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
+              <input
+                type="checkbox"
+                checked={settings.export.show_question_number ?? true}
+                onChange={(e) => setSettings({ ...settings, export: { ...settings.export, show_question_number: e.target.checked } })}
+              />
+              Hiển thị tiền tố "Câu N:" trước đáp án (Ví dụ: "Câu 1: B")
+            </label>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', cursor: 'pointer', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
+              <input
+                type="checkbox"
+                checked={settings.export.show_separator_line ?? true}
+                onChange={(e) => setSettings({ ...settings, export: { ...settings.export, show_separator_line: e.target.checked } })}
+              />
+              Chèn đường kẻ phân cách (===) giữa các câu để tách biệt rõ ràng
+            </label>
+
             <label style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', cursor: 'pointer', fontSize: 'var(--text-sm)', color: 'var(--text-primary)' }}>
               <input
                 type="checkbox"
@@ -778,11 +815,22 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                           backgroundColor: p.has_api_key ? 'var(--ink-blue-subtle)' : 'var(--status-conflict-bg)',
                           color: p.has_api_key ? 'var(--ink-blue)' : 'var(--status-conflict-text)',
                           fontWeight: 500,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
                         }}
                       >
-                        {p.has_api_key
-                          ? `✓ ${p.key_source || 'Đã cấu hình'}`
-                          : '✕ Chưa có khoá'}
+                        {p.has_api_key ? (
+                          <>
+                            <CheckIcon size={12} />
+                            <span>{p.key_source || 'Đã cấu hình'}</span>
+                          </>
+                        ) : (
+                          <>
+                            <CrossIcon size={12} />
+                            <span>Chưa có khoá</span>
+                          </>
+                        )}
                       </span>
                     </div>
 
@@ -805,10 +853,11 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                       </button>
                       <button
                         onClick={() => deleteProvider(idx)}
-                        style={{ padding: '2px 8px', fontSize: 'var(--text-xs)', color: 'var(--primary)', cursor: 'pointer', marginLeft: '4px' }}
+                        style={{ padding: '2px 8px', fontSize: 'var(--text-xs)', color: 'var(--primary)', cursor: 'pointer', marginLeft: '4px', display: 'inline-flex', alignItems: 'center' }}
                         title="Xoá nhà cung cấp này"
+                        aria-label="Xoá nhà cung cấp"
                       >
-                        🗑️
+                        <TrashIcon size={14} />
                       </button>
                     </div>
                   </div>
@@ -832,46 +881,72 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                             color: 'var(--primary)',
                             cursor: 'pointer',
                             padding: 0,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
                           }}
                         >
-                          {isLoadingCurrentModels ? '⏳' : '🔄 Làm mới'}
+                          <RefreshIcon size={12} className={isLoadingCurrentModels ? 'spin' : ''} />
+                          <span>{isLoadingCurrentModels ? 'Đang tải...' : 'Lấy danh sách model'}</span>
                         </button>
                       </div>
 
                       {modelsList.length > 0 ? (
-                        <select
-                          value={p.model}
-                          onChange={(e) => {
-                            const updated = [...settings.ai.providers];
-                            updated[idx] = { ...updated[idx], model: e.target.value };
-                            setSettings({ ...settings, ai: { ...settings.ai, providers: updated } });
-                          }}
-                          style={{
-                            width: '100%',
-                            padding: 'var(--space-1) var(--space-2)',
-                            fontSize: 'var(--text-xs)',
-                            fontFamily: 'var(--font-mono)',
-                            border: '1px solid var(--border-strong)',
-                            borderRadius: 'var(--radius-sm)',
-                            backgroundColor: 'var(--bg-surface)',
-                            color: 'var(--text-primary)',
-                          }}
-                        >
-                          {/* If current model is custom and not in list, preserve it */}
-                          {!modelsList.some((m) => m.id === p.model) && p.model && (
-                            <option value={p.model}>{p.model} (Tuỳ chỉnh)</option>
-                          )}
-                          {modelsList.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.name || m.id}
-                            </option>
-                          ))}
-                        </select>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <select
+                            value={p.model}
+                            onChange={(e) => {
+                              const updated = [...settings.ai.providers];
+                              updated[idx] = { ...updated[idx], model: e.target.value };
+                              setSettings({ ...settings, ai: { ...settings.ai, providers: updated } });
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: 'var(--space-1) var(--space-2)',
+                              fontSize: 'var(--text-xs)',
+                              fontFamily: 'var(--font-mono)',
+                              border: '1px solid var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-surface)',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            {!modelsList.some((m) => m.id === p.model) && p.model && (
+                              <option value={p.model}>{p.model} (Tuỳ chỉnh hiện tại)</option>
+                            )}
+                            {modelsList.map((m) => (
+                              <option key={m.id} value={m.id}>
+                                {m.name || m.id}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="text"
+                            value={p.model}
+                            placeholder="Hoặc nhập tên model khác tuỳ ý..."
+                            onChange={(e) => {
+                              const updated = [...settings.ai.providers];
+                              updated[idx] = { ...updated[idx], model: e.target.value };
+                              setSettings({ ...settings, ai: { ...settings.ai, providers: updated } });
+                            }}
+                            style={{
+                              width: '100%',
+                              padding: '3px var(--space-2)',
+                              fontSize: '11px',
+                              fontFamily: 'var(--font-mono)',
+                              border: '1px dashed var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-card)',
+                              color: 'var(--text-primary)',
+                            }}
+                            title="Có thể tự gõ tên model khác nếu không có trong danh sách trên"
+                          />
+                        </div>
                       ) : (
                         <input
                           type="text"
                           value={p.model}
-                          placeholder="Nhập tên model vision..."
+                          placeholder="Nhập tên model vision (vd: gpt-4o-mini, gemini-2.5-flash)..."
                           onChange={(e) => {
                             const updated = [...settings.ai.providers];
                             updated[idx] = { ...updated[idx], model: e.target.value };
@@ -932,9 +1007,13 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                         borderRadius: 'var(--radius-sm)',
                         cursor: 'pointer',
                         color: 'var(--text-primary)',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
                       }}
                     >
-                      {testState?.loading ? 'Đang gửi ảnh kiểm tra...' : '⚡ Thử đọc ảnh (Vision test)'}
+                      <ZapIcon size={13} />
+                      <span>{testState?.loading ? 'Đang gửi ảnh kiểm tra...' : 'Thử đọc ảnh (Vision test)'}</span>
                     </button>
                     {testState && !testState.loading && (
                       <span
@@ -977,23 +1056,26 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
             <button
               type="button"
               onClick={() => applyVotingPreset('strict')}
-              style={{ padding: '2px 8px', fontSize: '11px', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', cursor: 'pointer', color: 'var(--text-primary)' }}
+              style={{ padding: '4px 10px', fontSize: '11px', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', cursor: 'pointer', color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
             >
-              🛡️ Chặt chẽ
+              <ShieldIcon size={12} />
+              <span>Chặt chẽ</span>
             </button>
             <button
               type="button"
               onClick={() => applyVotingPreset('balanced')}
-              style={{ padding: '2px 8px', fontSize: '11px', border: '1px solid var(--primary)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--primary-subtle)', color: 'var(--primary)', fontWeight: 600, cursor: 'pointer' }}
+              style={{ padding: '4px 10px', fontSize: '11px', border: '1px solid var(--primary)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--primary-subtle)', color: 'var(--primary)', fontWeight: 600, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
             >
-              ⚖️ Cân bằng (Chuẩn)
+              <ScaleIcon size={12} />
+              <span>Cân bằng (Chuẩn)</span>
             </button>
             <button
               type="button"
               onClick={() => applyVotingPreset('relaxed')}
-              style={{ padding: '2px 8px', fontSize: '11px', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', cursor: 'pointer', color: 'var(--text-primary)' }}
+              style={{ padding: '4px 10px', fontSize: '11px', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', cursor: 'pointer', color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
             >
-              🍃 Thông thoáng
+              <LeafIcon size={12} />
+              <span>Thông thoáng</span>
             </button>
           </div>
         </div>
@@ -1124,8 +1206,9 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
               style={{ width: '100%', padding: 'var(--space-2)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
             />
             {settings.crawl.concurrency > 1 ? (
-              <span style={{ fontSize: '11px', color: 'var(--status-weak-text)', fontWeight: 600, display: 'block', marginTop: '4px' }}>
-                ⚠️ Tăng lên 2 luồng có thể làm tăng nguy cơ bị FUOverflow / Cloudflare chặn tạm thời. Nên duy trì 1 luồng.
+              <span style={{ fontSize: '11px', color: 'var(--status-weak-text)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
+                <WarningIcon size={14} />
+                <span>Tăng lên 2 luồng có thể làm tăng nguy cơ bị FUOverflow / Cloudflare chặn tạm thời. Nên duy trì 1 luồng.</span>
               </span>
             ) : (
               <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>Mặc định 1 luồng an toàn tuyệt đối.</span>
@@ -1166,7 +1249,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <span style={{ fontSize: '18px' }}>⚠️</span>
+            <WarningIcon size={18} style={{ color: 'var(--status-weak-text)' }} />
             <span style={{ fontSize: 'var(--text-sm)', fontWeight: 600, color: 'var(--text-primary)' }}>
               Bạn có thay đổi cài đặt chưa lưu!
             </span>

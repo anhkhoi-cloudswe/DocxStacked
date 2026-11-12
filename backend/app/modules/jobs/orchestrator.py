@@ -1,15 +1,16 @@
 import asyncio
+import hashlib
 import json
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-from backend.app.db.models import Answer, ExamType, Job, JobStatus, Subject
+from backend.app.db.models import Answer, Comment, ExamType, Job, JobStatus, Subject
 from backend.app.db.session import async_session_factory
 from backend.app.modules.analysis.ai_check import get_ai_check_service
 from backend.app.modules.analysis.voting import tally_votes
@@ -24,6 +25,26 @@ from backend.app.storage.local import LocalStorage
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+def compute_doc_settings_hash(config_snapshot: Dict[str, Any]) -> str:
+    """
+    Compute a deterministically sorted hash of settings that affect the generated Word doc:
+    answer_format, image_width_cm, zoom_percent, highlight_low_confidence, show_question_number,
+    show_separator_line, ai_enabled.
+    """
+    export_cfg = config_snapshot.get("export", {})
+    ai_cfg = config_snapshot.get("ai", {})
+    key_data = {
+        "answer_format": export_cfg.get("answer_format", "letter_keyword"),
+        "image_width_cm": float(export_cfg.get("image_width_cm", 16.51)),
+        "image_zoom_percent": int(export_cfg.get("image_zoom_percent", 100)),
+        "highlight_low_confidence": bool(export_cfg.get("highlight_low_confidence", True)),
+        "show_question_number": bool(export_cfg.get("show_question_number", True)),
+        "show_separator_line": bool(export_cfg.get("show_separator_line", True)),
+        "ai_enabled": bool(ai_cfg.get("enabled", True)),
+    }
+    return hashlib.sha256(json.dumps(key_data, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
 
 class JobOrchestrator:
@@ -78,6 +99,7 @@ class JobOrchestrator:
         subject_code: str,
         exam_type: ExamType = ExamType.FE,
         limit: int = 4,
+        force_refresh: bool = False,
     ) -> Job:
         """Create and launch a background exam compilation job."""
         job_uuid = str(uuid.uuid4())
@@ -97,6 +119,7 @@ class JobOrchestrator:
                     "subject_code": subject_code.upper(),
                     "exam_type": exam_type.value,
                     "limit": limit,
+                    "force_refresh": force_refresh,
                 },
             )
             db.add(job)
@@ -105,7 +128,7 @@ class JobOrchestrator:
 
         self._event_history[job_uuid] = []
         task = asyncio.create_task(
-            self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, limit)
+            self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, limit, force_refresh)
         )
         self._running_tasks[job_uuid] = task
         return job
@@ -154,8 +177,9 @@ class JobOrchestrator:
             "progress": job.progress_percentage or 10,
         })
 
+        force_ref = bool(job.details.get("force_refresh", False)) if job.details else False
         task = asyncio.create_task(
-            self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count)
+            self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count, force_ref)
         )
         self._running_tasks[job.job_id] = task
         return job
@@ -166,9 +190,10 @@ class JobOrchestrator:
         subject_code: str,
         exam_type: ExamType,
         limit: int,
+        force_refresh: bool = False,
     ):
         """Execute the compilation pipeline step-by-step."""
-        logger.info(f"Starting job pipeline {job_id} for {subject_code} ({exam_type.value}, limit={limit})...")
+        logger.info(f"Starting job pipeline {job_id} for {subject_code} ({exam_type.value}, limit={limit}, force_refresh={force_refresh})...")
         created_files: List[Dict[str, Any]] = []
 
         async with async_session_factory() as db:
@@ -300,22 +325,47 @@ class JobOrchestrator:
                 for exam_idx, exam in enumerate(exams, start=1):
                     exam_progress_base = 35 + int(((exam_idx - 1) / total_exams) * 55)
 
-                    # Redis-like Fast Document Cache Check (Deduplication)
+                    # Cache Check with Settings Hash & Comment Freshness
+                    current_settings_hash = compute_doc_settings_hash(job_cfg)
                     cached_filename = format_exam_docx_filename(subject_code, exam)
                     cached_path = settings.STORAGE_DIR / "output" / subject_code / cached_filename
-                    has_cached_doc = (
-                        cached_path.exists()
-                        and cached_path.stat().st_size > 50000
-                        and len(exam.questions) >= max(exam.question_count or 10, 10)
-                        and all(q.local_image_path and Path(q.local_image_path).exists() for q in exam.questions)
-                    )
+                    meta_path = cached_path.with_name(cached_path.name + ".meta.json")
+
+                    has_cached_doc = False
+                    cached_time_str = "trước đó"
+
+                    # Calculate latest comment time for questions in this exam
+                    latest_comment_ts = 0.0
+                    if exam.questions:
+                        q_ids = [q.id for q in exam.questions]
+                        c_res = await db.execute(
+                            select(func.max(Comment.created_at)).where(Comment.question_id.in_(q_ids))
+                        )
+                        max_created = c_res.scalar()
+                        if max_created:
+                            latest_comment_ts = max_created.timestamp()
+
+                    if not force_refresh and cached_path.exists() and cached_path.stat().st_size > 5000:
+                        if meta_path.exists():
+                            try:
+                                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                                if meta.get("settings_hash") == current_settings_hash:
+                                    meta_created_ts = meta.get("created_at_epoch", cached_path.stat().st_mtime)
+                                    if meta_created_ts >= latest_comment_ts:
+                                        has_cached_doc = True
+                                        cached_time_str = meta.get("created_at_formatted") or datetime.fromtimestamp(cached_path.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
+                            except Exception:
+                                pass
+                        elif len(exam.questions) >= max(exam.question_count or 10, 10) and all(q.local_image_path and Path(q.local_image_path).exists() for q in exam.questions):
+                            has_cached_doc = True
+                            cached_time_str = datetime.fromtimestamp(cached_path.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
 
                     if has_cached_doc:
                         logger.info(f"[CACHE HIT] Reusing existing document for {exam.title}: {cached_path.name}")
                         self._broadcast(job_id, {
                             "type": "log",
                             "step": "cache_hit",
-                            "message": f"⚡ [CACHE HIT] Đề '{exam.title}' đã có sẵn trong kho ({len(exam.questions)} câu). Lấy ngay không cần cào lại!",
+                            "message": f"Tạo từ bộ nhớ đệm lúc {cached_time_str} ({exam.title})",
                             "progress": min(exam_progress_base + int(50 / total_exams), 95),
                         })
                         rel_output = str(cached_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
@@ -326,6 +376,8 @@ class JobOrchestrator:
                             "questions_count": len(exam.questions),
                             "size_bytes": cached_path.stat().st_size,
                             "cached": True,
+                            "cached_at": cached_time_str,
+                            "can_rebuild": True,
                         }
                         if not any(f.get("filename") == cached_path.name for f in created_files):
                             created_files.append(file_info)
@@ -343,7 +395,7 @@ class JobOrchestrator:
                         self._broadcast(job_id, {
                             "type": "exam_completed",
                             "step": "cache_hit",
-                            "message": f"⚡ Đã hoàn tất nhanh từ kho lưu trữ: {exam.title}",
+                            "message": f"Đã lấy từ bộ nhớ đệm lúc {cached_time_str}: {exam.title}",
                             "completed_file": file_info,
                             "files": list(created_files),
                         })
@@ -488,7 +540,24 @@ class JobOrchestrator:
                         exam=exam,
                         questions=questions,
                         answer_format=ans_fmt,
+                        highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
+                        add_divider=job_cfg.get("export", {}).get("show_separator_line", True),
+                        add_question_number=job_cfg.get("export", {}).get("show_question_number", True),
                     )
+
+                    # Save sidecar metadata for cache invalidation
+                    now_dt = datetime.now()
+                    meta_data = {
+                        "settings_hash": current_settings_hash,
+                        "created_at": now_dt.isoformat(),
+                        "created_at_epoch": now_dt.timestamp(),
+                        "created_at_formatted": now_dt.strftime("%H:%M %d/%m/%Y"),
+                        "latest_comment_timestamp": latest_comment_ts,
+                        "questions_count": len(questions),
+                        "exam_title": exam.title,
+                    }
+                    meta_path = docx_path.with_name(docx_path.name + ".meta.json")
+                    meta_path.write_text(json.dumps(meta_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
                     rel_output = str(docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
                     file_info = {
@@ -497,6 +566,9 @@ class JobOrchestrator:
                         "exam_title": exam.title,
                         "questions_count": len(questions),
                         "size_bytes": docx_path.stat().st_size if docx_path.exists() else 0,
+                        "cached": False,
+                        "cached_at": now_dt.strftime("%H:%M %d/%m/%Y"),
+                        "can_rebuild": True,
                     }
                     if not any(f.get("filename") == docx_path.name for f in created_files):
                         created_files.append(file_info)
@@ -536,6 +608,9 @@ class JobOrchestrator:
                         subject_code=subject_code,
                         exams_data=all_exam_question_pairs,
                         answer_format=ans_fmt,
+                        highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
+                        add_divider=job_cfg.get("export", {}).get("show_separator_line", True),
+                        add_question_number=job_cfg.get("export", {}).get("show_question_number", True),
                     )
                     rel_merged = str(merged_docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
                     created_files.append({

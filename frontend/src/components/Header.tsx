@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { BookIcon, LogoutIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon } from './icons';
 
 interface HeaderProps {
   onNavigateSettings?: () => void;
@@ -130,7 +131,7 @@ export const Header: React.FC<HeaderProps> = ({
                 minHeight: '34px',
               }}
             >
-              <span aria-hidden="true">📚</span>
+              <BookIcon size={15} />
               <span>Tài liệu đã cào</span>
             </button>
           )}
@@ -155,7 +156,7 @@ export const Header: React.FC<HeaderProps> = ({
                 minHeight: '34px',
               }}
             >
-              <span aria-hidden="true">⚙️</span>
+              <SettingsIcon size={15} />
               <span>Cài đặt</span>
             </button>
           )}
@@ -172,9 +173,12 @@ export const Header: React.FC<HeaderProps> = ({
                   borderRadius: 'var(--radius-sm)',
                   border: '1px solid var(--border-subtle)',
                   whiteSpace: 'nowrap',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
                 }}
               >
-                👤 {authStatus.username || 'Thành viên'}
+                <UserIcon size={13} /> {authStatus.username || 'Thành viên'}
               </span>
               <button
                 type="button"
@@ -196,7 +200,7 @@ export const Header: React.FC<HeaderProps> = ({
                 }}
                 title="Đăng xuất khỏi tài khoản FUOverflow"
               >
-                <span aria-hidden="true">🚪</span>
+                <LogoutIcon size={14} />
                 <span>Thoát</span>
               </button>
             </div>
@@ -221,7 +225,7 @@ export const Header: React.FC<HeaderProps> = ({
               minHeight: '34px',
             }}
           >
-            <span aria-hidden="true">{isDark ? '☀️' : '🌙'}</span>
+            {isDark ? <SunIcon size={15} /> : <MoonIcon size={15} />}
             <span className="desktop-only">{isDark ? 'Sáng' : 'Tối'}</span>
           </button>
         </nav>

@@ -146,16 +146,35 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
 
 @router.delete("/documents")
 async def delete_document(file: str = Query(..., description="File path or filename to delete")):
-    """Delete an exported document safely."""
+    """Delete an exported document safely, strictly restricted to output directory."""
     try:
-        resolved = (settings.BASE_DIR / file).resolve()
-        out_resolved = settings.STORAGE_DIR.resolve()
-        # Verify it is inside storage directory (specifically output/)
-        if not str(resolved).startswith(str(out_resolved)):
-            raise HTTPException(status_code=403, detail="Access denied: invalid file path")
+        out_resolved = (settings.STORAGE_DIR / "output").resolve()
+        target_str = file.replace("\\", "/")
+
+        if target_str.startswith("data/") or ".." in target_str or target_str.startswith("/"):
+            resolved = (settings.BASE_DIR / target_str.lstrip("/")).resolve()
+        else:
+            resolved = (out_resolved / file).resolve()
+
+        # Verify it is strictly inside output directory
+        try:
+            is_inside = resolved.is_relative_to(out_resolved) and resolved != out_resolved
+        except AttributeError:
+            is_inside = str(resolved).startswith(str(out_resolved)) and resolved != out_resolved
+
+        if not is_inside:
+            logger.warning(f"Attempted delete outside output directory: {file}")
+            raise HTTPException(status_code=403, detail="Access denied: file must be inside output directory")
+
         if not resolved.exists() or not resolved.is_file():
             raise HTTPException(status_code=404, detail="File not found")
+
         resolved.unlink()
+        # Also delete sidecar metadata if it exists
+        meta_p = resolved.with_name(resolved.name + ".meta.json")
+        if meta_p.exists():
+            meta_p.unlink()
+
         logger.info(f"Deleted user document: {resolved}")
         return {"success": True, "message": f"Đã xóa thành công file {resolved.name}"}
     except HTTPException:
