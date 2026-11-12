@@ -19,8 +19,14 @@ settings = get_settings()
 def _fetch_url_html(url: str) -> str:
     """Synchronous fetcher executed in worker thread to prevent Playwright Sync API in asyncio errors."""
     bm = get_browser_manager()
-    ctx = bm.start_context(headless=True)
-    resp = ctx.request.get(url, timeout=30000)
+    try:
+        ctx = bm.start_context(headless=True)
+        resp = ctx.request.get(url, timeout=30000)
+    except Exception as e:
+        logger.warning(f"Exam url fetch error ({e}). Retrying with fresh browser context...")
+        bm.close()
+        ctx = bm.start_context(headless=True)
+        resp = ctx.request.get(url, timeout=30000)
     return resp.text() if resp.status == 200 else ""
 
 

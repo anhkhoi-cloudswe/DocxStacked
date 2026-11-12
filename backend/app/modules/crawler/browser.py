@@ -69,7 +69,13 @@ class BrowserManager:
     def start_context(self, headless: Optional[bool] = None) -> BrowserContext:
         """Launch persistent context."""
         if self._context is not None:
-            return self._context
+            try:
+                # Check if context is alive and responsive
+                _ = self._context.pages
+                return self._context
+            except Exception as e:
+                logger.warning(f"Existing context is closed or disconnected ({e}). Cleaning up...")
+                self.close()
 
         is_headless = self.headless if headless is None else headless
         logger.info(f"Launching persistent browser context (headless={is_headless}, channel={self.channel})...")

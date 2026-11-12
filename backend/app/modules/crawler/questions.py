@@ -21,8 +21,15 @@ settings = get_settings()
 def _fetch_thread_html_sync(url: str) -> Tuple[str, Optional[str]]:
     """Fetch HTML of a thread page in worker thread. Returns (html, status)."""
     bm = get_browser_manager()
-    ctx = bm.start_context(headless=True)
-    resp = ctx.request.get(url, timeout=30000)
+    try:
+        ctx = bm.start_context(headless=True)
+        resp = ctx.request.get(url, timeout=30000)
+    except Exception as e:
+        logger.warning(f"Thread fetch error ({e}). Retrying with fresh browser context...")
+        bm.close()
+        ctx = bm.start_context(headless=True)
+        resp = ctx.request.get(url, timeout=30000)
+
     if resp.status == 403:
         logger.warning(f"Thread page returned 403 Forbidden: {url}")
         return "", "403_forbidden"
@@ -48,7 +55,12 @@ def _download_image_sync(
     Returns (success, status_code).
     """
     bm = get_browser_manager()
-    ctx = bm.start_context(headless=True)
+    try:
+        ctx = bm.start_context(headless=True)
+        _ = ctx.pages
+    except Exception:
+        bm.close()
+        ctx = bm.start_context(headless=True)
 
     # 1. Option A: Direct download full-res
     if media_url:

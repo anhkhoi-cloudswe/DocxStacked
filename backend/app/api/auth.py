@@ -425,6 +425,12 @@ async def logout():
         except Exception as e:
             logger.warning(f"Could not delete {f.name}: {e}")
 
+    try:
+        from backend.app.modules.crawler.browser import get_browser_manager
+        get_browser_manager().close()
+    except Exception as e:
+        logger.warning(f"Error closing browser during logout: {e}")
+
     logger.info("User logged out successfully.")
     return {"success": True, "message": "Đã đăng xuất thành công."}
 
@@ -530,26 +536,15 @@ async def login_with_account(req: AccountLoginRequest):
         except Exception as db_err:
             logger.warning(f"Could not upsert user to database: {db_err}")
 
+        # Ensure browser manager closes any existing context to pick up fresh cookies
+        try:
+            from backend.app.modules.crawler.browser import get_browser_manager
+            get_browser_manager().close()
+        except Exception:
+            pass
+
     return LoginTriggerResponse(
         success=success,
         logged_in=success,
         message=message,
     )
-
-
-@router.post("/logout")
-async def logout():
-    """Logout current user by removing saved cookies and user session files."""
-    cookies_file = settings.DATA_DIR / "auth" / "cookies.json"
-    user_file = settings.DATA_DIR / "auth" / "current_user.json"
-    session_file = settings.DATA_DIR / "auth" / "login_session.json"
-
-    for f in (cookies_file, user_file, session_file):
-        try:
-            if f.exists():
-                f.unlink()
-        except Exception as e:
-            logger.warning(f"Could not delete {f.name}: {e}")
-
-    logger.info("User logged out successfully.")
-    return {"success": True, "message": "Đã đăng xuất thành công."}

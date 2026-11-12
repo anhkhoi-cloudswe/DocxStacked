@@ -24,8 +24,14 @@ def _fetch_media_html_sync(url: str) -> Tuple[str, Optional[str]]:
     Returns (html_text, status_reason).
     """
     bm = get_browser_manager()
-    ctx = bm.start_context(headless=True)
-    resp = ctx.request.get(url, timeout=25000)
+    try:
+        ctx = bm.start_context(headless=True)
+        resp = ctx.request.get(url, timeout=25000)
+    except Exception as e:
+        logger.warning(f"Media fetch error ({e}). Retrying with fresh browser context...")
+        bm.close()
+        ctx = bm.start_context(headless=True)
+        resp = ctx.request.get(url, timeout=25000)
     if resp.status == 403:
         logger.warning(f"Media page returned 403 Forbidden: {url}")
         return "", "403_forbidden"
