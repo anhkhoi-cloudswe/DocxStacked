@@ -1,19 +1,135 @@
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from typing import List, Optional
+import re
+from typing import List, Optional, Tuple
 import zipfile
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
+from backend.app.db.models import Job
+from backend.app.db.session import get_db
 
 logger = get_logger(__name__)
 settings = get_settings()
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
+
+
+def parse_subject_and_category(
+    filename: str, fallback_subject: str = "EXAMS", fallback_type: str = "FE"
+) -> Tuple[str, str]:
+    """
+    Classify a document into its Subject and Category:
+    - Subject: e.g. PRM392, CSD202, AIL303M
+    - Category: 'FE' (FE & RE are grouped together) vs 'PE'
+    """
+    base_name = Path(filename).name
+    upper_name = base_name.upper()
+
+    # Determine category: PE is separate; FE and RE (retake) are grouped together as FE
+    if re.search(r'\bPE\b', upper_name) or "- PE" in upper_name or "_PE" in upper_name:
+        category = "PE"
+    else:
+        category = "FE"
+
+    # Match subject prefix, e.g. PRM392, CSD202, AIL303M
+    match = re.match(r'^([A-Za-z]{2,5}\d{3}[A-Za-z]?)', base_name.strip())
+    if match:
+        subject = match.group(1).upper()
+    else:
+        parts = [p.strip() for p in base_name.split("-") if p.strip()]
+        if parts and len(parts[0]) >= 3 and any(char.isdigit() for char in parts[0]):
+            subject = parts[0].upper()
+        else:
+            subject = (fallback_subject or "EXAMS").upper()
+
+    return subject, category
+
+
+async def build_folder_zip_response(
+    job_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    exam_type: Optional[str] = None,
+    paths: Optional[List[str]] = None,
+    db: Optional[AsyncSession] = None,
+) -> Response:
+    output_dir = settings.OUTPUT_DIR
+    target_paths: List[Path] = []
+    fallback_sub = subject or "EXAMS"
+    fallback_cat = exam_type or "FE"
+
+    if job_id and db:
+        stmt = select(Job).where(Job.job_id == job_id)
+        res = await db.execute(stmt)
+        job = res.scalar_one_or_none()
+        if job:
+            if not subject:
+                fallback_sub = job.subject_code or fallback_sub
+            if not exam_type:
+                fallback_cat = job.exam_type or fallback_cat
+            job_files = (job.details or {}).get("files", [])
+            for jf in job_files:
+                p_str = jf.get("path")
+                if p_str:
+                    clean_p = p_str.replace("\\", "/").lstrip("/")
+                    full_p = (settings.BASE_DIR / clean_p).resolve()
+                    if full_p.exists() and full_p.is_file() and full_p.is_relative_to(output_dir.resolve()):
+                        if full_p not in target_paths:
+                            target_paths.append(full_p)
+
+    if paths:
+        for p_str in paths:
+            clean_p = p_str.replace("\\", "/").lstrip("/")
+            full_p = (settings.BASE_DIR / clean_p).resolve()
+            if full_p.exists() and full_p.is_file() and full_p.is_relative_to(output_dir.resolve()):
+                if full_p not in target_paths:
+                    target_paths.append(full_p)
+
+    if not target_paths:
+        if subject:
+            sub_dir = output_dir / subject
+            if sub_dir.exists():
+                target_paths = [p for p in sub_dir.glob("*.docx") if p.is_file()] + [p for p in sub_dir.glob("*.zip") if p.is_file()]
+        else:
+            target_paths = [p for p in output_dir.rglob("*.docx") if p.is_file()]
+
+    if not target_paths:
+        raise HTTPException(status_code=404, detail="Không tìm thấy file nào để nén tải về.")
+
+    # Build zip archive with folder structure
+    buf = BytesIO()
+    folder_names: List[str] = []
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in target_paths:
+            sub, cat = parse_subject_and_category(f.name, fallback_subject=fallback_sub, fallback_type=fallback_cat)
+            folder_name = f"{sub}_{cat}"
+            folder_names.append(folder_name)
+            arcname = f"{folder_name}/{f.name}"
+            zf.write(f, arcname=arcname)
+
+    buf.seek(0)
+    zip_bytes = buf.getvalue()
+
+    unique_folders = sorted(list(set(folder_names)))
+    if len(unique_folders) == 1:
+        zip_filename = f"{unique_folders[0]}.zip"
+    elif 1 < len(unique_folders) <= 3:
+        zip_filename = f"{'_'.join(unique_folders)}.zip"
+    else:
+        zip_filename = f"DocxStacked_Folders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
+    )
 
 
 class ExportFileOut(BaseModel):
@@ -61,6 +177,20 @@ async def list_exported_files():
             )
 
     return files
+
+
+@router.get("/download-folder")
+async def download_folder_endpoint(
+    job_id: Optional[str] = Query(None, description="Optional job ID to download files for"),
+    subject: Optional[str] = Query(None, description="Optional subject code to download files for"),
+    type: Optional[str] = Query(None, description="Optional exam type (FE/PE)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Download all compiled documents organized into structured folder(s) inside a zip.
+    FE and RE files are grouped into {SUBJECT}_FE/, and PE into {SUBJECT}_PE/.
+    """
+    return await build_folder_zip_response(job_id=job_id, subject=subject, exam_type=type, db=db)
 
 
 @router.get("/bundle.zip")

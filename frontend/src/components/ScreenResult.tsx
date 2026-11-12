@@ -1,15 +1,24 @@
 import React from 'react';
 import type { JobDetails, JobFile } from '../types';
+import { FolderIcon } from './icons';
 
 interface Props {
+  jobId?: string;
   files: JobFile[];
   details: JobDetails;
   onRestart: () => void;
 }
 
-export const ScreenResult: React.FC<Props> = ({ files, details, onRestart }) => {
+export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart }) => {
   const handleDownload = (path: string) => {
     window.location.href = `/api/exports/download?path=${encodeURIComponent(path)}`;
+  };
+
+  const handleDownloadFolder = () => {
+    const url = jobId
+      ? `/api/jobs/${encodeURIComponent(jobId)}/download-folder`
+      : `/api/exports/download-folder?subject=${encodeURIComponent(details.subject_code || '')}&type=${encodeURIComponent(details.exam_type || '')}`;
+    window.location.href = url;
   };
 
   const formatFileSize = (bytes: number): string => {
@@ -85,19 +94,56 @@ export const ScreenResult: React.FC<Props> = ({ files, details, onRestart }) => 
           </div>
           <ul style={{ paddingLeft: 'var(--space-4)', color: 'var(--text-secondary)' }}>
             <li>Tất cả hình ảnh câu hỏi được tải độ phân giải gốc full-res từ CDN/Media của FUOverflow.</li>
-            <li>Đã căn chỉnh chiều rộng 16.0 cm chuẩn trang in A4 trong Word.</li>
+            <li>Đã căn chỉnh kích thước lề chuẩn khổ Letter (8.5 x 11 inch) trong Word.</li>
             <li>Đã phân tích bình luận, tổng hợp ý kiến và xác định đáp án có độ tin cậy kèm chú thích chi tiết.</li>
           </ul>
         </div>
 
         {/* Files List Table */}
         <div style={{ marginBottom: 'var(--space-6)' }}>
-          <h3
-            className="serif-title"
-            style={{ fontSize: 'var(--text-lg)', marginBottom: 'var(--space-3)' }}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 'var(--space-3)',
+              flexWrap: 'wrap',
+              gap: 'var(--space-2)',
+            }}
           >
-            Danh sách file Word đã tạo ({files.length} file)
-          </h3>
+            <h3
+              className="serif-title"
+              style={{ fontSize: 'var(--text-lg)', margin: 0 }}
+            >
+              Danh sách file Word đã tạo ({files.length} file)
+            </h3>
+
+            {files.length > 0 && (
+              <button
+                type="button"
+                onClick={handleDownloadFolder}
+                className="btn-primary"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: 'var(--text-xs)',
+                  padding: 'var(--space-2) var(--space-4)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  backgroundColor: 'var(--primary)',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  boxShadow: 'var(--shadow-sm)',
+                }}
+                title="Tải toàn bộ file Word được gom thành thư mục phân loại theo môn và thể loại"
+              >
+                <FolderIcon size={14} />
+                <span>Tải Folder</span>
+              </button>
+            )}
+          </div>
 
           <div
             style={{

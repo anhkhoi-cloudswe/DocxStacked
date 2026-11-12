@@ -268,3 +268,13 @@ async def stream_job_events(job_id: str, db: AsyncSession = Depends(get_db)):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/{job_id}/download-folder")
+async def download_job_folder(job_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Download all compiled documents for a job organized into structured folder(s) in a zip archive.
+    Groups FE and RE together under {SUBJECT}_FE/, and PE under {SUBJECT}_PE/.
+    """
+    from backend.app.api.exports import build_folder_zip_response
+    return await build_folder_zip_response(job_id=job_id, db=db)

@@ -218,6 +218,7 @@ export const App: React.FC = () => {
 
           {currentScreen === 'result' && completedDetails && (
             <ScreenResult
+              jobId={jobId || undefined}
               files={completedFiles}
               details={completedDetails}
               onRestart={handleRestart}
