@@ -1,0 +1,38 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Data, Profiles & Raw Fixtures
+data/
+data/eval/
+browser_profile/
+*.raw.*
+*_raw.*
+raw/
+fixtures/raw/
+*.log
+
+# Node & Frontend
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.env
+.env.*
+!.env.example
+*.png
+*.zip
+test_*.docx
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+
+

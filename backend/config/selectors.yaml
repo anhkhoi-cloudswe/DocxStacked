@@ -1,0 +1,71 @@
+# selectors.yaml - Configuration for FUOverflow DOM selectors, URL patterns, and regex
+base_url: "https://fuoverflow.com"
+
+endpoints:
+  home: "/"
+  login: "/login/"
+  subjects_category: "/categories/subjects/"
+  subject_forum_template: "/forums/{code}/"
+  thread_template: "/threads/{slug}.{id}/"
+  media_template: "/media/{slug}.{id}/"
+
+auth:
+  # XenForo sets data-logged-in attribute on the <html> tag
+  logged_in_selector: "html[data-logged-in='true']"
+  user_menu_selector: ".p-navgroup-link--user, .p-account, .avatar"
+  login_form: "form[action*='/login/login']"
+  username_input: "input[name='login']"
+  password_input: "input[name='password']"
+  google_button: "a[href*='/register/connected-accounts/google/']"
+
+subjects:
+  # Forum node selectors on homepage and category pages
+  container: ".block-container .block-body, .node-list"
+  node_item: ".node--forum, .node-body"
+  node_title_link: ".node-title a"
+  code_regex: "([A-Z]{3}\\d{3}[a-z]?)"
+
+exams:
+  # Thread list inside subject forum (e.g. /forums/CSD202/)
+  container: ".structItemContainer"
+  item: ".structItem--thread"
+  title_link: ".structItem-title a[href^='/threads/']:not([href$='/latest'])"
+  prefix_badge: ".label"
+  fe_label: "Đề Thi FE"
+  pe_label: "Đề Thi PE"
+  date: ".structItem-startDate time, .structItem-cell--main time"
+  pagination_next: ".pageNav-jump--next"
+
+questions:
+  # Questions in thread view are attachments in the first message
+  container: "section.message-attachments ul.attachmentList"
+  item: "li.file.file--linked"
+  file_name: ".file-name"
+  image: "a.file-preview img, img[src*='data.fuoverflow.com/attachments/']"
+  image_thumb: "a.file-preview img, img[src*='data.fuoverflow.com/attachments/']"
+  preview_link: "a.file-preview"
+  media_link_attribute: "data-lb-sidebar-href"
+  media_link_selector: "a[href^='/media/']"
+  # Pattern to extract question index and media_id from Q{n}.webp
+  media_id_regex: "/media/[^.]+\\.(\\d+)/"
+
+media_detail:
+  # High-res image in media view (/media/{slug}.{id}/)
+  full_image: ".js-mediaImage, img[src*='/full?fuo_h='], .xfmgMediaView-image img"
+  image_src_attribute: "src"
+
+comments:
+  # Comments under XenForo Media Gallery item (/media/...)
+  container: ".message-responses, .xfmgCommentList, .block-body, .commentsList"
+  item: ".message--comment, .message--mediaComment, .js-comment"
+  author: ".message-name, .comment-user, .username, .comment-author"
+  text: ".message-body .bbWrapper, .message-body, .comment-content"
+  upvotes: ".reactionsBar.is-active, .reactionsBar-link, .reactionsBar"
+  reaction_count_link: ".reactionsBar-link"
+  reaction_button: ".reaction[data-reaction-id]"
+  timestamp: "time[datetime], time, .u-dt"
+  is_reply: ".comment--reply, .message--response, .bbCodeBlock--quote"
+  quote_block: ".bbCodeBlock--quote, blockquote"
+  quote_author: ".bbCodeBlock-title a, .bbCodeBlock-title"
+  reply_button: "a.actionBar-action--reply, a[href*='comment?quote=']"
+  load_more: ".pageNav-jump--next, .pageNav-page, .js-loadMore"

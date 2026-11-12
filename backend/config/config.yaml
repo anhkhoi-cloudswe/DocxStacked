@@ -1,0 +1,44 @@
+exam:
+  default_count: 4        # số đề mặc định, người dùng chỉnh trên UI
+  min_count: 1
+  order: newest_first
+crawl:
+  delay_seconds: [1.5, 4.0]
+  concurrency: 1
+  headless: false          # để false giúp qua bot-detection và đăng nhập
+  max_retries: 3
+analysis:
+  use_ai: true               # công tắc AI kiểm tra đáp án và trích xuất từ khoá
+  max_ai_calls: 300          # trần số lần gọi AI mỗi job
+  vote_weight: log_upvotes
+  multi_choice_threshold: 0.5
+  confident_min_ratio: 0.7
+  confident_min_comments: 2
+  use_llm_for_ambiguous: false
+  dedupe: true
+  dedupe_hamming: 6
+ai:
+  enabled: true              # bật/tắt AI vision
+  ensemble: false            # mặc định false: nếu true thì 2 provider cùng bỏ phiếu
+  max_ai_calls: 300          # trần số lần gọi AI mỗi job
+  backoff_seconds: 2.0       # thời gian chờ cơ bản khi gặp 429 hoặc lỗi mạng (thử lại với backoff)
+  max_retries: 2             # số lần thử lại tối đa cho mỗi provider
+  providers:
+    - name: anthropic
+      model: claude-3-5-haiku-20241022
+      api_key_env: ANTHROPIC_API_KEY
+    - name: gemini
+      model: gemini-2.5-flash
+      api_key_env: GEMINI_API_KEY
+    - name: openai_compatible
+      model: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+      base_url: https://api.openai.com/v1
+export:
+  formats: [docx]          # thêm pdf, json nếu cần
+  image_width_cm: 16.51
+  image_zoom_percent: 100  # độ phóng ảnh (%) mặc định 100%
+  highlight_low_confidence: true
+  answer_format: letter_keyword
+  merge: false
+
