@@ -5,6 +5,7 @@ import {
   CheckIcon,
   CrossIcon,
   DownloadIcon,
+  FolderIcon,
   RefreshIcon,
   TagIcon,
   TrashIcon,
@@ -109,6 +110,14 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
     }
   };
 
+  const handleDownloadFolder = (subjectCode?: string) => {
+    const subj = subjectCode || (selectedSubject !== 'ALL' ? selectedSubject : '');
+    const url = subj
+      ? `/api/exports/download-folder?subject=${encodeURIComponent(subj)}`
+      : `/api/exports/download-folder`;
+    window.location.href = url;
+  };
+
   const filteredDocs = documents.filter((d) => {
     if (selectedSubject !== 'ALL' && d.subject_code !== selectedSubject) {
       return false;
@@ -198,7 +207,7 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-3)', alignItems: 'center', flexWrap: 'wrap' }}>
           <div
             style={{
               padding: 'var(--space-2) var(--space-4)',
@@ -213,6 +222,37 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
             </div>
             <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>File Word đã tạo</div>
           </div>
+
+          {documents.length > 0 && (
+            <button
+              type="button"
+              onClick={() => handleDownloadFolder()}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: 'var(--text-sm)',
+                padding: 'var(--space-2) var(--space-4)',
+                minHeight: '38px',
+                fontWeight: 600,
+                backgroundColor: '#D97706',
+                color: '#ffffff',
+                border: '1px solid #B45309',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+              title={
+                selectedSubject !== 'ALL'
+                  ? `Tải toàn bộ file Word môn ${selectedSubject} gom thành folder zip`
+                  : 'Tải toàn bộ file Word trong kho gom theo từng môn và thể loại thi'
+              }
+            >
+              <FolderIcon size={14} />
+              <span>Tải Folder {selectedSubject !== 'ALL' ? `(${selectedSubject})` : ''}</span>
+            </button>
+          )}
+
           <button
             onClick={onBack}
             className="btn-secondary"
@@ -376,13 +416,40 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
             }}
           />
         </div>
-        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-          {selectedSubject !== 'ALL' && (
-            <span style={{ marginRight: '8px', color: 'var(--primary)', fontWeight: 600 }}>
-              [Đang lọc: {selectedSubject}]
-            </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
+            {selectedSubject !== 'ALL' && (
+              <span style={{ marginRight: '8px', color: 'var(--primary)', fontWeight: 600 }}>
+                [Đang lọc: {selectedSubject}]
+              </span>
+            )}
+            Hiển thị <strong>{filteredDocs.length}</strong> / {documents.length} tài liệu
+          </div>
+
+          {filteredDocs.length > 0 && (
+            <button
+              type="button"
+              onClick={() => handleDownloadFolder()}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: 'var(--text-xs)',
+                padding: '6px 14px',
+                fontWeight: 600,
+                backgroundColor: '#D97706',
+                color: '#ffffff',
+                border: '1px solid #B45309',
+                borderRadius: 'var(--radius-sm)',
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+              title="Tải toàn bộ file Word trong danh sách này dưới dạng Folder zip"
+            >
+              <FolderIcon size={14} />
+              <span>Tải Folder</span>
+            </button>
           )}
-          Hiển thị <strong>{filteredDocs.length}</strong> / {documents.length} tài liệu
         </div>
       </div>
 

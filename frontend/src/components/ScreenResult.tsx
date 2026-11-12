@@ -107,6 +107,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
               alignItems: 'center',
               justifyContent: 'space-between',
               marginBottom: 'var(--space-3)',
+              paddingRight: 'calc(var(--space-4) + 1px)',
               flexWrap: 'wrap',
               gap: 'var(--space-2)',
             }}
@@ -122,7 +123,6 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
               <button
                 type="button"
                 onClick={handleDownloadFolder}
-                className="btn-primary"
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -131,9 +131,9 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                   padding: 'var(--space-2) var(--space-4)',
                   fontWeight: 600,
                   cursor: 'pointer',
-                  backgroundColor: 'var(--primary)',
+                  backgroundColor: '#D97706',
                   color: '#ffffff',
-                  border: 'none',
+                  border: '1px solid #B45309',
                   borderRadius: 'var(--radius-sm)',
                   boxShadow: 'var(--shadow-sm)',
                 }}
