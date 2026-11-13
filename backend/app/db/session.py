@@ -115,6 +115,30 @@ async def init_db() -> None:
         except Exception:
             pass  # Already exists
         try:
+            await conn.execute(text("ALTER TABLE exams ADD COLUMN crop_layout VARCHAR(50)"))
+        except Exception:
+            pass  # Already exists
+        try:
+            await conn.execute(text("ALTER TABLE questions ADD COLUMN crop_layout VARCHAR(50)"))
+        except Exception:
+            pass  # Already exists
+        try:
+            await conn.execute(text("ALTER TABLE questions ADD COLUMN crop_warnings JSON DEFAULT '[]'"))
+        except Exception:
+            pass  # Already exists
+        try:
+            await conn.execute(text("ALTER TABLE questions ADD COLUMN cropped_image_path VARCHAR(500)"))
+        except Exception:
+            pass  # Already exists
+        try:
+            await conn.execute(text("ALTER TABLE questions ADD COLUMN choice_hint_path VARCHAR(500)"))
+        except Exception:
+            pass  # Already exists
+        try:
+            await conn.execute(text("ALTER TABLE questions ADD COLUMN choice_hint_width_px INTEGER"))
+        except Exception:
+            pass  # Already exists
+        try:
             await conn.execute(text("DELETE FROM subjects WHERE UPPER(code) = 'RSS' OR UPPER(name) = 'RSS' OR code = '-'"))
         except Exception:
             pass

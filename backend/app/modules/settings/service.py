@@ -218,18 +218,20 @@ def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
             val_env = root_vals.get(env_var)
             val_sys = os.environ.get(env_var, "")
 
-            if val_env and len(val_env.strip()) > 3:
+            effective_val = val_env if (val_env and len(val_env.strip()) > 3) else (val_sys if (val_sys and len(val_sys.strip()) > 3) else "")
+            if effective_val:
                 has_key = True
-                key_source = "Đã lưu trong .env"
-            elif val_sys and len(val_sys.strip()) > 3:
-                has_key = True
-                key_source = "Biến môi trường hệ thống"
+                key_source = "Đã lưu trong .env" if val_env else "Biến môi trường hệ thống"
+                tail = effective_val[-4:] if len(effective_val) >= 4 else effective_val
+                masked_key = f"••••{tail}"
             else:
                 has_key = False
                 key_source = None
+                masked_key = None
 
             p.pop("api_key", None)  # Ensure no key field exists
             p["has_api_key"] = has_key
+            p["masked_key"] = masked_key
             p["status"] = "configured" if has_key else "not_configured"
             p["key_source"] = key_source
             if "enabled" not in p:

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-from backend.app.db.models import Answer, Comment, ExamType, Job, JobStatus, Question, Subject
+from backend.app.db.models import Answer, Comment, Exam, ExamType, Job, JobStatus, Question, Subject
 from backend.app.db.session import async_session_factory
 from backend.app.modules.analysis.ai_check import get_ai_check_service
 from backend.app.modules.analysis.voting import tally_votes
@@ -21,6 +21,7 @@ from backend.app.modules.crawler.exams import crawl_subject_exams
 from backend.app.modules.crawler.questions import crawl_exam_questions
 from backend.app.modules.crawler.subjects import get_or_fetch_subjects
 from backend.app.modules.export.docx_builder import build_exam_docx, build_merged_docx, format_exam_docx_filename
+from backend.app.modules.export.image_cropper import crop_exam_images, CROP_ALGORITHM_VERSION
 from backend.app.storage.local import LocalStorage
 
 logger = get_logger(__name__)
@@ -43,6 +44,7 @@ def compute_doc_settings_hash(config_snapshot: Dict[str, Any]) -> str:
         "show_question_number": bool(export_cfg.get("show_question_number", True)),
         "show_separator_line": bool(export_cfg.get("show_separator_line", True)),
         "ai_enabled": bool(ai_cfg.get("enabled", True)),
+        "crop_algorithm_version": CROP_ALGORITHM_VERSION,
     }
     return hashlib.sha256(json.dumps(key_data, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
@@ -100,17 +102,19 @@ class JobOrchestrator:
         exam_type: ExamType = ExamType.FE,
         limit: int = 4,
         force_refresh: bool = False,
+        exam_ids: Optional[List[int]] = None,
     ) -> Job:
         """Create and launch a background exam compilation job."""
         job_uuid = str(uuid.uuid4())
+        effective_count = len(exam_ids) if exam_ids else limit
 
         async with async_session_factory() as db:
-            active_cfg = await get_active_settings(db, job_options={"crawl": {"default_count": limit}})
+            active_cfg = await get_active_settings(db, job_options={"crawl": {"default_count": effective_count}})
             job = Job(
                 job_id=job_uuid,
                 subject_code=subject_code.upper(),
                 exam_type=exam_type,
-                exam_count=limit,
+                exam_count=effective_count,
                 status=JobStatus.PENDING,
                 current_step="init",
                 progress_percentage=0.0,
@@ -118,8 +122,9 @@ class JobOrchestrator:
                 details={
                     "subject_code": subject_code.upper(),
                     "exam_type": exam_type.value,
-                    "limit": limit,
+                    "limit": effective_count,
                     "force_refresh": force_refresh,
+                    "exam_ids": exam_ids,
                 },
             )
             db.add(job)
@@ -128,7 +133,7 @@ class JobOrchestrator:
 
         self._event_history[job_uuid] = []
         task = asyncio.create_task(
-            self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, limit, force_refresh)
+            self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, effective_count, force_refresh, exam_ids=exam_ids)
         )
         self._running_tasks[job_uuid] = task
         return job
@@ -178,8 +183,9 @@ class JobOrchestrator:
         })
 
         force_ref = bool(job.details.get("force_refresh", False)) if job.details else False
+        saved_exam_ids = job.details.get("exam_ids") if job.details else None
         task = asyncio.create_task(
-            self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count, force_ref)
+            self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count, force_ref, exam_ids=saved_exam_ids)
         )
         self._running_tasks[job.job_id] = task
         return job
@@ -191,6 +197,7 @@ class JobOrchestrator:
         exam_type: ExamType,
         limit: int,
         force_refresh: bool = False,
+        exam_ids: Optional[List[int]] = None,
     ):
         """Execute the compilation pipeline step-by-step."""
         logger.info(f"Starting job pipeline {job_id} for {subject_code} ({exam_type.value}, limit={limit}, force_refresh={force_refresh})...")
@@ -289,12 +296,30 @@ class JobOrchestrator:
                     "progress": 25,
                 })
 
-                exams = await crawl_subject_exams(
-                    subject=subject,
-                    exam_type=exam_type,
-                    limit=limit,
-                    db=db,
-                )
+                if exam_ids and len(exam_ids) > 0:
+                    # Query specific exams requested by user
+                    stmt = select(Exam).where(Exam.id.in_(exam_ids), Exam.subject_id == subject.id)
+                    res = await db.execute(stmt)
+                    exams_map = {e.id: e for e in res.scalars().all()}
+                    exams = [exams_map[eid] for eid in exam_ids if eid in exams_map]
+                    # If some exams are missing from DB, crawl subject to populate them
+                    if len(exams) < len(exam_ids):
+                        all_crawled = await crawl_subject_exams(
+                            subject=subject,
+                            exam_type=exam_type,
+                            limit=max(limit, 20),
+                            db=db,
+                        )
+                        crawled_map = {e.id: e for e in all_crawled}
+                        exams = [exams_map.get(eid) or crawled_map.get(eid) for eid in exam_ids]
+                        exams = [e for e in exams if e is not None]
+                else:
+                    exams = await crawl_subject_exams(
+                        subject=subject,
+                        exam_type=exam_type,
+                        limit=limit,
+                        db=db,
+                    )
 
                 if not exams:
                     warn_msg = f"Không tìm thấy đề thi {exam_type.value} nào cho môn {subject_code} trên diễn đàn."
@@ -359,8 +384,8 @@ class JobOrchestrator:
                                     if meta_created_ts >= latest_comment_ts:
                                         has_cached_doc = True
                                         cached_time_str = meta.get("created_at_formatted") or datetime.fromtimestamp(cached_path.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
-                            except Exception:
-                                pass
+                            except Exception as meta_err:
+                                logger.warning(f"Could not read/parse metadata cache file {meta_path}: {meta_err}", exc_info=True)
                         elif len(existing_questions) >= max(exam.question_count or 10, 10) and all(q.local_image_path and Path(q.local_image_path).exists() for q in existing_questions):
                             has_cached_doc = True
                             cached_time_str = datetime.fromtimestamp(cached_path.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
@@ -477,15 +502,34 @@ class JobOrchestrator:
                     ai_service = get_ai_check_service()
                     job_cfg = job.config_snapshot or (await get_active_settings(db))
                     ai_enabled = job_cfg.get("ai", {}).get("enabled", True)
+                    ai_mode = job_cfg.get("ai", {}).get("mode", "only_uncertain")
                     ai_weight = float(job_cfg.get("voting", {}).get("ai_weight", 1.0))
+                    max_opt_letter = job_cfg.get("voting", {}).get("max_option_letter", "H")
 
                     for q in questions:
                         await db.refresh(q, ["comments", "answer"])
 
+                        # Preliminary community tally to determine if AI call is needed
+                        prelim_res = tally_votes(
+                            q.comments,
+                            ai_weight=ai_weight,
+                            max_option_letter=max_opt_letter,
+                        )
+
+                        need_ai = False
+                        if ai_enabled and ai_service.is_available():
+                            if ai_mode == "all":
+                                need_ai = True
+                            elif ai_mode == "off":
+                                need_ai = False
+                            else:  # "only_uncertain" (default)
+                                if prelim_res.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or prelim_res.confidence < 0.80:
+                                    need_ai = True
+
                         ai_votes = []
                         ai_options = {}
                         img_path = getattr(q, "local_image_path", None)
-                        if ai_enabled and img_path and ai_service.is_available():
+                        if need_ai and img_path:
                             local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
                             if local_img.exists():
                                 analyses = ai_service.analyze_question_ensemble(local_img, job_id=job_id)
@@ -498,10 +542,12 @@ class JobOrchestrator:
                                     if a.options:
                                         ai_options.update(a.options)
 
+                        # Final tally with AI contributions if called
                         voting_res = tally_votes(
                             q.comments,
                             ai_votes=ai_votes if ai_votes else None,
                             ai_weight=ai_weight,
+                            max_option_letter=max_opt_letter,
                         )
 
                         breakdown = dict(voting_res.vote_breakdown)
@@ -529,6 +575,33 @@ class JobOrchestrator:
                             q.answer.vote_breakdown = breakdown
                     await db.commit()
 
+                    # Crop questions by layout with self-adaptation across exam
+                    cropped_dir = settings.STORAGE_DIR / "cropped" / subject_code / f"exam_{exam.id}"
+                    crop_summary = crop_exam_images(
+                        exam_id=exam.id,
+                        exam_title=exam.title,
+                        questions=questions,
+                        cropped_dir=cropped_dir,
+                    )
+                    exam.crop_layout = crop_summary.dominant_layout
+                    for q, res in zip(questions, crop_summary.results):
+                        q.crop_layout = res.layout
+                        q.crop_warnings = res.warnings
+                        if res.output_path:
+                            q.cropped_image_path = str(res.output_path)
+                        if res.choice_hint_path:
+                            q.choice_hint_path = str(res.choice_hint_path)
+                        q.choice_hint_width_px = res.choice_hint_width_px
+                    await db.commit()
+
+                    self._broadcast(job_id, {
+                        "type": "log",
+                        "step": "cropping",
+                        "message": f"Đã cắt ảnh đề '{exam.title}': kiểu {crop_summary.dominant_layout}, {crop_summary.clean_questions}/{crop_summary.total_questions} ảnh sạch"
+                        + (f" (Cảnh báo: {crop_summary.flagged_questions} ảnh cần xem lại)" if crop_summary.flagged_questions else ""),
+                        "progress": min(exam_progress_base + int(48 / total_exams), 95),
+                    })
+
                     all_exam_question_pairs.append((exam, questions))
                     ans_fmt = job_cfg.get("export", {}).get("answer_format", "letter_keyword")
 
@@ -540,6 +613,10 @@ class JobOrchestrator:
                         "progress": min(exam_progress_base + int(50 / total_exams), 95),
                     })
 
+                    q_ids = [q.id for q in questions]
+                    ans_res = await db.execute(select(Answer).where(Answer.question_id.in_(q_ids)))
+                    answers_map = {a.question_id: a for a in ans_res.scalars().all()}
+
                     docx_path = build_exam_docx(
                         subject_code=subject_code,
                         exam=exam,
@@ -548,6 +625,9 @@ class JobOrchestrator:
                         highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
                         add_divider=job_cfg.get("export", {}).get("show_separator_line", True),
                         add_question_number=job_cfg.get("export", {}).get("show_question_number", True),
+                        unsupported_layout_warning=crop_summary.fallback_to_raw,
+                        use_raw_fallback=crop_summary.fallback_to_raw,
+                        answers_map=answers_map,
                     )
 
                     # Save sidecar metadata for cache invalidation
@@ -609,6 +689,10 @@ class JobOrchestrator:
                         "message": f"Đang gộp {len(all_exam_question_pairs)} đề vào một file Word chung...",
                         "progress": 96,
                     })
+                    all_q_ids = [q.id for _, q_list in all_exam_question_pairs for q in q_list]
+                    all_ans_res = await db.execute(select(Answer).where(Answer.question_id.in_(all_q_ids)))
+                    all_ans_map = {a.question_id: a for a in all_ans_res.scalars().all()}
+
                     merged_docx_path = build_merged_docx(
                         subject_code=subject_code,
                         exams_data=all_exam_question_pairs,
@@ -616,6 +700,7 @@ class JobOrchestrator:
                         highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
                         add_divider=job_cfg.get("export", {}).get("show_separator_line", True),
                         add_question_number=job_cfg.get("export", {}).get("show_question_number", True),
+                        answers_map=all_ans_map,
                     )
                     rel_merged = str(merged_docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
                     created_files.append({

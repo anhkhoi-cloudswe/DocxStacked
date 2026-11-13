@@ -276,3 +276,47 @@ async def download_export_file(
     except Exception as e:
         logger.error(f"Download file error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+class OpenFolderRequest(BaseModel):
+    subject: Optional[str] = None
+    path: Optional[str] = None
+
+
+@router.post("/open-folder")
+async def open_local_folder(req: Optional[OpenFolderRequest] = None):
+    """
+    Open the local output folder in Windows File Explorer (or default file manager).
+    Supports opening the root output folder or a specific subject folder.
+    """
+    import os
+    import subprocess
+    import platform
+
+    output_dir = settings.OUTPUT_DIR
+    target_dir = output_dir
+
+    if req and req.subject:
+        cand = output_dir / req.subject
+        if cand.exists() and cand.is_dir():
+            target_dir = cand
+    elif req and req.path:
+        clean_p = req.path.replace("\\", "/").lstrip("/")
+        cand = (settings.BASE_DIR / clean_p).resolve()
+        if cand.exists():
+            target_dir = cand if cand.is_dir() else cand.parent
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    abs_path = str(target_dir.resolve())
+
+    try:
+        if platform.system() == "Windows":
+            os.startfile(abs_path)
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", abs_path], check=False)
+        else:
+            subprocess.run(["xdg-open", abs_path], check=False)
+        return {"success": True, "path": abs_path}
+    except Exception as e:
+        logger.error(f"Failed to open directory {abs_path}: {e}")
+        return {"success": False, "error": str(e), "path": abs_path}

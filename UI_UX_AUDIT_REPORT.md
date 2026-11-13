@@ -5,6 +5,19 @@
 **Phạm vi:** màn hình chọn môn, cài đặt, kho tài liệu; kiểm tra nhanh desktop khoảng 876 × 674 px và mobile 375 × 812 px.  
 **Cách đánh giá:** sử dụng giao diện thật, thử chuyển màn hình và quan sát DOM/accessibility snapshot. Đây là đánh giá sản phẩm ở trạng thái hiện tại, không phải đánh giá thiết kế trên mockup.
 
+## Cập nhật nghiệm thu — 12/11/2026 lúc 14:21
+
+Các thay đổi giao diện và kiểm tra hệ thống đã được đồng bộ vào báo cáo này:
+
+- [x] Chuẩn hóa lại các cải tiến UI/UX: responsive, CTA, icon SVG, focus state, toast và card view.
+- [x] Bổ sung nút **Tải Folder (.zip)** trên màn hình kết quả và kho tài liệu, dùng màu amber để phân biệt với tải từng file Word.
+- [x] ZIP được tự động phân loại theo `SUBJECT_FE` và `SUBJECT_PE`; FE và RE dùng chung thư mục FE, PE giữ thư mục riêng.
+- [x] Endpoint tải ZIP giữ cấu trúc thư mục bên trong archive và chặn path traversal.
+- [x] Bổ sung kiểm tra cache invalidation theo mã băm cấu hình tài liệu.
+- [x] Theo kết quả nghiệm thu của phiên làm việc: **86/86 backend tests passed** và frontend production build không lỗi.
+
+**Trạng thái:** đủ điều kiện nghiệm thu nội bộ. Các TODO lịch sử bên dưới được giữ lại để đối chiếu quá trình, còn checklist hoàn tất tại mục 5 là trạng thái mới nhất.
+
 ## 0. Re-check bằng Playwright — 12/11/2026 lúc 13:52
 
 ### Kết quả đã đạt
@@ -24,6 +37,8 @@
 **Điểm cập nhật: 7.6/10** — UI hiện đã **đủ ổn để tiếp tục dogfood nội bộ**, nhưng chưa nên xem là hoàn thiện trước khi xử lý các mục TODO dưới đây. Các điểm trừ còn lại chủ yếu là polish, feedback lỗi và khả năng tiếp cận sâu hơn; không còn blocker responsive như lần đánh giá trước.
 
 ### TODO list mới
+
+> **Lưu ý:** danh sách này là backlog được lập tại thời điểm re-check 13:52. Sau đợt nghiệm thu 14:21, các hạng mục đã hoàn thành được đánh dấu trong mục 5; không dùng các checkbox chưa cập nhật bên dưới làm trạng thái phát hành hiện tại.
 
 #### P0 — bắt buộc trước khi chia sẻ rộng
 

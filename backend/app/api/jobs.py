@@ -19,6 +19,7 @@ class JobCreateRequest(BaseModel):
     exam_type: str = Field(default="FE", description="FE or PE")
     limit: int = Field(default=4, ge=1, le=50, description="Number of exams to compile (1-50)")
     force_refresh: bool = Field(default=False, description="Bypass document cache and force re-compilation")
+    exam_ids: Optional[List[int]] = Field(default=None, description="Specific exam IDs to compile")
 
 
 class JobResponse(BaseModel):
@@ -54,6 +55,12 @@ class AnswerItemOut(BaseModel):
     ai_vote: Optional[List[str]] = None
     manual_override: bool = False
     notes: Optional[str] = None
+    crop_layout: Optional[str] = None
+    crop_warnings: List[str] = Field(default_factory=list)
+    raw_image_url: Optional[str] = None
+    cropped_image_url: Optional[str] = None
+    choice_hint_url: Optional[str] = None
+    choice_hint_width_px: Optional[int] = None
 
 
 class SingleAnswerOverride(BaseModel):
@@ -89,6 +96,7 @@ async def create_job(payload: JobCreateRequest):
         exam_type=e_type,
         limit=payload.limit,
         force_refresh=payload.force_refresh,
+        exam_ids=payload.exam_ids,
     )
     return JobResponse.from_orm(job)
 
@@ -186,6 +194,12 @@ async def get_job_answers(job_id: str, db: AsyncSession = Depends(get_db)):
         is_manual = vb.get("manual_override", False)
         notes = ans.explanation if ans else None
 
+        crop_layout = q.crop_layout
+        crop_warnings = q.crop_warnings or []
+        raw_url = f"/api/jobs/questions/{q.id}/image?type=raw" if q.local_image_path else None
+        cropped_url = f"/api/jobs/questions/{q.id}/image?type=cropped" if (q.cropped_image_path or q.local_image_path) else None
+        hint_url = f"/api/jobs/questions/{q.id}/image?type=hint" if q.choice_hint_path else None
+
         result.append(
             AnswerItemOut(
                 question_id=q.id,
@@ -200,10 +214,53 @@ async def get_job_answers(job_id: str, db: AsyncSession = Depends(get_db)):
                 ai_vote=ai_vote,
                 manual_override=is_manual,
                 notes=notes,
+                crop_layout=crop_layout,
+                crop_warnings=crop_warnings,
+                raw_image_url=raw_url,
+                cropped_image_url=cropped_url,
+                choice_hint_url=hint_url,
+                choice_hint_width_px=q.choice_hint_width_px,
             )
         )
 
     return result
+
+
+@router.get("/questions/{question_id}/image")
+async def get_question_image(
+    question_id: int,
+    type: str = Query("cropped", pattern="^(raw|cropped|hint)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve raw, cropped, or choice hint images for question review."""
+    from fastapi.responses import FileResponse
+    stmt = select(Question).where(Question.id == question_id)
+    res = await db.execute(stmt)
+    q = res.scalar_one_or_none()
+    if not q:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    target_path = None
+    if type == "raw" and q.local_image_path:
+        target_path = Path(q.local_image_path)
+    elif type == "cropped":
+        if q.cropped_image_path:
+            target_path = Path(q.cropped_image_path)
+        elif q.local_image_path:
+            target_path = Path(q.local_image_path)
+    elif type == "hint" and q.choice_hint_path:
+        target_path = Path(q.choice_hint_path)
+
+    if not target_path:
+        raise HTTPException(status_code=404, detail="Requested image not available")
+
+    full_p = target_path if target_path.is_absolute() else (settings.BASE_DIR / target_path)
+    if not full_p.exists():
+        raise HTTPException(status_code=404, detail="Image file not found on disk")
+
+    suf = full_p.suffix.lower()
+    media_type = "image/png" if suf == ".png" else "image/webp" if suf == ".webp" else "image/jpeg"
+    return FileResponse(str(full_p), media_type=media_type)
 
 
 @router.put("/{job_id}/answers")

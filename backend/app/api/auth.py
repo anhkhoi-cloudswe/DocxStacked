@@ -426,10 +426,10 @@ async def logout():
             logger.warning(f"Could not delete {f.name}: {e}")
 
     try:
-        from backend.app.modules.crawler.browser import get_browser_manager
-        get_browser_manager().close()
+        from backend.app.modules.crawler.browser import SessionManager
+        SessionManager.invalidate()
     except Exception as e:
-        logger.warning(f"Error closing browser during logout: {e}")
+        logger.warning(f"Error invalidating session during logout: {e}")
 
     logger.info("User logged out successfully.")
     return {"success": True, "message": "Đã đăng xuất thành công."}
@@ -538,8 +538,8 @@ async def login_with_account(req: AccountLoginRequest):
 
         # Ensure browser manager closes any existing context to pick up fresh cookies
         try:
-            from backend.app.modules.crawler.browser import get_browser_manager
-            get_browser_manager().close()
+            from backend.app.modules.crawler.browser import SessionManager
+            SessionManager.invalidate()
         except Exception:
             pass
 

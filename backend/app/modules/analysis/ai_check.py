@@ -407,8 +407,8 @@ class AICheckService:
                     used_providers.add(provider.name)
                     logger.debug(f"AI Check cache HIT ({provider.name}:{provider.model}) for {image_path.name}")
                     continue
-                except Exception:
-                    pass
+                except Exception as cache_parse_err:
+                    logger.debug(f"AI Check cached payload invalid for {cache_key}: {cache_parse_err}", exc_info=True)
 
             # Make API Call with fallback handling
             try:

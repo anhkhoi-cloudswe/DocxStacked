@@ -42,3 +42,22 @@ export:
   answer_format: letter_keyword
   merge: false
 
+image_crop:
+  red_min_r: 170
+  red_max_g: 80
+  red_max_b: 80
+  red_min_frac: 0.3
+  white_min_val: 252
+  closing_kernel_size: 9
+  white_panel_min_area_ratio: 0.02
+  white_panel_max_width_ratio: 0.95
+  dark_threshold: 140
+  color_diff_threshold: 60
+  border_dark_ratio: 0.50
+  border_edge_depth: 15
+  padding_px: 12
+  crop_too_large_ratio: 0.85
+  min_height_px: 100
+  min_width_px: 150
+  warning_rate_threshold: 0.20
+

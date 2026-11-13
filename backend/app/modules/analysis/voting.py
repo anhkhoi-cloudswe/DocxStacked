@@ -26,6 +26,7 @@ class VotingResult(BaseModel):
     voters_count: int
     is_multi_choice: bool = False
     contributions: List[VoterContribution] = []
+    ai_disagreed: bool = False
 
 
 def tally_votes(
@@ -35,16 +36,18 @@ def tally_votes(
     ai_weight: float = 1.0,
     is_multi_override: Optional[bool] = None,
     ai_votes: Optional[List[Dict[str, Any]]] = None,
+    ai_disagreement_policy: str = "flag",
+    multi_choice_n: Optional[int] = None,
+    max_option_letter: str = "H",
 ) -> VotingResult:
     """
     Tally votes from student comments and optional AI input.
     Supports single AI vote (ai_answer) or multi-provider ensemble (ai_votes).
-    Rules:
-      1. One author, one vote: Each author_hash gets at most 1 vote (newest comment with answer).
-      2. Weight per comment: 1.0 + log2(1.0 + upvotes).
-      3. Agreement comment (+1, chuẩn): half the weight of quoted parent comment.
-      4. Single vs multiple choice: inferred from answers or override.
-      5. Status: confident (>=70% and >=2 sources), conflict (top-2 diff < 15%), weak, no_data.
+    multi_choice_n: When known (e.g. from choice hint '(Choose N answers)'),
+    the top-N letters are selected. Status is CONFIDENT when top-N set accounts
+    for >= 70% of total weight and (N+1)-th option is significantly lower (<= 40% of N-th).
+    Ties within the top-N set are NOT a conflict.
+    max_option_letter: Letters beyond this letter (default 'H') are discarded.
     """
     if not comments and not ai_answer and not ai_votes:
         return VotingResult(
@@ -61,6 +64,8 @@ def tally_votes(
     # 1. Map comments by ID for quote lookups
     comment_by_id: Dict[str, Comment] = {}
     for c in comments:
+        if c.id:
+            comment_by_id[str(c.id)] = c
         if c.comment_id:
             comment_by_id[str(c.comment_id)] = c
 
@@ -81,7 +86,11 @@ def tally_votes(
         if author in seen_authors:
             continue
 
-        parsed = parse_comment_text(c.raw_text)
+        parsed = parse_comment_text(
+            c.raw_text,
+            max_option_letter=max_option_letter,
+            multi_choice_n=multi_choice_n,
+        )
 
         # Skip ambiguous non-answers unless it's an agreement
         if parsed.is_ambiguous and not parsed.is_agreement:
@@ -90,7 +99,11 @@ def tally_votes(
         if parsed.is_agreement:
             # Agreement: gives half vote to quoted comment's answer
             parent_c = comment_by_id.get(str(c.quoted_comment_id)) if c.quoted_comment_id else None
-            parent_parsed = parse_comment_text(parent_c.raw_text) if parent_c else None
+            parent_parsed = parse_comment_text(
+                parent_c.raw_text,
+                max_option_letter=max_option_letter,
+                multi_choice_n=multi_choice_n,
+            ) if parent_c else None
             if parent_parsed and parent_parsed.answers:
                 parent_weight = 1.0 + math.log2(1.0 + (parent_c.upvotes or 0))
                 agree_weight = round(parent_weight * 0.5, 3)
@@ -208,15 +221,46 @@ def tally_votes(
     voters_count = len(contributions)
 
     # 6. Select winning answers
+    conflict = False
     if is_multi:
-        # Multi-choice rule: every letter with >= 50% of total weight is chosen
-        threshold = total_weight * 0.50
-        winning_letters = [opt for opt, w in sorted_options if w >= threshold]
-        if not winning_letters:
-            winning_letters = sorted_options[0][0].split()
-        answer_set = sorted(winning_letters)
-        top_weight = sorted_options[0][1]
-        confidence = round(top_weight / max(total_weight, 1.0), 3)
+        if multi_choice_n and multi_choice_n >= 2:
+            n_target = min(multi_choice_n, len(sorted_options))
+            top_n = sorted_options[:n_target]
+            winning_letters = [opt for opt, w in top_n]
+            answer_set = sorted(winning_letters)
+
+            # Confidence for multi-choice: average share of top-N options relative to total weight
+            top_n_weight = sum(w for opt, w in top_n)
+            confidence = round(top_n_weight / max(total_weight * n_target, 1.0), 3)
+            # Alternatively, ratio of top-N weight to total
+            set_ratio = top_n_weight / max(total_weight, 1.0)
+
+            # Check margin to (N+1)-th option
+            next_opt = sorted_options[n_target] if len(sorted_options) > n_target else None
+            nth_weight = top_n[-1][1]
+
+            if next_opt and nth_weight > 0:
+                next_ratio = next_opt[1] / nth_weight
+                # If next option is close (> 40% of N-th option weight) -> ambiguous boundary
+                if next_ratio > 0.40:
+                    conflict = True
+            elif set_ratio < 0.70:
+                conflict = True
+        else:
+            # Multi-choice fallback: every letter with >= 50% of total weight is chosen
+            threshold = total_weight * 0.50
+            winning_letters = [opt for opt, w in sorted_options if w >= threshold]
+            if not winning_letters:
+                winning_letters = sorted_options[0][0].split()
+            answer_set = sorted(winning_letters)
+            top_weight = sorted_options[0][1]
+            confidence = round(top_weight / max(total_weight, 1.0), 3)
+
+            # For multi-choice without known N, check margin to next unselected option
+            if len(sorted_options) > len(winning_letters):
+                unselected_top = sorted_options[len(winning_letters)][1]
+                if unselected_top / max(top_weight, 1.0) > 0.40:
+                    conflict = True
     else:
         # Single choice rule: highest weight letter wins
         best_letter = sorted_options[0][0]
@@ -224,30 +268,28 @@ def tally_votes(
         answer_set = [best_letter]
         confidence = round(top_weight / max(total_weight, 1.0), 3)
 
-    # 7. Determine status: CONFIDENT, CONFLICT, WEAK, NO_DATA
-    conflict = False
+        # Check top 2 options for single choice
+        if len(sorted_options) >= 2:
+            opt1 = sorted_options[0][0]
+            opt2 = sorted_options[1][0]
+            opt1_voters = len(voters_per_option.get(opt1, set()))
+            opt2_voters = len(voters_per_option.get(opt2, set()))
 
-    # Check top 2 options
-    if len(sorted_options) >= 2:
-        opt1 = sorted_options[0][0]
-        opt2 = sorted_options[1][0]
-        opt1_voters = len(voters_per_option.get(opt1, set()))
-        opt2_voters = len(voters_per_option.get(opt2, set()))
-
-        # Rule A: If top 2 options have equal number of independent voters -> CONFLICT regardless of reactions
-        if opt1_voters == opt2_voters:
-            conflict = True
-        else:
-            # Rule B: Margin between weights < 15%
-            top1_w = sorted_options[0][1]
-            top2_w = sorted_options[1][1]
-            margin = (top1_w - top2_w) / max(total_weight, 1.0)
-            if margin < 0.15:
+            # Rule A: If top 2 options have equal number of independent voters -> CONFLICT
+            if opt1_voters == opt2_voters:
                 conflict = True
+            else:
+                # Rule B: Margin between weights < 15%
+                top1_w = sorted_options[0][1]
+                top2_w = sorted_options[1][1]
+                margin = (top1_w - top2_w) / max(total_weight, 1.0)
+                if margin < 0.15:
+                    conflict = True
 
     # Check if AI disagreed with community consensus
     ai_contributions = [c for c in contributions if c.author_hash.startswith("ai_")]
     community_votes = [c for c in contributions if not c.author_hash.startswith("ai_")]
+    ai_disagreed = False
     if ai_contributions and community_votes:
         comm_weights: Dict[str, float] = {}
         for cv in community_votes:
@@ -257,7 +299,9 @@ def tally_votes(
             comm_winner = max(comm_weights.items(), key=lambda x: x[1])[0]
             for a_contrib in ai_contributions:
                 if comm_winner not in [a.upper() for a in a_contrib.answers]:
-                    conflict = True
+                    ai_disagreed = True
+                    if ai_disagreement_policy == "conflict":
+                        conflict = True
                     break
 
     winner = answer_set[0]
@@ -279,5 +323,6 @@ def tally_votes(
         voters_count=voters_count,
         is_multi_choice=is_multi,
         contributions=contributions,
+        ai_disagreed=ai_disagreed,
     )
 

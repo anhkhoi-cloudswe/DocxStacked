@@ -81,6 +81,7 @@ class Exam(Base):
     question_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[ExamStatus] = mapped_column(SQLEnum(ExamStatus), default=ExamStatus.PENDING, index=True)
     raw_folder: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    crop_layout: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -105,6 +106,11 @@ class Question(Base):
     qtype: Mapped[QuestionType] = mapped_column(SQLEnum(QuestionType), default=QuestionType.UNKNOWN)
     media_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     media_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, index=True)
+    crop_layout: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    crop_warnings: Mapped[Optional[List[str]]] = mapped_column(JSON, default=list, nullable=True)
+    cropped_image_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    choice_hint_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    choice_hint_width_px: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

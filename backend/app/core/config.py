@@ -47,6 +47,7 @@ class AIConfig(BaseModel):
     max_ai_calls: int = 300
     backoff_seconds: float = 2.0
     max_retries: int = 2
+    ai_disagreement_policy: str = "flag"  # 'flag', 'conflict', or 'ignore'
     providers: List[AIProviderConfig] = Field(default_factory=list)
 
 
@@ -59,12 +60,33 @@ class ExportConfig(BaseModel):
     merge: bool = False
 
 
+class ImageCropConfig(BaseModel):
+    red_min_r: int = 170
+    red_max_g: int = 80
+    red_max_b: int = 80
+    red_min_frac: float = 0.3
+    white_min_val: int = 252
+    closing_kernel_size: int = 9
+    white_panel_min_area_ratio: float = 0.02
+    white_panel_max_width_ratio: float = 0.95
+    dark_threshold: int = 140
+    color_diff_threshold: int = 60
+    border_dark_ratio: float = 0.50
+    border_edge_depth: int = 15
+    padding_px: int = 12
+    crop_too_large_ratio: float = 0.85
+    min_height_px: int = 100
+    min_width_px: int = 150
+    warning_rate_threshold: float = 0.20
+
+
 class AppYamlConfig(BaseModel):
     exam: ExamConfig = Field(default_factory=ExamConfig)
     crawl: CrawlConfig = Field(default_factory=CrawlConfig)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
     export: ExportConfig = Field(default_factory=ExportConfig)
+    image_crop: ImageCropConfig = Field(default_factory=ImageCropConfig)
 
 
 class Settings(BaseSettings):

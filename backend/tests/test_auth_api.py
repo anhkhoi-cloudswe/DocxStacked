@@ -22,7 +22,7 @@ async def test_auth_status_not_logged_in():
             data = resp.json()
             assert data["logged_in"] is False
             assert data["status_code"] in ("not_logged_in", "profile_locked")
-            assert "Chưa đăng nhập" in data["detail"] or "khoá" in data["detail"]
+            assert "Chưa đăng nhập" in data["detail"] or "khoá" in data["detail"] or "chạy ngầm" in data["detail"]
     finally:
         if backup is not None:
             cookies_file.parent.mkdir(parents=True, exist_ok=True)

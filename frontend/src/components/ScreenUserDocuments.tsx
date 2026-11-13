@@ -110,12 +110,51 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
     }
   };
 
-  const handleDownloadFolder = (subjectCode?: string) => {
+  const handleDownloadFolder = async (subjectCode?: string) => {
     const subj = subjectCode || (selectedSubject !== 'ALL' ? selectedSubject : '');
-    const url = subj
-      ? `/api/exports/download-folder?subject=${encodeURIComponent(subj)}`
-      : `/api/exports/download-folder`;
-    window.location.href = url;
+    const targetDocs = filteredDocs.filter((d) => !subj || d.subject_code === subj);
+    if (targetDocs.length === 0) return;
+
+    showToast(`Đang tải ${targetDocs.length} file về thư mục Downloads...`, 'success');
+
+    try {
+      for (let i = 0; i < targetDocs.length; i++) {
+        const doc = targetDocs[i];
+        const a = document.createElement('a');
+        a.href = doc.download_url;
+        a.download = doc.filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        if (i < targetDocs.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
+      showToast(`Đã tải thành công ${targetDocs.length} file Word về thư mục Downloads!`, 'success');
+    } catch (err) {
+      console.error('Error downloading files:', err);
+      const url = subj
+        ? `/api/exports/download-folder?subject=${encodeURIComponent(subj)}`
+        : `/api/exports/download-folder`;
+      window.location.href = url;
+    }
+  };
+
+  const handleOpenLocalFolder = async () => {
+    try {
+      const resp = await fetch('/api/exports/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: selectedSubject !== 'ALL' ? selectedSubject : undefined }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast('Đã mở thư mục lưu trữ trên máy tính.', 'success');
+      }
+    } catch (e) {
+      console.error('Failed to open local folder:', e);
+    }
   };
 
   const filteredDocs = documents.filter((d) => {
@@ -224,33 +263,53 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
           </div>
 
           {documents.length > 0 && (
-            <button
-              type="button"
-              onClick={() => handleDownloadFolder()}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '6px',
-                fontSize: 'var(--text-sm)',
-                padding: 'var(--space-2) var(--space-4)',
-                minHeight: '38px',
-                fontWeight: 600,
-                backgroundColor: '#D97706',
-                color: '#ffffff',
-                border: '1px solid #B45309',
-                borderRadius: 'var(--radius-sm)',
-                cursor: 'pointer',
-                boxShadow: 'var(--shadow-sm)',
-              }}
-              title={
-                selectedSubject !== 'ALL'
-                  ? `Tải toàn bộ file Word môn ${selectedSubject} gom thành folder zip`
-                  : 'Tải toàn bộ file Word trong kho gom theo từng môn và thể loại thi'
-              }
-            >
-              <FolderIcon size={14} />
-              <span>Tải Folder {selectedSubject !== 'ALL' ? `(${selectedSubject})` : ''}</span>
-            </button>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={() => handleDownloadFolder()}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: 'var(--text-sm)',
+                  padding: 'var(--space-2) var(--space-4)',
+                  minHeight: '38px',
+                  fontWeight: 600,
+                  backgroundColor: '#D97706',
+                  color: '#ffffff',
+                  border: '1px solid #B45309',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  boxShadow: 'var(--shadow-sm)',
+                }}
+                title={
+                  selectedSubject !== 'ALL'
+                    ? `Tải toàn bộ file Word môn ${selectedSubject} gom thành folder`
+                    : 'Tải toàn bộ file Word trong kho gom theo từng môn và thể loại thi'
+                }
+              >
+                <FolderIcon size={14} />
+                <span>Tải Folder {selectedSubject !== 'ALL' ? `(${selectedSubject})` : ''}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenLocalFolder}
+                className="btn-secondary"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: 'var(--text-sm)',
+                  padding: 'var(--space-2) var(--space-3)',
+                  minHeight: '38px',
+                  cursor: 'pointer',
+                }}
+                title="Mở thư mục lưu trữ file trên máy tính (Windows Explorer)"
+              >
+                <span>Mở trên máy</span>
+              </button>
+            </div>
           )}
 
           <button

@@ -41,6 +41,21 @@ class AuthenticationRequiredError(Exception):
     pass
 
 
+class SessionManager:
+    """
+    Coordinates browser session lifecycle.
+    Ensures context is properly invalidated on logout and login,
+    preventing stale contexts across jobs or threads.
+    """
+
+    @classmethod
+    def invalidate(cls) -> None:
+        """Invalidate and close existing browser context and reset state."""
+        logger.info("SessionManager: Invalidating browser context and active sessions.")
+        bm = get_browser_manager()
+        bm.close()
+
+
 class BrowserManager:
     """
     Manages Playwright Persistent Browser Context for FUOverflow.

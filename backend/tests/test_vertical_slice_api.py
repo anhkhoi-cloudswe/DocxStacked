@@ -44,3 +44,21 @@ async def test_api_job_create_and_status():
         status_data = status_resp.json()
         assert status_data["job_id"] == job_id
         assert status_data["status"] in ("pending", "running", "completed")
+
+
+@pytest.mark.asyncio
+async def test_api_job_create_with_specific_exam_ids():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/api/jobs", json={
+            "subject_code": "PRM392",
+            "exam_type": "FE",
+            "limit": 1,
+            "exam_ids": [42]
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "job_id" in data
+        assert data["subject_code"] == "PRM392"
+        assert data["exam_count"] == 1
+        assert data["details"]["exam_ids"] == [42]

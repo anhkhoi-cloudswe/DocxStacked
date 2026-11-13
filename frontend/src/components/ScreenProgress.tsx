@@ -65,6 +65,8 @@ export const ScreenProgress: React.FC<Props> = ({
   // Answer Review Modal State
   const [showAnswerReview, setShowAnswerReview] = useState<boolean>(false);
   const [answersList, setAnswersList] = useState<any[]>([]);
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'flagged'>('all');
+  const [expandedImageQuestionId, setExpandedImageQuestionId] = useState<number | null>(null);
   const [isLoadingAnswers, setIsLoadingAnswers] = useState<boolean>(false);
   const [savingAnswerId, setSavingAnswerId] = useState<number | null>(null);
   const [editChoiceMap, setEditChoiceMap] = useState<Record<number, string>>({});
@@ -668,7 +670,7 @@ export const ScreenProgress: React.FC<Props> = ({
             }}
           >
             <div style={{ fontWeight: 700, marginBottom: 'var(--space-1)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              {errorMessage.toLowerCase().includes('đăng nhập') || errorMessage.toLowerCase().includes('auth') || errorMessage.toLowerCase().includes('session') || errorMessage.toLowerCase().includes('1 phiên') ? (
+              {currentStep === 'auth_required' || errorMessage.includes('chính sách 1 phiên') || errorMessage.includes('Cần đăng nhập lại:') ? (
                 <>
                   <WarningIcon size={16} />
                   <span>Cần đăng nhập lại (Chính sách 1 phiên duy nhất của FUOverflow):</span>
@@ -681,7 +683,7 @@ export const ScreenProgress: React.FC<Props> = ({
               ) : (
                 <>
                   <CrossIcon size={16} />
-                  <span>Đã xảy ra lỗi:</span>
+                  <span>Lỗi nội bộ hệ thống:</span>
                 </>
               )}
             </div>
@@ -689,8 +691,7 @@ export const ScreenProgress: React.FC<Props> = ({
               {errorMessage}
             </div>
             {(() => {
-              const lowerMsg = errorMessage.toLowerCase();
-              const isAuthError = lowerMsg.includes('1 phiên') || lowerMsg.includes('đăng nhập') || lowerMsg.includes('phiên hết hạn') || lowerMsg.includes('auth');
+              const isAuthError = currentStep === 'auth_required' || errorMessage.includes('chính sách 1 phiên') || errorMessage.includes('Cần đăng nhập lại:');
               return (
                 <>
                   {isAuthError && (
@@ -1154,6 +1155,47 @@ export const ScreenProgress: React.FC<Props> = ({
               </button>
             </div>
 
+            {/* Filter Chips Bar */}
+            <div style={{ display: 'flex', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderBottom: '1px solid var(--border-subtle)', backgroundColor: 'var(--bg-subtle)', alignItems: 'center' }}>
+              <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-secondary)' }}>Bộ lọc:</span>
+              <button
+                type="button"
+                onClick={() => setReviewFilter('all')}
+                style={{
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: reviewFilter === 'all' ? 700 : 500,
+                  border: reviewFilter === 'all' ? '1px solid var(--primary)' : '1px solid var(--border-subtle)',
+                  backgroundColor: reviewFilter === 'all' ? 'var(--primary)' : 'var(--bg-surface)',
+                  color: reviewFilter === 'all' ? '#ffffff' : 'var(--text-secondary)',
+                  cursor: 'pointer',
+                }}
+              >
+                Tất cả ({answersList.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setReviewFilter('flagged')}
+                style={{
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  fontSize: 'var(--text-xs)',
+                  fontWeight: reviewFilter === 'flagged' ? 700 : 500,
+                  border: reviewFilter === 'flagged' ? '1px solid #B45309' : '1px solid var(--border-subtle)',
+                  backgroundColor: reviewFilter === 'flagged' ? '#D97706' : 'var(--bg-surface)',
+                  color: reviewFilter === 'flagged' ? '#ffffff' : (answersList.filter((a) => a.crop_warnings && a.crop_warnings.length > 0).length > 0 ? '#B45309' : 'var(--text-muted)'),
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                <WarningIcon size={12} />
+                <span>Ảnh cần xem lại ({answersList.filter((a) => a.crop_warnings && a.crop_warnings.length > 0).length})</span>
+              </button>
+            </div>
+
             {/* Modal Body / Table */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-3)' }}>
               {isLoadingAnswers ? (
@@ -1170,6 +1212,7 @@ export const ScreenProgress: React.FC<Props> = ({
                   <thead>
                     <tr style={{ backgroundColor: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
                       <th style={{ padding: '8px 10px', fontWeight: 600 }}>Câu</th>
+                      <th style={{ padding: '8px 10px', fontWeight: 600 }}>Ảnh câu hỏi</th>
                       <th style={{ padding: '8px 10px', fontWeight: 600 }}>Đáp án chốt</th>
                       <th style={{ padding: '8px 10px', fontWeight: 600 }}>Độ tin cậy</th>
                       <th style={{ padding: '8px 10px', fontWeight: 600 }}>Cộng đồng (Votes)</th>
@@ -1178,7 +1221,9 @@ export const ScreenProgress: React.FC<Props> = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {answersList.map((item, qIdx) => {
+                    {answersList
+                      .filter((item) => reviewFilter === 'all' || (item.crop_warnings && item.crop_warnings.length > 0))
+                      .map((item, qIdx) => {
                       const ansStr = (item.final_answer || []).join(', ') || '?';
                       const status = item.status || 'no_data';
                       const statusBg =
@@ -1208,83 +1253,218 @@ export const ScreenProgress: React.FC<Props> = ({
                         ? editChoiceMap[item.question_id]
                         : ansStr;
 
+                      const isExpanded = expandedImageQuestionId === item.question_id || reviewFilter === 'flagged';
+                      const hasWarnings = item.crop_warnings && item.crop_warnings.length > 0;
+
                       return (
-                        <tr
-                          key={item.question_id || qIdx}
-                          style={{
-                            borderBottom: '1px solid var(--border-subtle)',
-                            backgroundColor: qIdx % 2 === 0 ? 'var(--bg-surface)' : 'var(--bg-canvas)',
-                          }}
-                        >
-                          <td style={{ padding: '8px 10px', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
-                            Câu {item.question_index || qIdx + 1}
-                          </td>
-                          <td style={{ padding: '8px 10px', fontWeight: 700, color: 'var(--primary)', fontSize: '14px' }}>
-                            {ansStr}
-                            {item.manual_override && (
-                              <span style={{ fontSize: '10px', marginLeft: '4px', color: 'var(--text-muted)' }}>(đã sửa)</span>
-                            )}
-                          </td>
-                          <td style={{ padding: '8px 10px' }}>
-                            <span
-                              style={{
-                                padding: '2px 6px',
-                                borderRadius: 'var(--radius-sm)',
-                                fontSize: '11px',
-                                fontWeight: 600,
-                                backgroundColor: statusBg,
-                                color: statusColor,
-                              }}
-                            >
-                              {status.toUpperCase()}
-                            </span>
-                          </td>
-                          <td style={{ padding: '8px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                            {voteEntries.length > 0 ? voteEntries.join(' · ') : '0 phiếu'}
-                          </td>
-                          <td style={{ padding: '8px 10px', color: 'var(--text-secondary)' }}>
-                            {aiText}
-                          </td>
-                          <td style={{ padding: '8px 10px', textAlign: 'right' }}>
-                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              <select
-                                value={currentEdit}
-                                onChange={(e) =>
-                                  setEditChoiceMap({ ...editChoiceMap, [item.question_id]: e.target.value })
-                                }
+                        <React.Fragment key={item.question_id || qIdx}>
+                          <tr
+                            style={{
+                              borderBottom: isExpanded ? 'none' : '1px solid var(--border-subtle)',
+                              backgroundColor: qIdx % 2 === 0 ? 'var(--bg-surface)' : 'var(--bg-canvas)',
+                            }}
+                          >
+                            <td style={{ padding: '8px 10px', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                              Câu {item.question_index || qIdx + 1}
+                            </td>
+                            <td style={{ padding: '8px 10px' }}>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedImageQuestionId(
+                                      expandedImageQuestionId === item.question_id ? null : item.question_id
+                                    )
+                                  }
+                                  style={{
+                                    padding: '2px 8px',
+                                    fontSize: '11px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: '1px solid var(--border-subtle)',
+                                    backgroundColor: isExpanded ? 'var(--primary-subtle)' : 'var(--bg-surface)',
+                                    color: isExpanded ? 'var(--primary)' : 'var(--text-secondary)',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                  }}
+                                >
+                                  <EyeIcon size={12} />
+                                  <span>{isExpanded ? 'Ẩn ảnh' : 'Xem ảnh'}</span>
+                                </button>
+                                {hasWarnings && (
+                                  <span
+                                    style={{
+                                      padding: '1px 6px',
+                                      fontSize: '10px',
+                                      borderRadius: 'var(--radius-sm)',
+                                      backgroundColor: '#FEF3C7',
+                                      color: '#92400E',
+                                      border: '1px solid #FCD34D',
+                                      fontWeight: 600,
+                                    }}
+                                  >
+                                    Cần xem lại
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px 10px', fontWeight: 700, color: 'var(--primary)', fontSize: '14px' }}>
+                              {ansStr}
+                              {item.manual_override && (
+                                <span style={{ fontSize: '10px', marginLeft: '4px', color: 'var(--text-muted)' }}>(đã sửa)</span>
+                              )}
+                            </td>
+                            <td style={{ padding: '8px 10px' }}>
+                              <span
                                 style={{
-                                  padding: '2px 4px',
-                                  fontSize: '11px',
+                                  padding: '2px 6px',
                                   borderRadius: 'var(--radius-sm)',
-                                  border: '1px solid var(--border-strong)',
-                                  backgroundColor: 'var(--bg-surface)',
+                                  fontSize: '11px',
+                                  fontWeight: 600,
+                                  backgroundColor: statusBg,
+                                  color: statusColor,
                                 }}
                               >
-                                {['A', 'B', 'C', 'D', 'A, B', 'A, C', 'B, D', 'A, B, C', 'A, B, C, D', '?'].map((opt) => (
-                                  <option key={opt} value={opt}>
-                                    {opt}
-                                  </option>
-                                ))}
-                              </select>
-                              <button
-                                type="button"
-                                disabled={savingAnswerId === item.question_id}
-                                onClick={() => handleSaveAnswerOverride(item.question_id, currentEdit)}
-                                style={{
-                                  padding: '2px 8px',
-                                  fontSize: '11px',
-                                  backgroundColor: 'var(--primary)',
-                                  color: '#fff',
-                                  border: 'none',
-                                  borderRadius: 'var(--radius-sm)',
-                                  cursor: 'pointer',
-                                }}
-                              >
-                                {savingAnswerId === item.question_id ? 'Lưu...' : 'Lưu'}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
+                                {status.toUpperCase()}
+                              </span>
+                            </td>
+                            <td style={{ padding: '8px 10px', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                              {voteEntries.length > 0 ? voteEntries.join(' · ') : '0 phiếu'}
+                            </td>
+                            <td style={{ padding: '8px 10px', color: 'var(--text-secondary)' }}>
+                              {aiText}
+                            </td>
+                            <td style={{ padding: '8px 10px', textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                                <select
+                                  value={currentEdit}
+                                  onChange={(e) =>
+                                    setEditChoiceMap({ ...editChoiceMap, [item.question_id]: e.target.value })
+                                  }
+                                  style={{
+                                    padding: '2px 4px',
+                                    fontSize: '11px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: '1px solid var(--border-strong)',
+                                    backgroundColor: 'var(--bg-surface)',
+                                  }}
+                                >
+                                  {['A', 'B', 'C', 'D', 'A, B', 'A, C', 'B, D', 'A, B, C', 'A, B, C, D', '?'].map((opt) => (
+                                    <option key={opt} value={opt}>
+                                      {opt}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  disabled={savingAnswerId === item.question_id}
+                                  onClick={() => handleSaveAnswerOverride(item.question_id, currentEdit)}
+                                  style={{
+                                    padding: '2px 8px',
+                                    fontSize: '11px',
+                                    backgroundColor: 'var(--primary)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: 'var(--radius-sm)',
+                                    cursor: 'pointer',
+                                  }}
+                                >
+                                  {savingAnswerId === item.question_id ? 'Lưu...' : 'Lưu'}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {/* Expanded Side-by-Side Comparison Panel */}
+                          {isExpanded && (
+                            <tr style={{ backgroundColor: 'var(--bg-subtle)', borderBottom: '1px solid var(--border-subtle)' }}>
+                              <td colSpan={7} style={{ padding: 'var(--space-3) var(--space-4)' }}>
+                                <div style={{ display: 'flex', gap: 'var(--space-4)', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                                  {/* Original Image */}
+                                  <div style={{ flex: '1 1 320px', minWidth: '280px', background: '#fff', padding: '8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                                    <div style={{ fontSize: '11px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                                      Ảnh gốc (FUOverflow):
+                                    </div>
+                                    {item.raw_image_url ? (
+                                      <img
+                                        src={item.raw_image_url}
+                                        alt={`Ảnh gốc câu ${item.question_index}`}
+                                        style={{ width: '100%', maxHeight: '240px', objectFit: 'contain', border: '1px solid #eee' }}
+                                        loading="lazy"
+                                      />
+                                    ) : (
+                                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Chưa có file ảnh gốc</span>
+                                    )}
+                                  </div>
+
+                                  {/* Cropped Image */}
+                                  <div style={{ flex: '1 1 320px', minWidth: '280px', background: '#fff', padding: '8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                                      <span style={{ fontSize: '11px', fontWeight: 600, color: 'var(--primary)' }}>
+                                        Ảnh đã cắt (Đưa vào Word):
+                                      </span>
+                                      {item.crop_layout && (
+                                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono)' }}>
+                                          [{item.crop_layout}]
+                                        </span>
+                                      )}
+                                    </div>
+                                    {item.cropped_image_url ? (
+                                      <img
+                                        src={item.cropped_image_url}
+                                        alt={`Ảnh cắt câu ${item.question_index}`}
+                                        style={{ width: '100%', maxHeight: '240px', objectFit: 'contain', border: '1px solid #eee' }}
+                                        loading="lazy"
+                                      />
+                                    ) : (
+                                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Chưa có file ảnh cắt</span>
+                                    )}
+
+                                    {/* Warnings if any */}
+                                    {hasWarnings && (
+                                      <div style={{ marginTop: '6px', display: 'flex', gap: '4px', flexWrap: 'wrap', alignItems: 'center' }}>
+                                        <span style={{ fontSize: '10px', fontWeight: 600, color: '#B45309' }}>Cờ cảnh báo:</span>
+                                        {item.crop_warnings.map((w: string) => (
+                                          <span
+                                            key={w}
+                                            style={{
+                                              padding: '1px 5px',
+                                              borderRadius: '3px',
+                                              fontSize: '10px',
+                                              backgroundColor: '#FEE2E2',
+                                              color: '#991B1B',
+                                              fontWeight: 600,
+                                            }}
+                                          >
+                                            {w}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
+
+                                    {/* Choice Hint if available */}
+                                    {item.choice_hint_url && (
+                                      <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                        <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Gợi ý số đáp án:</span>
+                                        <img
+                                          src={item.choice_hint_url}
+                                          alt="Gợi ý số đáp án"
+                                          style={{ height: '22px', border: '1px solid #ddd', borderRadius: '2px' }}
+                                        />
+                                        {item.choice_hint_width_px && (
+                                          <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                                            ({item.choice_hint_width_px}px)
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>

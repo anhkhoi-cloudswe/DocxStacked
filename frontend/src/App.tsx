@@ -123,7 +123,12 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [syncFromUrl]);
 
-  const handleStartJob = async (selectedSubject: string, selectedExamType: 'FE' | 'PE', selectedLimit: number) => {
+  const handleStartJob = async (
+    selectedSubject: string,
+    selectedExamType: 'FE' | 'PE',
+    selectedLimit: number,
+    selectedExamIds?: number[]
+  ) => {
     setIsLoading(true);
     setSubjectCode(selectedSubject);
     setExamType(selectedExamType);
@@ -137,6 +142,7 @@ export const App: React.FC = () => {
           subject_code: selectedSubject,
           exam_type: selectedExamType,
           limit: selectedLimit,
+          exam_ids: selectedExamIds && selectedExamIds.length > 0 ? selectedExamIds : undefined,
         }),
       });
 

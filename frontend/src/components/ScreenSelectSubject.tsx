@@ -17,7 +17,7 @@ import {
 } from './icons';
 
 interface Props {
-  onStartJob: (subjectCode: string, examType: 'FE' | 'PE', limit: number) => void;
+  onStartJob: (subjectCode: string, examType: 'FE' | 'PE', limit: number, examIds?: number[]) => void;
   isLoading: boolean;
   initialOpenLogin?: boolean;
 }
@@ -344,8 +344,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedCodes.length === 0) return;
+    const activeSubj = selectedCodes[0];
+    const chosenIds = selectedExamIds[activeSubj];
+    const examIds = chosenIds && chosenIds.length > 0 ? chosenIds : undefined;
     // Launch for first/active subject or batch
-    onStartJob(selectedCodes[0], examType, limit);
+    onStartJob(activeSubj, examType, limit, examIds);
   };
 
   const formattedSyncTime = lastSyncedAt

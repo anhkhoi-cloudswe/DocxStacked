@@ -10,15 +10,64 @@ interface Props {
 }
 
 export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart }) => {
+  const [downloadingFolder, setDownloadingFolder] = React.useState(false);
+  const [openFolderStatus, setOpenFolderStatus] = React.useState<string | null>(null);
+
   const handleDownload = (path: string) => {
     window.location.href = `/api/exports/download?path=${encodeURIComponent(path)}`;
   };
 
-  const handleDownloadFolder = () => {
-    const url = jobId
-      ? `/api/jobs/${encodeURIComponent(jobId)}/download-folder`
-      : `/api/exports/download-folder?subject=${encodeURIComponent(details.subject_code || '')}&type=${encodeURIComponent(details.exam_type || '')}`;
-    window.location.href = url;
+  const handleDownloadFolder = async () => {
+    // Sequentially download each file directly into the user's browser default Downloads folder
+    if (files.length === 0) return;
+    setDownloadingFolder(true);
+    setOpenFolderStatus(`Đang tải ${files.length} file về thư mục Downloads...`);
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const downloadUrl = `/api/exports/download?path=${encodeURIComponent(file.path)}`;
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = file.filename || file.path.split(/[/\\]/).pop() || 'exam.docx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        // Small interval between downloads so browser doesn't block bulk triggers
+        if (i < files.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
+      setOpenFolderStatus(`Đã tải thành công ${files.length} file Word về thư mục Downloads!`);
+      setTimeout(() => setOpenFolderStatus(null), 5000);
+    } catch (err) {
+      console.error('Error downloading files:', err);
+      // Fallback
+      const url = jobId
+        ? `/api/jobs/${encodeURIComponent(jobId)}/download-folder`
+        : `/api/exports/download-folder?subject=${encodeURIComponent(details.subject_code || '')}&type=${encodeURIComponent(details.exam_type || '')}`;
+      window.location.href = url;
+    } finally {
+      setDownloadingFolder(false);
+    }
+  };
+
+  const handleOpenLocalFolder = async () => {
+    try {
+      const resp = await fetch('/api/exports/open-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: details.subject_code }),
+      });
+      const data = await resp.json();
+      if (data.success) {
+        setOpenFolderStatus('Đã mở thư mục lưu trữ trên máy.');
+        setTimeout(() => setOpenFolderStatus(null), 4000);
+      }
+    } catch (e) {
+      console.error('Failed to open local folder:', e);
+    }
   };
 
   const formatFileSize = (bytes: number): string => {
@@ -120,30 +169,68 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
             </h3>
 
             {files.length > 0 && (
-              <button
-                type="button"
-                onClick={handleDownloadFolder}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: 'var(--text-xs)',
-                  padding: 'var(--space-2) var(--space-4)',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  backgroundColor: '#D97706',
-                  color: '#ffffff',
-                  border: '1px solid #B45309',
-                  borderRadius: 'var(--radius-sm)',
-                  boxShadow: 'var(--shadow-sm)',
-                }}
-                title="Tải toàn bộ file Word được gom thành thư mục phân loại theo môn và thể loại"
-              >
-                <FolderIcon size={14} />
-                <span>Tải Folder</span>
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={handleDownloadFolder}
+                  disabled={downloadingFolder}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    fontSize: 'var(--text-xs)',
+                    padding: 'var(--space-2) var(--space-4)',
+                    fontWeight: 600,
+                    cursor: downloadingFolder ? 'wait' : 'pointer',
+                    backgroundColor: '#D97706',
+                    color: '#ffffff',
+                    border: '1px solid #B45309',
+                    borderRadius: 'var(--radius-sm)',
+                    boxShadow: 'var(--shadow-sm)',
+                    opacity: downloadingFolder ? 0.7 : 1,
+                  }}
+                  title="Tải toàn bộ file Word được lưu thẳng vào 1 folder máy tính (không cần giải nén zip)"
+                >
+                  <FolderIcon size={14} />
+                  <span>{downloadingFolder ? 'Đang lưu folder...' : 'Tải Folder'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleOpenLocalFolder}
+                  className="btn-secondary"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    fontSize: 'var(--text-xs)',
+                    padding: 'var(--space-2) var(--space-3)',
+                    cursor: 'pointer',
+                  }}
+                  title="Mở trực tiếp thư mục lưu trữ file Word trên máy tính (Windows Explorer)"
+                >
+                  <span>Mở trên máy</span>
+                </button>
+              </div>
             )}
           </div>
+
+          {openFolderStatus && (
+            <div
+              style={{
+                marginBottom: 'var(--space-3)',
+                padding: '6px 12px',
+                backgroundColor: 'var(--status-confident-bg)',
+                border: '1px solid var(--status-confident-border)',
+                color: 'var(--status-confident-text)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 'var(--text-xs)',
+                fontWeight: 500,
+              }}
+            >
+              ✓ {openFolderStatus}
+            </div>
+          )}
 
           <div
             style={{

@@ -21,25 +21,27 @@ settings = get_settings()
 def _fetch_thread_html_sync(url: str) -> Tuple[str, Optional[str]]:
     """Fetch HTML of a thread page in worker thread. Returns (html, status)."""
     bm = get_browser_manager()
-    try:
-        ctx = bm.start_context(headless=True)
-        resp = ctx.request.get(url, timeout=30000)
-    except Exception as e:
-        logger.warning(f"Thread fetch error ({e}). Retrying with fresh browser context...")
-        bm.close()
-        ctx = bm.start_context(headless=True)
-        resp = ctx.request.get(url, timeout=30000)
-
-    if resp.status == 403:
-        logger.warning(f"Thread page returned 403 Forbidden: {url}")
-        return "", "403_forbidden"
-    if resp.status == 200:
-        text = resp.text()
-        if 'data-logged-in="false"' in text and "/login" in resp.url:
-            logger.warning(f"Thread page redirected to login: {url}")
-            return "", "unauthenticated"
-        return text, "ok"
-    return "", f"http_{resp.status}"
+    for attempt in range(2):
+        try:
+            ctx = bm.start_context(headless=True)
+            resp = ctx.request.get(url, timeout=30000)
+            if resp.status == 403:
+                logger.warning(f"Thread page returned 403 Forbidden: {url}")
+                return "", "403_forbidden"
+            if resp.status == 200:
+                text = resp.text()
+                if 'data-logged-in="false"' in text and "/login" in resp.url:
+                    logger.warning(f"Thread page redirected to login: {url}")
+                    return "", "unauthenticated"
+                return text, "ok"
+            return "", f"http_{resp.status}"
+        except Exception as e:
+            err_name = type(e).__name__
+            logger.warning(f"Thread fetch error ({err_name}: {e}) on attempt {attempt + 1}. Re-initializing context...")
+            bm.close()
+            if attempt == 1:
+                return "", f"error_{err_name}: {str(e)}"
+    return "", "error_unknown"
 
 
 def _download_image_sync(
@@ -90,6 +92,8 @@ def _download_image_sync(
                         return True, "ok"
         except Exception as e:
             logger.warning(f"Direct full-res download failed for {media_url}: {e}")
+            if "closed" in str(e).lower():
+                bm.close()
 
     # 2. Option B: Fallback to element screenshot
     if media_url:
@@ -179,6 +183,8 @@ async def crawl_exam_questions(
             "Vui lòng đăng nhập lại và bấm 'Chạy tiếp từ chỗ dừng'!"
         )
     if not thread_html:
+        if thread_status and thread_status.startswith("error_"):
+            raise RuntimeError(f"Lỗi nội bộ khi kết nối tải đề thi: {thread_status}")
         logger.error(f"Failed to fetch thread page {exam.url}")
         return existing_questions or []
 

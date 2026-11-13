@@ -120,13 +120,19 @@ def test_no_data_empty_comments():
 
 
 def test_ai_disagree_with_community_causes_conflict():
-    """If AI disagrees with community majority, result is CONFLICT."""
+    """If AI disagrees with community majority, result follows ai_disagreement_policy."""
     c1 = Comment(id=1, question_id=1, comment_id="1", author_hash="u1", raw_text="A", upvotes=1)
     c2 = Comment(id=2, question_id=1, comment_id="2", author_hash="u2", raw_text="A", upvotes=0)
 
-    # Community clearly chose A (2 voters, high confidence). AI chose B.
-    result = tally_votes([c1, c2], ai_answer=["B"])
-    assert result.status == AnswerStatus.CONFLICT
+    # Policy 'flag' (default): status remains CONFIDENT, ai_disagreed is True
+    res_flag = tally_votes([c1, c2], ai_answer=["B"], ai_disagreement_policy="flag")
+    assert res_flag.status == AnswerStatus.CONFIDENT
+    assert res_flag.ai_disagreed is True
+
+    # Policy 'conflict': status becomes CONFLICT
+    res_conflict = tally_votes([c1, c2], ai_answer=["B"], ai_disagreement_policy="conflict")
+    assert res_conflict.status == AnswerStatus.CONFLICT
+    assert res_conflict.ai_disagreed is True
 
 
 def test_ai_supports_single_community_voter_makes_confident():
