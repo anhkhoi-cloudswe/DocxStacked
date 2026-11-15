@@ -89,6 +89,7 @@ def get_default_settings() -> Dict[str, Any]:
     else:
         providers_list = [
             {"name": "gemini", "model": "gemini-2.5-flash", "api_key_env": "GEMINI_API_KEY", "base_url": None, "enabled": True},
+            {"name": "groq", "model": "llama-3.2-11b-vision-preview", "api_key_env": "GROQ_API_KEY", "base_url": "https://api.groq.com/openai/v1", "enabled": False},
             {"name": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY", "base_url": None, "enabled": False},
             {"name": "openai_compatible", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1", "enabled": False},
         ]

@@ -99,47 +99,69 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
                     }
 
     documents: List[DocumentItem] = []
-    # Scan all subject folders in output/
-    for subj_dir in sorted(out_dir.iterdir()):
+    seen_exam_keys: Set[str] = set()
+
+    # Scan all subject folders in output/ and collect candidate docx files
+    candidate_files = []
+    for subj_dir in out_dir.iterdir():
         if not subj_dir.is_dir():
             continue
         subj_code = subj_dir.name.upper()
-        for doc_file in sorted(subj_dir.glob("*.docx"), key=lambda f: f.stat().st_mtime, reverse=True):
-            fn = doc_file.name
-            size_b = doc_file.stat().st_size
-            meta = file_metadata_map.get(fn, {})
-            exam_title = meta.get("exam_title") or fn.replace(".docx", "")
-            q_count = meta.get("questions_count", 0)
+        for doc_file in subj_dir.glob("*.docx"):
+            # Check existence and non-zero accessibility
+            if not doc_file.is_file():
+                continue
+            # Hide test files like "(Extension Ingested)"
+            if "(Extension Ingested)" in doc_file.name:
+                continue
+            candidate_files.append((subj_code, doc_file, doc_file.stat().st_mtime))
 
-            # If question count not in metadata, inspect exams in DB
-            if q_count == 0:
-                exam_res = await db.execute(
-                    select(Exam).where(Exam.title.ilike(f"%{subj_code}%")).limit(1)
-                )
-                ex = exam_res.scalar_one_or_none()
-                q_count = ex.question_count if ex else 60
+    # Sort newest first across all subjects
+    candidate_files.sort(key=lambda x: x[2], reverse=True)
 
-            created_str = meta.get("created_at")
-            if not created_str:
-                created_dt = datetime.fromtimestamp(doc_file.stat().st_mtime)
-                created_str = created_dt.strftime("%H:%M %d/%m/%Y")
+    for subj_code, doc_file, mtime in candidate_files:
+        fn = doc_file.name
+        size_b = doc_file.stat().st_size
+        meta = file_metadata_map.get(fn, {})
+        exam_title = meta.get("exam_title") or fn.replace(".docx", "")
 
-            rel_path = f"data/output/{subj_code}/{fn}"
-            download_url = f"/api/exports/download?file={rel_path}"
+        # Deduplicate by canonical exam key (e.g. normalize spaces and subject prefix)
+        canonical_key = f"{subj_code}::{exam_title.strip().lower()}"
+        if canonical_key in seen_exam_keys:
+            continue
+        seen_exam_keys.add(canonical_key)
 
-            documents.append(
-                DocumentItem(
-                    filename=fn,
-                    subject_code=subj_code,
-                    exam_title=exam_title,
-                    questions_count=q_count or 60,
-                    size_bytes=size_b,
-                    size_formatted=_format_size(size_b),
-                    download_url=download_url,
-                    created_at=created_str,
-                    is_cached=True,
-                )
+        q_count = meta.get("questions_count", 0)
+
+        # If question count not in metadata, inspect exams in DB
+        if q_count == 0:
+            exam_res = await db.execute(
+                select(Exam).where(Exam.title.ilike(f"%{subj_code}%")).limit(1)
             )
+            ex = exam_res.scalar_one_or_none()
+            q_count = ex.question_count if ex else 60
+
+        created_str = meta.get("created_at")
+        if not created_str:
+            created_dt = datetime.fromtimestamp(mtime)
+            created_str = created_dt.strftime("%H:%M %d/%m/%Y")
+
+        rel_path = f"data/output/{subj_code}/{fn}"
+        download_url = f"/api/exports/download?file={rel_path}"
+
+        documents.append(
+            DocumentItem(
+                filename=fn,
+                subject_code=subj_code,
+                exam_title=exam_title,
+                questions_count=q_count or 60,
+                size_bytes=size_b,
+                size_formatted=_format_size(size_b),
+                download_url=download_url,
+                created_at=created_str,
+                is_cached=True,
+            )
+        )
 
     return documents
 
