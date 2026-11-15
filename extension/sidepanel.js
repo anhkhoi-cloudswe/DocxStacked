@@ -2,6 +2,7 @@
 // Persistent ingestion loop running directly in Side Panel context.
 
 const BACKEND_URL = "http://127.0.0.1:8000";
+const EXTENSION_ID = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) ? chrome.runtime.id : "kicplcdfmbcfjildbbimpfiljlmfokea";
 const LOCAL_INGEST_KEY = "docxstacked_local_secret_2026";
 const MIN_REQUEST_INTERVAL_MS = 2000; // Hard cadence: 1 request every 2.0s
 
@@ -163,7 +164,10 @@ async function sleep(ms) {
 // 1. Check Backend Connectivity
 async function checkBackend() {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/health`, { method: "GET" });
+    const res = await fetch(`${BACKEND_URL}/api/health`, {
+      method: "GET",
+      headers: { "X-DocxStacked-Ext": EXTENSION_ID },
+    });
     if (res.ok) {
       elBackendStatus.className = "badge-status badge-online";
       elBackendStatus.innerText = "● Backend Online";
@@ -215,7 +219,10 @@ async function checkFuOverflowAuth() {
       try {
         await fetch(`${BACKEND_URL}/api/auth/extension-heartbeat`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-DocxStacked-Ext": EXTENSION_ID,
+          },
           body: JSON.stringify({ logged_in: true, username: username }),
         });
       } catch (e) {
@@ -232,7 +239,10 @@ async function checkFuOverflowAuth() {
       try {
         await fetch(`${BACKEND_URL}/api/auth/extension-heartbeat`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "X-DocxStacked-Ext": EXTENSION_ID,
+          },
           body: JSON.stringify({ logged_in: false, username: null }),
         });
       } catch (e) {}
@@ -403,7 +413,9 @@ async function startIngestion() {
 
   // Pre-flight check (GET /api/ingest/ping). Token is purely optional.
   const userToken = (elInputIngestToken && elInputIngestToken.value.trim()) || "";
-  const pingHeaders = {};
+  const pingHeaders = {
+    "X-DocxStacked-Ext": EXTENSION_ID,
+  };
   if (userToken) {
     pingHeaders["X-Ingest-Token"] = userToken;
   }
@@ -624,6 +636,7 @@ async function sendPayloadToBackend(examBuffer, userToken) {
 
   const headers = {
     "Content-Type": "application/json",
+    "X-DocxStacked-Ext": EXTENSION_ID,
   };
   if (userToken) {
     headers["X-Ingest-Token"] = userToken;

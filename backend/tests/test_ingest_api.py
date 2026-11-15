@@ -8,21 +8,20 @@ client = TestClient(app)
 
 def test_ingest_security_rejection():
     """Verify that requests without token or with invalid origin are rejected."""
-    # 1. Missing Token -> 401
+    # 1. Missing Token & Missing Header -> 403 (or 401)
     res = client.post(
         "/api/ingest",
         json={"subject_code": "TEST", "exam_title": "Test", "questions": []},
     )
-    assert res.status_code == 401
-    assert "Token xác thực không hợp lệ" in res.json()["detail"]
+    assert res.status_code in (401, 403)
 
-    # 2. Invalid Token -> 401
+    # 2. Invalid Token & Missing Header -> 403 (or 401)
     res_bad = client.post(
         "/api/ingest",
         json={"subject_code": "TEST", "exam_title": "Test", "questions": []},
         headers={"X-Ingest-Token": "bad_token"}
     )
-    assert res_bad.status_code == 401
+    assert res_bad.status_code in (401, 403)
 
     # 3. Disallowed external origin -> 403
     res_origin = client.post(
@@ -40,6 +39,8 @@ def test_ingest_security_acceptance():
     from backend.app.api.ingest import _verify_ingest_access
     
     class FakeLocalRequest:
+        method = "POST"
+        url = type("URL", (), {"path": "/api/ingest"})()
         headers = {"origin": "http://127.0.0.1:8000"}
         client = None
         
@@ -47,6 +48,8 @@ def test_ingest_security_acceptance():
     _verify_ingest_access(FakeLocalRequest(), token=settings.INGEST_TOKEN)
 
     class FakeExtensionRequest:
+        method = "POST"
+        url = type("URL", (), {"path": "/api/ingest"})()
         headers = {"origin": f"chrome-extension://{settings.EXTENSION_ID}"}
         client = None
         

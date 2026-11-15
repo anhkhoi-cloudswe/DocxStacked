@@ -72,52 +72,88 @@ def _verify_ingest_access(request: Request, token: Optional[str] = None) -> None
     """
     Ensure endpoint is strictly secured:
     1. Host header validation: strictly 127.0.0.1, localhost, or testserver (blocks DNS rebinding).
-    2. Origin header validation:
-       - If Origin == chrome-extension://<EXTENSION_ID>: ALLOW immediately without requiring manual token.
-       - If Origin is localhost or 127.0.0.1: ALLOW if token provided or for local dev.
-       - Any other Origin (external website e.g. evil.com): strictly 403 Forbidden.
-    3. If Origin is empty/missing (direct script/curl): require valid INGEST_TOKEN.
+    2. Origin & Custom Header validation (independent of browser Origin header omission):
+       - Extension sends header 'X-DocxStacked-Ext: <EXTENSION_ID>' on all calls.
+       - If Origin is present:
+           * If Origin == chrome-extension://<EXTENSION_ID>: ALLOW immediately.
+           * If Origin is localhost or 127.0.0.1: ALLOW.
+           * Any other Origin (external website e.g. evil.com): strictly 403 Forbidden.
+       - If Origin is absent/empty (Chrome sidepanel GET, direct extension fetch, or CLI):
+           * If 'X-DocxStacked-Ext' matches pinned extension ID: ALLOW immediately.
+           * Else: require valid INGEST_TOKEN or return 403 (or 401 if missing token).
     """
+    headers = request.headers
+    origin_header = (headers.get("origin") or "").strip()
+    host_header = (headers.get("host") or "").strip()
+    referer_header = (headers.get("referer") or "").strip()
+    sec_fetch_site = (headers.get("sec-fetch-site") or "").strip()
+    sec_fetch_mode = (headers.get("sec-fetch-mode") or "").strip()
+    user_agent = (headers.get("user-agent") or "").strip()
+    custom_ext_header = (headers.get("x-docxstacked-ext") or "").strip()
+
+    # Log DEBUG all incoming headers
+    method_name = getattr(request, "method", "UNKNOWN")
+    path_name = getattr(getattr(request, "url", None), "path", "/api/ingest")
+    logger.info(
+        f"[INGEST ACCESS] method={method_name} path={path_name} "
+        f"Origin='{origin_header}' Host='{host_header}' Referer='{referer_header}' "
+        f"Sec-Fetch-Site='{sec_fetch_site}' Sec-Fetch-Mode='{sec_fetch_mode}' "
+        f"X-DocxStacked-Ext='{custom_ext_header}' User-Agent='{user_agent[:60]}...'"
+    )
+
     # 1. Host validation against DNS rebinding
-    host_header = (request.headers.get("host") or "").split(":")[0].strip().lower()
+    host_name = host_header.split(":")[0].strip().lower()
     allowed_hosts = {"127.0.0.1", "localhost", "testserver"}
-    if host_header and host_header not in allowed_hosts:
-        logger.warning(f"Rejected ingest request due to invalid Host header: '{host_header}'")
+    if host_name and host_name not in allowed_hosts:
+        logger.warning(f"Rejected ingest request due to invalid Host header: '{host_name}'")
         raise HTTPException(
             status_code=403,
-            detail=f"Host '{host_header}' không hợp lệ. Chỉ chấp nhận kết nối tới 127.0.0.1 hoặc localhost.",
+            detail=f"Host '{host_name}' không hợp lệ. Chỉ chấp nhận kết nối tới 127.0.0.1 hoặc localhost.",
         )
 
-    # 2. Origin validation
-    origin = (request.headers.get("origin") or request.headers.get("referer") or "").strip()
     configured_ext_id = (settings.EXTENSION_ID or "kicplcdfmbcfjildbbimpfiljlmfokea").strip()
     valid_ext_origin = f"chrome-extension://{configured_ext_id}"
 
-    if origin:
-        if origin.startswith(valid_ext_origin):
+    # 2. Origin validation
+    if origin_header:
+        if origin_header.startswith(valid_ext_origin):
             # Trusted extension with pinned ID
             return
-        elif origin.startswith("http://localhost") or origin.startswith("http://127.0.0.1"):
+        elif origin_header.startswith("http://localhost") or origin_header.startswith("http://127.0.0.1"):
             # Local frontend / dev request
             return
         else:
-            logger.warning(f"Unauthorized Origin header in ingest attempt: {origin}")
+            logger.warning(f"Unauthorized Origin header in ingest attempt: '{origin_header}'")
             raise HTTPException(
                 status_code=403,
-                detail=f"Origin '{origin}' không được cấp quyền. Chỉ chấp nhận từ extension đã ghim ID hoặc localhost.",
+                detail=f"Origin '{origin_header}' không được cấp quyền. Chỉ chấp nhận từ extension đã ghim ID hoặc localhost.",
             )
 
-    # 3. Fallback token validation when Origin is not provided (e.g. CLI / direct curl / backend test)
+    # 3. If Origin is absent: check custom header X-DocxStacked-Ext matching pinned ID
+    if custom_ext_header:
+        if custom_ext_header == configured_ext_id:
+            # Trusted extension verified via pinned custom header
+            return
+        else:
+            logger.warning(f"Rejected ingest request due to mismatched X-DocxStacked-Ext: '{custom_ext_header}'")
+            raise HTTPException(
+                status_code=403,
+                detail=f"Mã định danh extension '{custom_ext_header}' không khớp với cấu hình server.",
+            )
+
+    # 4. Fallback token validation when neither valid Origin nor pinned custom header is provided
     expected_token = (settings.INGEST_TOKEN or "").strip()
     if not expected_token:
         expected_token = getattr(settings, "LOCAL_INGEST_KEY", "docxstacked_local_secret_2026")
 
-    if not token or token.strip() != expected_token:
-        logger.warning(f"Invalid or missing Ingest Token provided for non-extension origin")
-        raise HTTPException(
-            status_code=401,
-            detail="Token xác thực không hợp lệ. Vui lòng kiểm tra mã token trong Cài đặt của DocxStacked.",
-        )
+    if token and token.strip() == expected_token:
+        return
+
+    logger.warning("Rejected ingest request: Missing valid Origin, X-DocxStacked-Ext header, and valid Ingest Token")
+    raise HTTPException(
+        status_code=403,
+        detail="Truy cập bị từ chối. Yêu cầu phải gửi từ extension đã ghim ID hoặc cung cấp Token xác thực hợp lệ.",
+    )
 
 
 @router.get("/ping")

@@ -154,3 +154,99 @@ def test_sidepanel_no_mandatory_token_prompt_grep():
     assert "alert(" not in content
     assert "confirm(" not in content
 
+
+# ============================================================================
+# Simulated Browser Behavior Tests (TestClient)
+# (a) No Origin + valid pinned header X-DocxStacked-Ext -> 200
+# (b) No Origin + no header -> 403
+# (c) Origin website lạ -> 403
+# (d) Preflight OPTIONS from foreign Origin -> does not return Access-Control-Allow-Origin
+# (e) Host lạ -> 403
+# ============================================================================
+
+def test_simulated_browser_no_origin_with_pinned_header_returns_200():
+    """
+    (a) Chrome side panel GET request where Origin header is omitted by browser,
+    but custom header X-DocxStacked-Ext matches pinned extension ID -> 200 OK.
+    [Method: Simulated via TestClient]
+    """
+    res = client.get(
+        "/api/ingest/ping",
+        headers={
+            "Host": "127.0.0.1:8000",
+            "X-DocxStacked-Ext": settings.EXTENSION_ID,
+        },
+    )
+    assert res.status_code == 200
+    assert res.json().get("status") == "ok"
+
+
+def test_simulated_browser_no_origin_no_header_rejected_with_403():
+    """
+    (b) Request with No Origin and No X-DocxStacked-Ext header (and no token) -> 403 Forbidden.
+    [Method: Simulated via TestClient]
+    """
+    res = client.get(
+        "/api/ingest/ping",
+        headers={
+            "Host": "127.0.0.1:8000",
+        },
+    )
+    assert res.status_code == 403
+    assert "Truy cập bị từ chối" in res.json().get("detail", "")
+
+
+def test_simulated_browser_foreign_origin_rejected_with_403():
+    """
+    (c) Request from foreign website Origin (e.g., https://malicious-site.com) -> 403 Forbidden,
+    even if the page tries to pass headers.
+    [Method: Simulated via TestClient]
+    """
+    res = client.get(
+        "/api/ingest/ping",
+        headers={
+            "Host": "127.0.0.1:8000",
+            "Origin": "https://malicious-site.com",
+            "X-DocxStacked-Ext": settings.EXTENSION_ID,
+        },
+    )
+    assert res.status_code == 403
+    assert "không được cấp quyền" in res.json().get("detail", "")
+
+
+def test_simulated_browser_cors_preflight_foreign_origin_denied():
+    """
+    (d) Preflight OPTIONS request from unknown/foreign Origin must NOT return Access-Control-Allow-Origin.
+    [Method: Simulated via TestClient]
+    """
+    res = client.options(
+        "/api/ingest/ping",
+        headers={
+            "Host": "127.0.0.1:8000",
+            "Origin": "https://malicious-site.com",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "x-docxstacked-ext",
+        },
+    )
+    # FastAPI CORSMiddleware does not return allow-origin header for disallowed origins (or returns 400 Bad Request)
+    allow_origin = res.headers.get("access-control-allow-origin")
+    assert allow_origin != "https://malicious-site.com"
+    assert allow_origin != "*"
+
+
+def test_simulated_browser_invalid_host_rejected_with_403():
+    """
+    (e) Request with invalid Host header (DNS rebinding attempt) -> 403 Forbidden.
+    [Method: Simulated via TestClient]
+    """
+    res = client.get(
+        "/api/ingest/ping",
+        headers={
+            "Host": "rebinding-attacker.com:8000",
+            "X-DocxStacked-Ext": settings.EXTENSION_ID,
+        },
+    )
+    assert res.status_code == 403
+    assert "Host 'rebinding-attacker.com' không hợp lệ" in res.json().get("detail", "")
+
+
