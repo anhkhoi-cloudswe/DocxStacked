@@ -15,6 +15,8 @@ import psutil
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
 
+import time
+
 logger = get_logger(__name__)
 settings = get_settings()
 
@@ -23,6 +25,18 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 LOG_FILE = settings.DATA_DIR / "logs" / "login.log"
 SESSION_FILE = settings.DATA_DIR / "auth" / "login_session.json"
 PROFILE_DIR = settings.DATA_DIR / "browser_profile"
+
+# In-memory store for recent extension heartbeat
+_latest_extension_heartbeat: dict = {
+    "timestamp": 0.0,
+    "logged_in": False,
+    "username": None,
+}
+
+
+class ExtensionHeartbeatRequest(BaseModel):
+    logged_in: bool
+    username: Optional[str] = None
 
 
 class AuthStatusResponse(BaseModel):
@@ -87,49 +101,75 @@ def _get_current_logged_in_username() -> Optional[str]:
     return None
 
 
-def _check_browser_auth_sync() -> AuthStatusResponse:
-    """Synchronous check of FUOverflow authentication via saved cookies and profile state."""
-    cookies_file = settings.DATA_DIR / "auth" / "cookies.json"
-    saved_username = _get_current_logged_in_username() or "Thành viên FUOverflow"
-
-    if cookies_file.exists():
-        try:
-            cookies = json.loads(cookies_file.read_text(encoding="utf-8"))
-            if isinstance(cookies, list):
-                for c in cookies:
-                    if c.get("name") in ("xf_user", "xf_session", "xf_user_session") and c.get("value"):
-                        exp = c.get("expires", 0)
-                        if exp and exp > 0:
-                            exp_dt = datetime.fromtimestamp(exp)
-                            if exp_dt < datetime.now():
-                                return AuthStatusResponse(
-                                    logged_in=False,
-                                    status_code="not_logged_in",
-                                    detail="Phiên đăng nhập đã hết hạn.",
-                                )
-                            return AuthStatusResponse(
-                                logged_in=True,
-                                status_code="logged_in",
-                                detail="Đã đăng nhập FUOverflow",
-                                username=saved_username,
-                                expires_at=exp_dt.isoformat(),
-                            )
-                        return AuthStatusResponse(
-                            logged_in=True,
-                            status_code="logged_in",
-                            detail="Đã đăng nhập FUOverflow",
-                            username=saved_username,
-                        )
-        except Exception as e:
-            logger.debug(f"Error checking cookies.json: {e}")
-
-    # Check if profile directory is currently locked by stale browser processes
+async def _check_browser_auth_async() -> AuthStatusResponse:
+    """
+    Live check of FUOverflow authentication executed strictly in an isolated child process.
+    Never launches Playwright or touches event loops in the server process.
+    """
+    # 1. Verify if profile directory is currently locked by stale browser processes
     locking_pids = _get_profile_locking_pids()
     if locking_pids:
         return AuthStatusResponse(
             logged_in=False,
             status_code="profile_locked",
             detail=f"Thư mục hồ sơ đang bị {len(locking_pids)} tiến trình chạy ngầm giữ (PIDs: {locking_pids}).",
+        )
+
+    # 2. Check if cookies exist
+    cookies_file = settings.DATA_DIR / "auth" / "cookies.json"
+    if not cookies_file.exists():
+        return AuthStatusResponse(
+            logged_in=False,
+            status_code="not_logged_in",
+            detail="Chưa đăng nhập FUOverflow (chưa có phiên lưu trữ).",
+        )
+
+    # 3. Live verification via dedicated subprocess
+    login_script = settings.BASE_DIR / "scripts" / "login.py"
+    if not login_script.exists():
+        return AuthStatusResponse(
+            logged_in=False,
+            status_code="network_error",
+            detail="Không tìm thấy tệp scripts/login.py để kiểm tra phiên.",
+        )
+
+    try:
+        res = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, str(login_script), "--check"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            cwd=str(settings.BASE_DIR),
+        )
+        if res.stdout:
+            for line in reversed(res.stdout.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("{") and line.endswith("}"):
+                    data = json.loads(line)
+                    return AuthStatusResponse(
+                        logged_in=bool(data.get("logged_in")),
+                        status_code=data.get("status_code", "not_logged_in"),
+                        detail=data.get("detail", ""),
+                        username=data.get("username"),
+                        expires_at=data.get("expires_at"),
+                    )
+        logger.warning(f"Auth check subprocess returned unexpected output: {res.stderr or res.stdout}")
+    except subprocess.TimeoutExpired:
+        logger.warning("Auth check subprocess timed out after 15s")
+        return AuthStatusResponse(
+            logged_in=False,
+            status_code="network_error",
+            detail="Quá thời gian kiểm tra phiên đăng nhập (timeout 15s).",
+        )
+    except Exception as e:
+        logger.warning(f"Error during live auth check subprocess: {e}")
+        return AuthStatusResponse(
+            logged_in=False,
+            status_code="network_error",
+            detail=f"Không thể kiểm tra phiên: {e}",
         )
 
     return AuthStatusResponse(
@@ -139,10 +179,45 @@ def _check_browser_auth_sync() -> AuthStatusResponse:
     )
 
 
+@router.post("/extension-heartbeat")
+async def extension_heartbeat(payload: ExtensionHeartbeatRequest):
+    """
+    Called by browser extension (every 30-60s via alarms or upon opening sidepanel)
+    to notify backend that the user is logged into fuoverflow.com.
+    """
+    global _latest_extension_heartbeat
+    _latest_extension_heartbeat = {
+        "timestamp": time.time(),
+        "logged_in": bool(payload.logged_in),
+        "username": payload.username,
+    }
+    logger.debug(f"Received extension heartbeat: logged_in={payload.logged_in}, user={payload.username}")
+    return {"status": "ok", "recorded": _latest_extension_heartbeat}
+
+
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status():
-    """Check FUOverflow authentication status with distinct codes."""
-    return _check_browser_auth_sync()
+    """
+    Check FUOverflow authentication status:
+    1. Check if extension heartbeat reported logged_in within the last 90 seconds.
+    2. Fallback to live Playwright cookies check.
+    """
+    global _latest_extension_heartbeat
+    now = time.time()
+    if (now - _latest_extension_heartbeat.get("timestamp", 0.0)) < 90.0:
+        if _latest_extension_heartbeat.get("logged_in"):
+            return AuthStatusResponse(
+                logged_in=True,
+                status_code="logged_in",
+                detail="Đã đăng nhập FUOverflow (xác thực từ Extension).",
+                username=_latest_extension_heartbeat.get("username") or "Extension User",
+            )
+
+    return await _check_browser_auth_async()
+
+
+# Compatibility alias
+_check_browser_auth_sync = _check_browser_auth_async
 
 
 def _read_recent_logs(max_lines: int = 8) -> List[str]:
@@ -426,8 +501,8 @@ async def logout():
             logger.warning(f"Could not delete {f.name}: {e}")
 
     try:
-        from backend.app.modules.crawler.browser import SessionManager
-        SessionManager.invalidate()
+        from backend.app.modules.crawler.browser import SessionManager, run_in_browser_thread
+        await run_in_browser_thread(SessionManager.invalidate)
     except Exception as e:
         logger.warning(f"Error invalidating session during logout: {e}")
 
@@ -435,74 +510,42 @@ async def logout():
     return {"success": True, "message": "Đã đăng xuất thành công."}
 
 
-def _login_with_credentials_sync(username: str, password: str) -> tuple[bool, str]:
-    """Log into FUOverflow using Playwright headless with credentials without logging secrets."""
-    import asyncio
+def _login_with_credentials_subprocess(username: str, password: str) -> tuple[bool, str]:
+    """Run credentials login strictly in an isolated child process without touching server loop."""
+    login_script = settings.BASE_DIR / "scripts" / "login.py"
+    if not login_script.exists():
+        return False, "Không tìm thấy scripts/login.py"
+
+    input_payload = json.dumps({"username": username, "password": password})
     try:
-        asyncio._set_running_loop(None)
-    except Exception:
-        pass
-    try:
-        asyncio.set_event_loop(None)
-    except Exception:
-        pass
-
-    from playwright.sync_api import sync_playwright
-    cookies_file = settings.DATA_DIR / "auth" / "cookies.json"
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            page = context.new_page()
-            page.goto("https://fuoverflow.com/login/", wait_until="domcontentloaded", timeout=25000)
-            page.fill('form[action*="/login"] input[name="login"]', username)
-            page.fill('form[action*="/login"] input[name="password"]', password)
-            try:
-                page.check('form[action*="/login"] input[name="remember"]')
-            except Exception:
-                pass
-            page.press('form[action*="/login"] input[name="password"]', "Enter")
-            page.wait_for_timeout(5000)
-
-            cookies = context.cookies()
-            has_user = any(c.get("name") in ("xf_user", "xf_session", "xf_user_session") for c in cookies)
-
-            # Check for error message on forum page
-            error_el = page.query_selector(".blockMessage--error, .formSubmitRow-errors")
-            if error_el:
-                err_text = error_el.inner_text().strip()
-                browser.close()
-                return False, f"Đăng nhập thất bại: {err_text}"
-
-            if has_user:
-                cookies_file.parent.mkdir(parents=True, exist_ok=True)
-                cookies_file.write_text(json.dumps(cookies, indent=2, ensure_ascii=False), encoding="utf-8")
-                browser.close()
-                return True, "Đăng nhập thành công!"
-
-            browser.close()
-            return False, "Không nhận được phiên đăng nhập từ diễn đàn."
+        res = subprocess.run(
+            [sys.executable, str(login_script), "--login-credentials"],
+            input=input_payload,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=35,
+            cwd=str(settings.BASE_DIR),
+        )
+        if res.stdout:
+            for line in reversed(res.stdout.strip().splitlines()):
+                line = line.strip()
+                if line.startswith("{") and line.endswith("}"):
+                    data = json.loads(line)
+                    return bool(data.get("success")), data.get("message", "")
+        return False, f"Lỗi tiến trình đăng nhập: {res.stderr or 'Không có phản hồi'}"
+    except subprocess.TimeoutExpired:
+        return False, "Quá thời gian kết nối đăng nhập (35s)."
     except Exception as e:
-        logger.error(f"Error during headless account login: {e}")
-        return False, f"Lỗi kết nối khi đăng nhập: {e}"
-    finally:
-        try:
-            asyncio._set_running_loop(None)
-        except Exception:
-            pass
-        try:
-            asyncio.set_event_loop(None)
-        except Exception:
-            pass
+        return False, f"Lỗi khi thực hiện đăng nhập: {e}"
 
 
 @router.post("/login-account", response_model=LoginTriggerResponse)
 async def login_with_account(req: AccountLoginRequest):
-    """Direct login using username and password via headless browser without logging credentials."""
+    """Direct login using username and password via child process without logging credentials."""
     username_clean = req.username.strip()
-    success, message = await asyncio.to_thread(_login_with_credentials_sync, username_clean, req.password)
+    success, message = await asyncio.to_thread(_login_with_credentials_subprocess, username_clean, req.password)
     if success:
         # Save user session info locally
         try:
@@ -538,8 +581,8 @@ async def login_with_account(req: AccountLoginRequest):
 
         # Ensure browser manager closes any existing context to pick up fresh cookies
         try:
-            from backend.app.modules.crawler.browser import SessionManager
-            SessionManager.invalidate()
+            from backend.app.modules.crawler.browser import SessionManager, run_in_browser_thread
+            await run_in_browser_thread(SessionManager.invalidate)
         except Exception:
             pass
 

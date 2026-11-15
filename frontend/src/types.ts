@@ -95,6 +95,7 @@ export interface AIProviderSetting {
   base_url?: string | null;
   enabled?: boolean;
   has_api_key?: boolean;
+  masked_key?: string | null;
   status?: 'configured' | 'not_configured';
   key_source?: string | null;
   api_key?: string;
@@ -107,6 +108,7 @@ export interface AppSettings {
     image_zoom_percent?: number;
     highlight_low_confidence: boolean;
     answer_format: 'letter' | 'letter_keyword';
+    multi_choice_format?: 'comma' | 'joined';
     merge: boolean;
     show_question_number?: boolean;
     show_separator_line?: boolean;
@@ -132,6 +134,14 @@ export interface AppSettings {
     headless: boolean;
     max_retries: number;
     default_count: number;
+  };
+  storage?: {
+    retention_days: number;
+    auto_clean?: boolean;
+  };
+  extension?: {
+    ingest_token?: string;
+    extension_id?: string;
   };
 }
 

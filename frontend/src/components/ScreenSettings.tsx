@@ -19,19 +19,10 @@ interface ScreenSettingsProps {
   onBack: () => void;
 }
 
-const PROVIDER_TEMPLATES: Record<string, { label: string; template: AIProviderSetting }> = {
-  anthropic: {
-    label: 'Anthropic (Claude 3.5)',
-    template: {
-      name: 'anthropic',
-      model: 'claude-3-5-haiku-20241022',
-      api_key_env: 'ANTHROPIC_API_KEY',
-      base_url: null,
-      enabled: true,
-    },
-  },
+const PROVIDER_TEMPLATES: Record<string, { label: string; isPaid?: boolean; template: AIProviderSetting }> = {
   gemini: {
-    label: 'Google Gemini (2.5 Flash)',
+    label: 'Google Gemini (Miễn phí / Khuyên dùng)',
+    isPaid: false,
     template: {
       name: 'gemini',
       model: 'gemini-2.5-flash',
@@ -40,38 +31,9 @@ const PROVIDER_TEMPLATES: Record<string, { label: string; template: AIProviderSe
       enabled: true,
     },
   },
-  openai: {
-    label: 'OpenAI (GPT-4o Mini)',
-    template: {
-      name: 'openai',
-      model: 'gpt-4o-mini',
-      api_key_env: 'OPENAI_API_KEY',
-      base_url: 'https://api.openai.com/v1',
-      enabled: true,
-    },
-  },
-  openrouter: {
-    label: 'OpenRouter (Đa mô hình)',
-    template: {
-      name: 'openrouter',
-      model: 'anthropic/claude-3.5-haiku',
-      api_key_env: 'OPENROUTER_API_KEY',
-      base_url: 'https://openrouter.ai/api/v1',
-      enabled: true,
-    },
-  },
-  groq: {
-    label: 'Groq (Llama 3.2 Vision)',
-    template: {
-      name: 'groq',
-      model: 'llama-3.2-11b-vision-preview',
-      api_key_env: 'GROQ_API_KEY',
-      base_url: 'https://api.groq.com/openai/v1',
-      enabled: true,
-    },
-  },
   ollama: {
-    label: 'Ollama (Chạy offline nội bộ)',
+    label: 'Ollama (Chạy offline nội bộ - Miễn phí)',
+    isPaid: false,
     template: {
       name: 'ollama',
       model: 'llama3.2-vision',
@@ -80,16 +42,66 @@ const PROVIDER_TEMPLATES: Record<string, { label: string; template: AIProviderSe
       enabled: true,
     },
   },
+  groq: {
+    label: 'Groq (Có hạn mức miễn phí)',
+    isPaid: false,
+    template: {
+      name: 'groq',
+      model: 'llama-3.2-11b-vision-preview',
+      api_key_env: 'GROQ_API_KEY',
+      base_url: 'https://api.groq.com/openai/v1',
+      enabled: true,
+    },
+  },
+  anthropic: {
+    label: 'Anthropic Claude (Trả phí)',
+    isPaid: true,
+    template: {
+      name: 'anthropic',
+      model: 'claude-3-5-haiku-20241022',
+      api_key_env: 'ANTHROPIC_API_KEY',
+      base_url: null,
+      enabled: false,
+    },
+  },
+  openai: {
+    label: 'OpenAI (Trả phí)',
+    isPaid: true,
+    template: {
+      name: 'openai',
+      model: 'gpt-4o-mini',
+      api_key_env: 'OPENAI_API_KEY',
+      base_url: 'https://api.openai.com/v1',
+      enabled: false,
+    },
+  },
+  openrouter: {
+    label: 'OpenRouter (Đa mô hình)',
+    isPaid: false,
+    template: {
+      name: 'openrouter',
+      model: 'anthropic/claude-3.5-haiku',
+      api_key_env: 'OPENROUTER_API_KEY',
+      base_url: 'https://openrouter.ai/api/v1',
+      enabled: false,
+    },
+  },
   custom: {
     label: 'Tùy chỉnh (OpenAI-compatible)',
+    isPaid: false,
     template: {
       name: 'custom_ai',
       model: '',
       api_key_env: 'CUSTOM_AI_API_KEY',
       base_url: '',
-      enabled: true,
+      enabled: false,
     },
   },
+};
+
+const IS_PAID_PROVIDER = (name: string): boolean => {
+  const n = name.toLowerCase();
+  return n.includes('anthropic') || (n.includes('openai') && !n.includes('openrouter'));
 };
 
 export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
@@ -104,6 +116,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
 
   // Local write-only API key state for inputs
   const [apiKeysInput, setApiKeysInput] = useState<Record<string, string>>({});
+  const [changingKey, setChangingKey] = useState<Record<string, boolean>>({});
 
   // Dynamic models cache per provider
   const [availableModels, setAvailableModels] = useState<Record<string, Array<{ id: string; name: string }>>>({});
@@ -114,6 +127,34 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
 
   // Navigation tab: 'basic' | 'ai' | 'advanced'
   const [activeSection, setActiveSection] = useState<'basic' | 'ai' | 'advanced'>('basic');
+  const [isCleaning, setIsCleaning] = useState<boolean>(false);
+  const [cleanStatus, setCleanStatus] = useState<string | null>(null);
+
+  const handleCleanData = async () => {
+    const retentionDays = settings?.storage?.retention_days ?? 14;
+    if (!window.confirm(`Bạn có chắc muốn dọn ảnh gốc và ảnh crop của các đề đã hoàn thành cũ hơn ${retentionDays} ngày và chạy VACUUM tối ưu hoá database?`)) {
+      return;
+    }
+    setIsCleaning(true);
+    setCleanStatus(null);
+    try {
+      const resp = await fetch('/api/settings/clean-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ retention_days: retentionDays, vacuum: true }),
+      });
+      const res = await resp.json();
+      if (!resp.ok) {
+        throw new Error(res.detail || 'Lỗi khi dọn dữ liệu');
+      }
+      setCleanStatus(res.message);
+      setNotification({ type: 'success', message: res.message });
+    } catch (err: any) {
+      setNotification({ type: 'error', message: err.message || 'Không thể hoàn thành dọn dữ liệu' });
+    } finally {
+      setIsCleaning(false);
+    }
+  };
 
   useEffect(() => {
     fetchSettings();
@@ -148,7 +189,28 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
       const resp = await fetch(`/api/settings/providers/${encodeURIComponent(providerName)}/models`);
       if (resp.ok) {
         const data = await resp.json();
-        setAvailableModels((prev) => ({ ...prev, [providerName]: data.models || [] }));
+        const fetchedList = data.models || [];
+        setAvailableModels((prev) => ({ ...prev, [providerName]: fetchedList }));
+
+        // When user explicitly clicks "Lấy danh sách model" (force === true),
+        // update the provider's current model to the top/recommended vision model from the fetched list
+        if (force && fetchedList.length > 0 && settings) {
+          const topModel = fetchedList[0].id;
+          const updatedProviders = settings.ai.providers.map((p) => {
+            if (p.name === providerName) {
+              return { ...p, model: topModel };
+            }
+            return p;
+          });
+          setSettings({
+            ...settings,
+            ai: { ...settings.ai, providers: updatedProviders },
+          });
+          setNotification({
+            type: 'success',
+            message: `Đã cập nhật mô hình cho ${providerName} thành "${topModel}" từ danh sách mới nhất!`,
+          });
+        }
       }
     } catch (err) {
       console.debug(`Failed to fetch models for ${providerName}:`, err);
@@ -210,6 +272,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
       setSettings(updatedData);
       setInitialSettingsJson(JSON.stringify(updatedData));
       setApiKeysInput({}); // Clear write-only inputs after successful save
+      setChangingKey({}); // Reset change mode so saved key is displayed
       setNotification({ type: 'success', message: 'Đã lưu cấu hình thành công! Cài đặt có hiệu lực ngay lập tức cho các job mới.' });
     } catch (err: any) {
       setNotification({ type: 'error', message: err.message || 'Lỗi khi lưu cài đặt' });
@@ -222,6 +285,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
     if (!initialSettingsJson) return;
     setSettings(JSON.parse(initialSettingsJson));
     setApiKeysInput({});
+    setChangingKey({});
     setNotification(null);
   };
 
@@ -240,9 +304,82 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
       setSettings(defaultData);
       setInitialSettingsJson(JSON.stringify(defaultData));
       setApiKeysInput({});
+      setChangingKey({});
       setNotification({ type: 'success', message: 'Đã khôi phục cài đặt mặc định thành công.' });
     } catch (err: any) {
       setNotification({ type: 'error', message: err.message || 'Lỗi khi đặt lại cài đặt' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteKey = async (provider: AIProviderSetting) => {
+    if (!window.confirm(`Bạn có chắc muốn xoá khoá API của ${provider.name} (${provider.api_key_env})?`)) {
+      return;
+    }
+    const payload = JSON.parse(JSON.stringify(settings));
+    if (payload.ai && payload.ai.providers) {
+      payload.ai.providers = payload.ai.providers.map((p: AIProviderSetting) => {
+        if (p.name === provider.name) {
+          return { ...p, api_key: '__DELETE__' };
+        }
+        return p;
+      });
+    }
+    setIsSaving(true);
+    try {
+      const resp = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) throw new Error('Xoá khoá API thất bại');
+      const updatedData: AppSettings = await resp.json();
+      setSettings(updatedData);
+      setInitialSettingsJson(JSON.stringify(updatedData));
+      const newInputs = { ...apiKeysInput };
+      delete newInputs[provider.name];
+      setApiKeysInput(newInputs);
+      const newChanging = { ...changingKey };
+      delete newChanging[provider.name];
+      setChangingKey(newChanging);
+      setNotification({ type: 'success', message: `Đã xoá khoá API cho ${provider.name}.` });
+    } catch (err: any) {
+      setNotification({ type: 'error', message: err.message || 'Lỗi khi xoá khoá API' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSaveSingleKey = async (provider: AIProviderSetting) => {
+    const enteredKey = apiKeysInput[provider.name];
+    if (!enteredKey || enteredKey.trim().length <= 3) {
+      setNotification({ type: 'error', message: 'Vui lòng nhập khoá API hợp lệ' });
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const resp = await fetch(`/api/settings/keys/${encodeURIComponent(provider.name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: enteredKey.trim(),
+          api_key_env: provider.api_key_env,
+        }),
+      });
+      if (!resp.ok) throw new Error('Không thể lưu khoá API');
+      const updatedData: AppSettings = await resp.json();
+      setSettings(updatedData);
+      setInitialSettingsJson(JSON.stringify(updatedData));
+      const newInputs = { ...apiKeysInput };
+      delete newInputs[provider.name];
+      setApiKeysInput(newInputs);
+      const newChanging = { ...changingKey };
+      delete newChanging[provider.name];
+      setChangingKey(newChanging);
+      setNotification({ type: 'success', message: `Đã ghi ${provider.api_key_env} vào .env và cập nhật thành công!` });
+    } catch (err: any) {
+      setNotification({ type: 'error', message: err.message || 'Lỗi khi lưu khoá' });
     } finally {
       setIsSaving(false);
     }
@@ -307,7 +444,19 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
     if (!settings) return;
     const providers = [...settings.ai.providers];
     const cur = providers[index];
-    providers[index] = { ...cur, enabled: !(cur.enabled ?? true) };
+    const willEnable = !(cur.enabled ?? true);
+    
+    // Warning when enabling a paid provider
+    if (willEnable && IS_PAID_PROVIDER(cur.name)) {
+      const confirmPaid = window.confirm(
+        `CẢNH BÁO CHI PHÍ:\nNhà cung cấp "${cur.name}" là dịch vụ AI TRẢ PHÍ (Paid API).\n` +
+        `Mỗi lượt gọi phân tích hình ảnh đề thi sẽ phát sinh chi phí trực tiếp trên tài khoản của bạn.\n\n` +
+        `Bạn có chắc chắn muốn BẬT nhà cung cấp này không?`
+      );
+      if (!confirmPaid) return;
+    }
+
+    providers[index] = { ...cur, enabled: willEnable };
     setSettings({
       ...settings,
       ai: { ...settings.ai, providers },
@@ -585,6 +734,21 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
 
           <div>
             <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 'var(--space-1)' }}>
+              Định dạng câu nhiều đáp án
+            </label>
+            <select
+              value={settings.export.multi_choice_format || 'comma'}
+              onChange={(e) => setSettings({ ...settings, export: { ...settings.export, multi_choice_format: e.target.value as any } })}
+              style={{ width: '100%', padding: 'var(--space-2)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
+            >
+              <option value="comma">Cách nhau dấu phẩy (Ví dụ: A, B, C) [Mặc định]</option>
+              <option value="joined">Viết liền không dấu (Ví dụ: ABC)</option>
+            </select>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>Câu nhiều đáp án chỉ ghi chữ cái, không kèm từ khoá.</span>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 'var(--space-1)' }}>
               Chiều rộng tối đa của ảnh trong Word (cm)
             </label>
             <input
@@ -788,6 +952,39 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                         {p.name}
                       </strong>
 
+                      {/* Free / Paid indicator badge */}
+                      {IS_PAID_PROVIDER(p.name) ? (
+                        <span
+                          style={{
+                            fontSize: '10px',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            color: '#EF4444',
+                            fontWeight: 600,
+                            border: '1px solid rgba(239, 68, 68, 0.2)',
+                          }}
+                          title="Dịch vụ trả phí: có tính phí trên từng lượt gọi API"
+                        >
+                          Trả phí
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            fontSize: '10px',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            color: '#10B981',
+                            fontWeight: 600,
+                            border: '1px solid rgba(16, 185, 129, 0.2)',
+                          }}
+                          title="Dịch vụ miễn phí hoặc chạy offline"
+                        >
+                          Miễn phí
+                        </span>
+                      )}
+
                       {/* Enable/Disable Toggle */}
                       <button
                         type="button"
@@ -823,7 +1020,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                         {p.has_api_key ? (
                           <>
                             <CheckIcon size={12} />
-                            <span>{p.key_source || 'Đã cấu hình'}</span>
+                            <span>{p.masked_key ? `Đã lưu (${p.masked_key})` : (p.key_source || 'Đã cấu hình')}</span>
                           </>
                         ) : (
                           <>
@@ -832,6 +1029,28 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                           </>
                         )}
                       </span>
+
+                      {/* Invalid key 401 badge */}
+                      {testState?.message?.includes('401') && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '2px 8px',
+                            borderRadius: '12px',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            color: '#EF4444',
+                            fontWeight: 600,
+                            border: '1px solid rgba(239, 68, 68, 0.3)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                          }}
+                          title="Khoá API trả về 401 Unauthorized"
+                        >
+                          <WarningIcon size={12} />
+                          <span>Khoá không hợp lệ</span>
+                        </span>
+                      )}
                     </div>
 
                     <div style={{ display: 'flex', gap: 'var(--space-1)', alignItems: 'center' }}>
@@ -914,11 +1133,15 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                             {!modelsList.some((m) => m.id === p.model) && p.model && (
                               <option value={p.model}>{p.model} (Tuỳ chỉnh hiện tại)</option>
                             )}
-                            {modelsList.map((m) => (
-                              <option key={m.id} value={m.id}>
-                                {m.name || m.id}
-                              </option>
-                            ))}
+                            {modelsList.map((m) => {
+                              const isFree = m.id.toLowerCase().includes(':free') || m.name?.toLowerCase().includes(':free');
+                              const labelSuffix = isFree ? ' [Miễn phí]' : (p.name.includes('openrouter') ? ' [Trả phí]' : '');
+                              return (
+                                <option key={m.id} value={m.id}>
+                                  {(m.name || m.id) + labelSuffix}
+                                </option>
+                              );
+                            })}
                           </select>
                           <input
                             type="text"
@@ -980,15 +1203,127 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                     {/* API Key write-only input */}
                     <div>
                       <label style={{ display: 'block', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 'var(--space-1)' }}>
-                        Nhập khoá API mới ({p.api_key_env}):
+                        Khoá API ({p.api_key_env}):
                       </label>
-                      <input
-                        type="password"
-                        placeholder={p.has_api_key ? '•••••••• (đã cấu hình — để trống nếu giữ nguyên)' : 'Dán khoá API vào đây...'}
-                        value={apiKeysInput[p.name] || ''}
-                        onChange={(e) => setApiKeysInput({ ...apiKeysInput, [p.name]: e.target.value })}
-                        style={{ width: '100%', padding: 'var(--space-1) var(--space-2)', fontSize: 'var(--text-xs)', fontFamily: 'var(--font-mono)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
-                      />
+                      {p.has_api_key && !changingKey[p.name] ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                          <div
+                            style={{
+                              flex: 1,
+                              padding: 'var(--space-1) var(--space-2)',
+                              fontSize: 'var(--text-xs)',
+                              fontFamily: 'var(--font-mono)',
+                              border: '1px solid var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-surface)',
+                              color: 'var(--text-primary)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <span style={{ color: 'var(--status-safe-text, #10b981)', fontWeight: 600 }}>✓</span>
+                            <span>Đã lưu ({p.masked_key || '••••xxxx'})</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setChangingKey({ ...changingKey, [p.name]: true })}
+                            style={{
+                              padding: 'var(--space-1) var(--space-2)',
+                              fontSize: 'var(--text-xs)',
+                              border: '1px solid var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-card)',
+                              color: 'var(--text-primary)',
+                              cursor: 'pointer',
+                              fontWeight: 600,
+                            }}
+                            title="Nhập khoá API mới"
+                          >
+                            Thay
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteKey(p)}
+                            style={{
+                              padding: 'var(--space-1) var(--space-2)',
+                              fontSize: 'var(--text-xs)',
+                              border: '1px solid var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-card)',
+                              color: 'var(--primary)',
+                              cursor: 'pointer',
+                              fontWeight: 600,
+                            }}
+                            title="Xoá khoá API này"
+                          >
+                            Xoá
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                          <input
+                            type="password"
+                            placeholder="Dán khoá API vào đây..."
+                            value={apiKeysInput[p.name] || ''}
+                            onChange={(e) => setApiKeysInput({ ...apiKeysInput, [p.name]: e.target.value })}
+                            style={{
+                              flex: 1,
+                              padding: 'var(--space-1) var(--space-2)',
+                              fontSize: 'var(--text-xs)',
+                              fontFamily: 'var(--font-mono)',
+                              border: '1px solid var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-surface)',
+                              color: 'var(--text-primary)',
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveSingleKey(p)}
+                            disabled={!apiKeysInput[p.name] || apiKeysInput[p.name].trim().length <= 3 || isSaving}
+                            style={{
+                              padding: 'var(--space-1) var(--space-3)',
+                              fontSize: 'var(--text-xs)',
+                              fontWeight: 600,
+                              backgroundColor: 'var(--primary)',
+                              color: '#FFFFFF',
+                              border: 'none',
+                              borderRadius: 'var(--radius-sm)',
+                              cursor: (!apiKeysInput[p.name] || apiKeysInput[p.name].trim().length <= 3 || isSaving) ? 'not-allowed' : 'pointer',
+                              opacity: (!apiKeysInput[p.name] || apiKeysInput[p.name].trim().length <= 3 || isSaving) ? 0.6 : 1,
+                              whiteSpace: 'nowrap',
+                            }}
+                            title="Lưu khoá API này vào .env"
+                          >
+                            Lưu khoá
+                          </button>
+                          {p.has_api_key && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newChanging = { ...changingKey };
+                                delete newChanging[p.name];
+                                setChangingKey(newChanging);
+                                const newInputs = { ...apiKeysInput };
+                                delete newInputs[p.name];
+                                setApiKeysInput(newInputs);
+                              }}
+                              style={{
+                                padding: 'var(--space-1) var(--space-2)',
+                                fontSize: 'var(--text-xs)',
+                                border: '1px solid var(--border-strong)',
+                                borderRadius: 'var(--radius-sm)',
+                                backgroundColor: 'var(--bg-card)',
+                                color: 'var(--text-secondary)',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Huỷ
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1019,11 +1354,25 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                       <span
                         style={{
                           fontSize: 'var(--text-xs)',
-                          color: testState.success ? 'var(--status-confident-text)' : 'var(--status-conflict-text)',
-                          fontWeight: 500,
+                          color: testState.success ? 'var(--status-confident-text)' : '#DC2626',
+                          fontWeight: 600,
+                          backgroundColor: testState.success ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                          border: `1px solid ${testState.success ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                          padding: '2px 8px',
+                          borderRadius: 'var(--radius-sm)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
                         }}
                       >
-                        {testState.message}
+                        {testState.message && testState.message.includes('401') ? (
+                          <>
+                            <WarningIcon size={12} />
+                            <span>{testState.message}</span>
+                          </>
+                        ) : (
+                          testState.message || (testState.success ? 'Thành công' : 'Thất bại')
+                        )}
                       </span>
                     )}
                   </div>
@@ -1224,6 +1573,172 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
               />
               Chạy trình duyệt ẩn (Headless mode)
             </label>
+          </div>
+        </div>
+      </div>
+
+      {/* Group 5: Quản lý & Dọn dẹp Dữ liệu */}
+      <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
+          <div>
+            <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
+              5. Quản lý lưu trữ & Dọn dẹp dữ liệu
+            </h2>
+            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', margin: '4px 0 0 0' }}>
+              Tự động giải phóng dung lượng đĩa bằng cách xoá ảnh gốc/ảnh crop của đề đã xuất và tối ưu cơ sở dữ liệu SQLite (VACUUM).
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 'var(--space-4)', alignItems: 'end' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 'var(--space-1)' }}>
+              Thời hạn lưu giữ ảnh hoàn thành (ngày)
+            </label>
+            <input
+              type="number"
+              min="0"
+              max="365"
+              value={settings.storage?.retention_days ?? 14}
+              onChange={(e) => {
+                const val = Math.max(0, parseInt(e.target.value) || 0);
+                setSettings({
+                  ...settings,
+                  storage: {
+                    retention_days: val,
+                    auto_clean: settings.storage?.auto_clean ?? true,
+                  },
+                });
+              }}
+              style={{ width: '100%', padding: 'var(--space-2)', border: '1px solid var(--border-strong)', borderRadius: 'var(--radius-sm)', backgroundColor: 'var(--bg-surface)', color: 'var(--text-primary)' }}
+            />
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+              Ảnh của đề đã hoàn thành cũ hơn số ngày này sẽ được dọn dẹp khi bấm nút (0 = dọn tất cả đề đã xong).
+            </span>
+          </div>
+
+          <div>
+            <button
+              type="button"
+              onClick={handleCleanData}
+              disabled={isCleaning}
+              style={{
+                width: '100%',
+                padding: 'var(--space-2) var(--space-4)',
+                backgroundColor: 'var(--bg-canvas)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: 'var(--text-sm)',
+                fontWeight: 600,
+                color: isCleaning ? 'var(--text-muted)' : 'var(--status-weak-text)',
+                cursor: isCleaning ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                minHeight: '38px',
+              }}
+            >
+              <TrashIcon size={16} />
+              <span>{isCleaning ? 'Đang dọn dẹp & VACUUM...' : 'Dọn dữ liệu ngay'}</span>
+            </button>
+            {cleanStatus && (
+              <span style={{ display: 'block', fontSize: '11px', color: 'var(--status-confident-text)', marginTop: '4px' }}>
+                {cleanStatus}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Extension Integration Card */}
+      <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
+          <ZapIcon size={20} style={{ color: 'var(--primary)' }} />
+          <h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            Chromium Extension (MV3)
+          </h2>
+        </div>
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-4)' }}>
+          Kết nối extension Chromium (Edge / Chrome) với backend để thu thập đề thi trực tiếp bằng phiên đăng nhập của trình duyệt.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          <div>
+            <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', marginBottom: 'var(--space-1)' }}>
+              MÃ TOKEN XÁC THỰC INGEST (Dán vào Side Panel Extension):
+            </label>
+            <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+              <input
+                type="text"
+                readOnly
+                value={settings.extension?.ingest_token || ''}
+                style={{
+                  flex: 1,
+                  fontFamily: 'monospace',
+                  fontSize: 'var(--text-sm)',
+                  padding: 'var(--space-2) var(--space-3)',
+                  backgroundColor: 'var(--bg-canvas)',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 'var(--radius-sm)',
+                  color: 'var(--text-primary)',
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (settings.extension?.ingest_token) {
+                    navigator.clipboard.writeText(settings.extension.ingest_token);
+                    alert('Đã sao chép Ingest Token vào clipboard!');
+                  }
+                }}
+                style={{
+                  padding: 'var(--space-2) var(--space-3)',
+                  backgroundColor: 'var(--primary)',
+                  border: 'none',
+                  borderRadius: 'var(--radius-sm)',
+                  color: '#fff',
+                  fontWeight: 600,
+                  fontSize: 'var(--text-xs)',
+                  cursor: 'pointer',
+                }}
+              >
+                Sao chép
+              </button>
+            </div>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+              Token được sinh ngẫu nhiên và lưu an toàn trong .env. Chỉ chấp nhận các request từ extension mang token này.
+            </span>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--text-muted)', marginBottom: 'var(--space-1)' }}>
+              CHROME EXTENSION ID (Tuỳ chọn giới hạn Origin CORS):
+            </label>
+            <input
+              type="text"
+              placeholder="Ví dụ: abcdefghijklmnopabcdefghijklmnop (để trống nếu chấp nhận mọi extension unpacked)"
+              value={settings.extension?.extension_id || ''}
+              onChange={(e) => {
+                setSettings({
+                  ...settings,
+                  extension: {
+                    ...settings.extension,
+                    extension_id: e.target.value.trim(),
+                  },
+                });
+              }}
+              style={{
+                width: '100%',
+                fontFamily: 'monospace',
+                fontSize: 'var(--text-sm)',
+                padding: 'var(--space-2) var(--space-3)',
+                backgroundColor: 'var(--bg-canvas)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-sm)',
+                color: 'var(--text-primary)',
+              }}
+            />
           </div>
         </div>
       </div>

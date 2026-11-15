@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
 from backend.app.db.models import Exam, ExamType, Subject
-from backend.app.modules.crawler.browser import get_browser_manager
+from backend.app.modules.crawler.browser import get_browser_manager, run_in_browser_thread
 from backend.app.modules.crawler.rate_limiter import get_rate_limiter
 
 logger = get_logger(__name__)
@@ -55,8 +55,8 @@ async def crawl_subject_exams(
     rate_limiter = get_rate_limiter()
     await rate_limiter.wait_async()
 
-    # Run browser request in worker thread
-    html = await asyncio.to_thread(_fetch_url_html, forum_url)
+    # Run browser request in dedicated browser worker thread
+    html = await run_in_browser_thread(_fetch_url_html, forum_url)
     if not html:
         logger.error(f"Failed to fetch forum URL {forum_url}")
         # Fallback to any existing exams in DB

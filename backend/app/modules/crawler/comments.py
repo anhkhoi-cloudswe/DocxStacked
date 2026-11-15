@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
 from backend.app.db.models import Comment, Exam, Question
-from backend.app.modules.crawler.browser import AuthenticationRequiredError, get_browser_manager
+from backend.app.modules.crawler.browser import AuthenticationRequiredError, get_browser_manager, run_in_browser_thread
 from backend.app.modules.crawler.rate_limiter import get_rate_limiter
 from backend.app.storage.local import LocalStorage
 
@@ -20,30 +20,37 @@ settings = get_settings()
 
 def _fetch_media_html_sync(url: str) -> Tuple[str, Optional[str]]:
     """
-    Fetch HTML of a media detail page in worker thread using persistent browser context.
+    Fetch HTML of a media detail page in worker thread using browser page.
     Returns (html_text, status_reason).
     """
     bm = get_browser_manager()
-    try:
-        ctx = bm.start_context(headless=True)
-        resp = ctx.request.get(url, timeout=25000)
-    except Exception as e:
-        logger.warning(f"Media fetch error ({e}). Retrying with fresh browser context...")
-        bm.close()
-        ctx = bm.start_context(headless=True)
-        resp = ctx.request.get(url, timeout=25000)
-    if resp.status == 403:
-        logger.warning(f"Media page returned 403 Forbidden: {url}")
-        return "", "403_forbidden"
-    if resp.status == 200:
-        text = resp.text()
-        if 'data-logged-in="false"' in text or "/login" in resp.url:
-            logger.warning(f"Media page returned 200 but not authenticated or redirected to login: {url}")
-            return "", "unauthenticated"
-        return text, "ok"
-    else:
-        logger.warning(f"Failed to fetch media page {url}, status: {resp.status}")
-        return "", f"http_{resp.status}"
+    for attempt in range(2):
+        try:
+            page = bm.get_page()
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            if not resp:
+                return "", "error_no_response"
+            if resp.status == 403:
+                from backend.app.modules.crawler.browser import log_403_diagnostic
+                log_403_diagnostic(url, resp, bm._context)
+                logger.warning(f"Media page returned 403 Forbidden: {url}")
+                return "", "403_forbidden"
+            if resp.status == 200:
+                text = page.content()
+                if 'data-logged-in="false"' in text or "/login" in page.url:
+                    logger.warning(f"Media page returned 200 but not authenticated or redirected to login: {url}")
+                    return "", "unauthenticated"
+                return text, "ok"
+            else:
+                logger.warning(f"Failed to fetch media page {url}, status: {resp.status}")
+                return "", f"http_{resp.status}"
+        except Exception as e:
+            err_name = type(e).__name__
+            logger.warning(f"Media fetch error ({err_name}: {e}) on attempt {attempt + 1}. Retrying with fresh browser context...")
+            bm.close()
+            if attempt == 1:
+                return "", f"error_{err_name}: {str(e)}"
+    return "", "error_unknown"
 
 
 def parse_comments_from_html(
@@ -199,11 +206,11 @@ async def crawl_question_comments(
         await rate_limiter.wait_async()
 
         logger.info(f"Fetching comments from web for Q{question.index} ({media_url})...")
-        html_content, html_status = await asyncio.to_thread(_fetch_media_html_sync, media_url)
+        html_content, html_status = await run_in_browser_thread(_fetch_media_html_sync, media_url)
         if html_status in ("403_forbidden", "unauthenticated"):
             raise AuthenticationRequiredError(
-                "Phiên đăng nhập FUOverflow đã bị ngắt hoặc hết hạn (do diễn đàn chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc). "
-                "Vui lòng đăng nhập lại và bấm 'Chạy tiếp từ chỗ dừng'!"
+                f"Thu thập bình luận câu {question.index} thất bại ({html_status}). "
+                f"URL: {media_url}. Hệ thống đã dừng tiến trình và không tính câu này là hoàn tất."
             )
 
         if html_content:

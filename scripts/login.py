@@ -21,6 +21,23 @@ import psutil
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Ensure standard IO streams handle UTF-8 cleanly on Windows
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if sys.stdin and hasattr(sys.stdin, "reconfigure"):
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 PROFILE_DIR = PROJECT_ROOT / "data" / "browser_profile"
 COOKIES_FILE = PROJECT_ROOT / "data" / "auth" / "cookies.json"
 SESSION_FILE = PROJECT_ROOT / "data" / "auth" / "login_session.json"
@@ -394,13 +411,294 @@ def run_login():
             pass
 
 
+def run_check():
+    """
+    Subprocess auth check for FUOverflow.
+    Prints JSON to stdout with no logging or event loop contamination.
+    """
+    from bs4 import BeautifulSoup
+    import re
+    from playwright.sync_api import sync_playwright
+
+    user_file = PROJECT_ROOT / "data" / "auth" / "current_user.json"
+
+    # 1. Check cookies existence
+    if not COOKIES_FILE.exists():
+        print(json.dumps({
+            "logged_in": False,
+            "status_code": "not_logged_in",
+            "detail": "Chưa đăng nhập FUOverflow (chưa có phiên lưu trữ).",
+            "username": None,
+            "expires_at": None,
+        }, ensure_ascii=True))
+        return
+
+    # 2. Release any stale locks
+    terminate_profile_locks(PROFILE_DIR)
+
+    # 3. Live probe using browser context with fallback
+    probe_url = "https://fuoverflow.com/media/q1-webp.134314/"
+    try:
+        with sync_playwright() as p:
+            browsers = detect_installed_browsers()
+            candidates = []
+            if browsers["chrome"]:
+                candidates.append(("chrome", True))
+            if browsers["msedge"]:
+                candidates.append(("msedge", True))
+            candidates.append((None, False))
+
+            ctx = None
+            br = None
+            for ch, is_pers in candidates:
+                try:
+                    if is_pers:
+                        ctx = p.chromium.launch_persistent_context(
+                            user_data_dir=str(PROFILE_DIR.resolve()),
+                            channel=ch,
+                            headless=True,
+                            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                        )
+                    else:
+                        br = p.chromium.launch(
+                            channel=ch,
+                            headless=True,
+                            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                        )
+                        ctx = br.new_context(
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        )
+                        if COOKIES_FILE.exists():
+                            saved_c = json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
+                            ctx.add_cookies(saved_c)
+                    if ctx:
+                        break
+                except Exception:
+                    continue
+
+            if not ctx:
+                print(json.dumps({
+                    "logged_in": False,
+                    "status_code": "network_error",
+                    "detail": "Không thể khởi động trình duyệt để kiểm tra phiên.",
+                    "username": None,
+                    "expires_at": None,
+                }, ensure_ascii=True))
+                return
+
+            resp = ctx.request.get(probe_url, timeout=12000)
+            status = resp.status
+            url = resp.url
+            text = resp.text() if status in (200, 403) else ""
+            ctx.close()
+            if br:
+                br.close()
+
+            if status == 403:
+                # Session rejected/lost - delete old session files
+                try:
+                    COOKIES_FILE.unlink(missing_ok=True)
+                    user_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                print(json.dumps({
+                    "logged_in": False,
+                    "status_code": "not_logged_in",
+                    "detail": "Diễn đàn từ chối phiên đăng nhập (403 Forbidden). Đã tự động xoá phiên cũ.",
+                    "username": None,
+                    "expires_at": None,
+                }, ensure_ascii=True))
+                return
+
+            if status == 200:
+                if "/login" in url or 'data-logged-in="false"' in text:
+                    # Session expired - delete old session files
+                    try:
+                        COOKIES_FILE.unlink(missing_ok=True)
+                        user_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    print(json.dumps({
+                        "logged_in": False,
+                        "status_code": "not_logged_in",
+                        "detail": "Phiên đã hết hạn (chuyển hướng về trang đăng nhập). Đã tự động xoá phiên cũ.",
+                        "username": None,
+                        "expires_at": None,
+                    }, ensure_ascii=True))
+                    return
+
+                # Authenticated: extract username
+                username = None
+                soup = BeautifulSoup(text, "html.parser")
+                for a in soup.select("a[href*='/members/']"):
+                    if "hồ sơ của bạn" in a.text.lower():
+                        href = a.get("href", "")
+                        m = re.search(r"/members/([^/]+)\.\d+/?", href)
+                        if m:
+                            username = m.group(1).replace("-", " ").title()
+                        break
+
+                if not username and user_file.exists():
+                    try:
+                        u_data = json.loads(user_file.read_text(encoding="utf-8"))
+                        username = u_data.get("username")
+                    except Exception:
+                        pass
+
+                if not username:
+                    username = "Thành viên FUOverflow"
+
+                print(json.dumps({
+                    "logged_in": True,
+                    "status_code": "logged_in",
+                    "detail": "Đã đăng nhập FUOverflow",
+                    "username": username,
+                    "expires_at": None,
+                }, ensure_ascii=True))
+                return
+
+            # Other HTTP status
+            print(json.dumps({
+                "logged_in": False,
+                "status_code": "not_logged_in",
+                "detail": f"Mã trạng thái kiểm tra không hợp lệ: HTTP {status}",
+                "username": None,
+                "expires_at": None,
+            }, ensure_ascii=True))
+    except Exception as e:
+        print(json.dumps({
+            "logged_in": False,
+            "status_code": "network_error",
+            "detail": f"Không thể kiểm tra phiên: {e}",
+            "username": None,
+            "expires_at": None,
+        }, ensure_ascii=True))
+
+
+def run_login_credentials():
+    """
+    Subprocess credentials login for FUOverflow.
+    Reads JSON {"username": "...", "password": "..."} from stdin.
+    Outputs JSON {"success": bool, "logged_in": bool, "message": str} to stdout.
+    """
+    from playwright.sync_api import sync_playwright
+
+    user_file = PROJECT_ROOT / "data" / "auth" / "current_user.json"
+
+    try:
+        raw_input = sys.stdin.read()
+        creds = json.loads(raw_input)
+        username = creds.get("username", "").strip()
+        password = creds.get("password", "")
+    except Exception as e:
+        print(json.dumps({"success": False, "logged_in": False, "message": f"Dữ liệu đăng nhập không hợp lệ: {e}"}, ensure_ascii=True))
+        return
+
+    if not username or not password:
+        print(json.dumps({"success": False, "logged_in": False, "message": "Vui lòng nhập tên tài khoản và mật khẩu."}, ensure_ascii=True))
+        return
+
+    try:
+        with sync_playwright() as p:
+            browsers = detect_installed_browsers()
+            channel = "chrome" if browsers["chrome"] else ("msedge" if browsers["msedge"] else None)
+
+            # Use clean headless context to ensure fresh login page and avoid profile lock collisions
+            browser = None
+            try:
+                browser = p.chromium.launch(
+                    channel=channel,
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                )
+            except Exception:
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                )
+
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+
+            page = context.new_page()
+            page.goto("https://fuoverflow.com/login/", wait_until="domcontentloaded", timeout=25000)
+
+            # Wait for login input
+            login_input = page.wait_for_selector('input[name="login"]', timeout=10000)
+            if not login_input:
+                browser.close()
+                print(json.dumps({"success": False, "logged_in": False, "message": "Không tìm thấy ô nhập tài khoản trên trang diễn đàn."}, ensure_ascii=True))
+                return
+
+            page.fill('input[name="login"]', username)
+            page.fill('input[name="password"]', password)
+            try:
+                page.check('input[name="remember"]')
+            except Exception:
+                pass
+            page.press('input[name="password"]', "Enter")
+
+            # Wait for response / redirect
+            page.wait_for_timeout(4000)
+
+            # Check if error message displayed on forum
+            error_el = page.query_selector(".blockMessage--error, .formSubmitRow-errors, .block-rowMessage--error")
+            if error_el:
+                err_text = error_el.inner_text().strip()
+                browser.close()
+                print(json.dumps({"success": False, "logged_in": False, "message": f"Đăng nhập thất bại: {err_text}"}, ensure_ascii=True))
+                return
+
+            cookies = context.cookies()
+            has_user = any(c.get("name") in ("xf_user", "xf_session", "xf_user_session") for c in cookies)
+
+            if has_user:
+                COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+                COOKIES_FILE.write_text(json.dumps(cookies, indent=2, ensure_ascii=False), encoding="utf-8")
+                user_file.parent.mkdir(parents=True, exist_ok=True)
+                user_file.write_text(json.dumps({
+                    "username": username,
+                    "logged_in_at": datetime.utcnow().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+                browser.close()
+
+                # Also sync cookies to persistent browser profile directory
+                try:
+                    terminate_profile_locks(PROFILE_DIR)
+                    with p.chromium.launch_persistent_context(
+                        user_data_dir=str(PROFILE_DIR.resolve()),
+                        channel=channel,
+                        headless=True,
+                        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                    ) as p_ctx:
+                        p_ctx.add_cookies(cookies)
+                except Exception:
+                    pass
+
+                print(json.dumps({"success": True, "logged_in": True, "message": "Đăng nhập thành công!", "username": username}, ensure_ascii=True))
+                return
+
+            browser.close()
+            print(json.dumps({"success": False, "logged_in": False, "message": "Không nhận được phiên đăng nhập từ diễn đàn. Vui lòng kiểm tra lại mật khẩu."}, ensure_ascii=True))
+    except Exception as e:
+        print(json.dumps({"success": False, "logged_in": False, "message": f"Lỗi kết nối khi đăng nhập: {e}"}, ensure_ascii=True))
+
+
 def main():
     parser = argparse.ArgumentParser(description="DocxStacked FUOverflow Login Tool")
     parser.add_argument("--diagnose", action="store_true", help="Chẩn đoán môi trường đăng nhập")
+    parser.add_argument("--check", action="store_true", help="Kiểm tra trạng thái đăng nhập trong tiến trình con (trả JSON)")
+    parser.add_argument("--login-credentials", action="store_true", help="Đăng nhập tài khoản qua stdin trong tiến trình con (trả JSON)")
     args = parser.parse_args()
 
     if args.diagnose:
         run_diagnose()
+    elif args.check:
+        run_check()
+    elif args.login_credentials:
+        run_login_credentials()
     else:
         run_login()
 

@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -39,6 +40,7 @@ class AIProviderConfig(BaseModel):
     model: str
     api_key_env: str
     base_url: Optional[str] = None
+    enabled: bool = False
 
 
 class AIConfig(BaseModel):
@@ -57,6 +59,7 @@ class ExportConfig(BaseModel):
     image_zoom_percent: int = 100
     highlight_low_confidence: bool = True
     answer_format: str = "letter_keyword"
+    multi_choice_format: str = "comma"
     merge: bool = False
 
 
@@ -101,7 +104,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///data/docxstacked.db"
     SYNC_DATABASE_URL: str = "sqlite:///data/docxstacked.db"
 
-    # Storage Paths
+    # Storage Paths & Data Dir Override
+    DOCXSTACKED_DATA_DIR: Optional[str] = None
     BASE_DIR: Path = BASE_DIR
     STORAGE_DIR: Path = BASE_DIR / "data"
     DATA_DIR: Path = BASE_DIR / "data"
@@ -116,11 +120,36 @@ class Settings(BaseSettings):
     MIN_DELAY_SECONDS: float = 1.5
     MAX_DELAY_SECONDS: float = 4.0
 
+    # Local Ingestion (for browser extension, pinned fixed ID)
+    INGEST_TOKEN: Optional[str] = None
+    EXTENSION_ID: str = "kicplcdfmbcfjildbbimpfiljlmfokea"
+    MAX_INGEST_PAYLOAD_BYTES: int = 100 * 1024 * 1024  # 100 MB max payload for base64 images
+
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def model_post_init(self, __context: Any) -> None:
+        super().model_post_init(__context)
+        custom_data_dir = os.environ.get("DOCXSTACKED_DATA_DIR") or self.DOCXSTACKED_DATA_DIR
+        if custom_data_dir:
+            effective_data = Path(custom_data_dir).resolve()
+        else:
+            effective_data = self.BASE_DIR / "data"
+
+        self.DATA_DIR = effective_data
+        self.STORAGE_DIR = effective_data
+        self.OUTPUT_DIR = effective_data / "output"
+        self.BROWSER_PROFILE_DIR = effective_data / "browser_profile"
+
+        db_file = effective_data / "docxstacked.db"
+        db_posix = db_file.as_posix()
+        if "data/docxstacked.db" in self.DATABASE_URL or "data/gomde.db" in self.DATABASE_URL:
+            self.DATABASE_URL = f"sqlite+aiosqlite:///{db_posix}"
+        if "data/docxstacked.db" in self.SYNC_DATABASE_URL or "data/gomde.db" in self.SYNC_DATABASE_URL:
+            self.SYNC_DATABASE_URL = f"sqlite:///{db_posix}"
 
     @property
     def yaml_config(self) -> AppYamlConfig:
@@ -142,7 +171,27 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
+    # Auto-generate INGEST_TOKEN on first run if missing in .env
+    env_file = BASE_DIR / ".env"
+    if env_file.exists():
+        try:
+            content = env_file.read_text(encoding="utf-8")
+            if not re.search(r"^\s*INGEST_TOKEN\s*=\s*\S+", content, re.MULTILINE):
+                import secrets
+                token = secrets.token_urlsafe(32)
+                if re.search(r"^\s*INGEST_TOKEN\s*=", content, re.MULTILINE):
+                    new_content = re.sub(r"^\s*INGEST_TOKEN\s*=.*$", f"INGEST_TOKEN={token}", content, flags=re.MULTILINE)
+                else:
+                    new_content = content.rstrip() + f"\nINGEST_TOKEN={token}\n"
+                env_file.write_text(new_content, encoding="utf-8")
+                os.environ["INGEST_TOKEN"] = token
+        except Exception:
+            pass
+
     settings = Settings()
+    if not settings.INGEST_TOKEN:
+        import secrets
+        settings.INGEST_TOKEN = os.environ.get("INGEST_TOKEN") or secrets.token_urlsafe(32)
     settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     settings.BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     return settings

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocxStacked Side Panel</title>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-surface: #1e293b;
+      --bg-card: #334155;
+      --border-color: #475569;
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-primary: #6366f1;
+      --accent-hover: #4f46e5;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius: 8px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 12px;
+    }
+
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .header-title svg {
+      color: var(--accent-primary);
+    }
+
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .badge-online {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-offline {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius);
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .card-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .auth-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: rgba(51, 65, 85, 0.6);
+      font-size: 12px;
+    }
+
+    .thread-box input {
+      width: 100%;
+      padding: 8px 10px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .thread-box input:focus {
+      border-color: var(--accent-primary);
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .btn-primary {
+      background: var(--accent-primary);
+      color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+
+    .btn-secondary {
+      background: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #475569;
+    }
+
+    .btn-danger {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: #dc2626;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      text-align: center;
+    }
+
+    .stat-box {
+      background: var(--bg-primary);
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .stat-val {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .stat-lbl {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 8px;
+      background: var(--bg-primary);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #6366f1, #10b981);
+      transition: width 0.2s ease;
+    }
+
+    .log-box {
+      background: #020617;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 8px;
+      height: 130px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      color: #cbd5e1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .log-line {
+      word-break: break-all;
+    }
+
+    .log-info { color: #93c5fd; }
+    .log-success { color: #86efac; }
+    .log-warn { color: #fde047; }
+    .log-error { color: #fca5a5; }
+
+    .result-card {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      padding: 12px;
+      border-radius: var(--radius);
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .result-title {
+      color: #34d399;
+      font-weight: 700;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+      </svg>
+      <span>DocxStacked MV3</span>
+    </div>
+    <div id="backend-status" class="badge-status badge-offline">
+      ● Backend Offline
+    </div>
+  </div>
+
+  <!-- Notification Banner -->
+  <div id="ui-notice-box" style="display: none; padding: 10px 12px; border-radius: var(--radius); font-size: 12px; font-weight: 500; line-height: 1.4;"></div>
+
+  <!-- Auth Status -->
+  <div class="card">
+    <div class="card-title">
+      <span>Trạng thái FuOverflow</span>
+      <button id="btn-refresh-auth" class="btn btn-secondary" style="flex:0; padding: 2px 6px; font-size: 10px;">Làm mới</button>
+    </div>
+    <div class="auth-banner" id="auth-banner">
+      <span id="auth-text">Đang kiểm tra đăng nhập...</span>
+      <span id="auth-badge" class="badge-status badge-offline">Chưa xác định</span>
+    </div>
+  </div>
+
+  <!-- Advanced Ingest Token Configuration (Optional) -->
+  <details class="card" style="font-size: 11px;">
+    <summary style="cursor: pointer; color: var(--text-muted); font-weight: 600;">
+      Tuỳ chọn nâng cao (Token thủ công)
+    </summary>
+    <div class="thread-box" style="margin-top: 8px;">
+      <input type="password" id="input-ingest-token" placeholder="(Mặc định không cần: Extension ID đã được xác thực an toàn)" />
+    </div>
+  </details>
+
+  <!-- Thread Selector -->
+  <div class="card">
+    <div class="card-title">
+      <span>Đề thi cần soạn</span>
+      <button id="btn-sync-tab" class="btn btn-secondary" style="flex:0; padding: 2px 6px; font-size: 10px;">Đọc từ Tab</button>
+    </div>
+    <div class="thread-box">
+      <input type="text" id="input-thread-url" placeholder="https://fuoverflow.com/threads/..." />
+    </div>
+    <div id="thread-title-display" style="font-size: 12px; color: var(--text-muted); font-weight: 500;">
+      Chưa chọn đề thi nào
+    </div>
+  </div>
+
+  <!-- Action Controls -->
+  <div class="card">
+    <div class="btn-row">
+      <button id="btn-start" class="btn btn-primary">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+        </svg>
+        <span>Bắt đầu soạn đề</span>
+      </button>
+      <button id="btn-stop" class="btn btn-danger" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="6" width="12" height="12"></rect>
+        </svg>
+        <span>Dừng</span>
+      </button>
+    </div>
+
+    <!-- Progress & Counters -->
+    <div>
+      <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
+        <span id="progress-status">Sẵn sàng</span>
+        <span id="progress-percent">0%</span>
+      </div>
+      <div class="progress-bar-bg">
+        <div id="progress-bar" class="progress-bar-fill"></div>
+      </div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div id="stat-questions" class="stat-val">0</div>
+        <div class="stat-lbl">Số câu</div>
+      </div>
+      <div class="stat-box">
+        <div id="stat-comments" class="stat-val" style="color: #60a5fa;">0</div>
+        <div class="stat-lbl">Bình luận</div>
+      </div>
+      <div class="stat-box">
+        <div id="stat-pages" class="stat-val" style="color: #c084fc;">0</div>
+        <div class="stat-lbl">Trang media</div>
+      </div>
+      <div class="stat-box">
+        <div id="stat-403" class="stat-val" style="color: #34d399;">0</div>
+        <div class="stat-lbl">Lỗi 403</div>
+      </div>
+    </div>
+    <div id="offline-recovery-row" style="display: none; margin-top: 10px; gap: 8px;">
+      <button id="btn-retry-ingest" class="btn btn-primary" style="flex: 2;">
+        <span>🔄 Gửi lại dữ liệu (không cần cào lại)</span>
+      </button>
+      <button id="btn-clear-idb" class="btn btn-secondary" style="flex: 1; color: #fca5a5;">
+        <span>Xoá dữ liệu</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Real-time Log Box -->
+  <div class="card" style="flex: 1;">
+    <div class="card-title">
+      <span>Nhật ký tiến trình (Side Panel Loop)</span>
+      <span style="font-size: 10px; color: #64748b;">1 req / 2.0s</span>
+    </div>
+    <div id="log-box" class="log-box">
+      <div class="log-line log-info">[Khởi động] Side panel sẵn sàng.</div>
+    </div>
+  </div>
+
+  <!-- Result Banner -->
+  <div id="result-card" class="result-card">
+    <div class="result-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+      </svg>
+      <span>Xuất file Word thành công!</span>
+    </div>
+    <div id="result-filename" style="font-size: 12px; font-weight: 600; color: #fff;"></div>
+    <a id="result-download-btn" class="btn btn-primary" href="#" target="_blank" style="text-decoration: none;">
+      Tải file Word (.docx)
+    </a>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

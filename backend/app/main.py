@@ -1,3 +1,4 @@
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.auth import router as auth_router
 from backend.app.api.exports import router as exports_router
 from backend.app.api.health import router as health_router
+from backend.app.api.ingest import router as ingest_router
 from backend.app.api.jobs import router as jobs_router
 from backend.app.api.settings import router as settings_router
 from backend.app.api.subjects import router as subjects_router
@@ -49,8 +51,13 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown:
     logger.info("Shutting down DocxStacked Backend API...")
-    get_browser_manager().close()
-    logger.info("Browser manager closed cleanly.")
+    try:
+        from backend.app.modules.crawler.browser import _default_browser_manager
+        if _default_browser_manager is not None:
+            _default_browser_manager.close()
+    except Exception as e:
+        logger.debug(f"Error closing browser manager: {e}")
+    logger.info("DocxStacked Backend API shutdown completed.")
 
 
 app = FastAPI(
@@ -60,16 +67,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Middleware - only allow frontend dev origins
+# CORS Middleware - only allow frontend dev origins and configured chrome extension
 origins = list(set([
     settings.FRONTEND_URL.rstrip("/"),
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]))
 
+# If EXTENSION_ID is set (e.g. 'abcdefghijklmnop...'), strictly allow that extension ID.
+# Otherwise allow any local chrome-extension:// origin for local unpack development.
+ext_id = (settings.EXTENSION_ID or "").strip()
+if ext_id:
+    allow_ext_regex = rf"^(chrome-extension://{re.escape(ext_id)}|http://(localhost|127\.0\.0\.1)(:\d+)?)"
+else:
+    allow_ext_regex = r"^(chrome-extension://[a-z]{32}|http://(localhost|127\.0\.0\.1)(:\d+)?)"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=allow_ext_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,6 +99,7 @@ app.include_router(jobs_router)
 app.include_router(exports_router)
 app.include_router(settings_router)
 app.include_router(user_router)
+app.include_router(ingest_router)
 
 
 @app.get("/")

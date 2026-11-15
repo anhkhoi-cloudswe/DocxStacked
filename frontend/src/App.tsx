@@ -12,11 +12,47 @@ type ScreenType = 'select' | 'progress' | 'result' | 'settings' | 'documents';
 export const App: React.FC = () => {
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('select');
   const [jobId, setJobId] = useState<string | null>(null);
+  const [activeRunningJobId, setActiveRunningJobId] = useState<string | null>(null);
   const [subjectCode, setSubjectCode] = useState<string>('');
   const [examType, setExamType] = useState<'FE' | 'PE'>('FE');
   const [limit, setLimit] = useState<number>(4);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [initialOpenLogin, setInitialOpenLogin] = useState<boolean>(false);
+  const [loginTrigger, setLoginTrigger] = useState<number>(0);
+
+  // Authentication gate state
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [authDetail, setAuthDetail] = useState<string>('Đang kiểm tra trạng thái đăng nhập...');
+
+  const checkAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/status');
+      if (res.ok) {
+        const data = await res.json();
+        setIsAuthenticated(Boolean(data.logged_in));
+        setAuthDetail(data.detail || '');
+      } else {
+        setIsAuthenticated(false);
+      }
+    } catch {
+      setIsAuthenticated(false);
+    } finally {
+      setIsAuthChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkAuthStatus();
+    // Poll auth status every 3 seconds to auto-close when user logs in via browser/extension
+    const authTimer = setInterval(checkAuthStatus, 3000);
+    return () => clearInterval(authTimer);
+  }, [checkAuthStatus]);
+
+  const handleOpenLogin = () => {
+    setCurrentScreen('select');
+    setLoginTrigger((prev) => prev + 1);
+  };
 
   const [completedFiles, setCompletedFiles] = useState<JobFile[]>([]);
   const [completedDetails, setCompletedDetails] = useState<JobDetails | null>(null);
@@ -108,9 +144,14 @@ export const App: React.FC = () => {
           .catch(() => {});
       }
       setCurrentScreen('result');
-    } else if (pathname.includes('/login')) {
+    } else if (pathname.includes('/login') || window.location.search.includes('login=true')) {
       setCurrentScreen('select');
+      // Remove ?login=true from address bar so refresh does not keep re-triggering the modal
+      if (window.location.search.includes('login=true')) {
+        window.history.replaceState({}, '', window.location.pathname || '/');
+      }
       setInitialOpenLogin(true);
+      setLoginTrigger((prev) => prev + 1);
     } else {
       setCurrentScreen('select');
     }
@@ -120,8 +161,37 @@ export const App: React.FC = () => {
     syncFromUrl();
     const handlePopState = () => syncFromUrl();
     window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [syncFromUrl]);
+
+    // Poll for active running/pending jobs created in this user session
+    const checkActiveJobs = () => {
+      fetch('/api/jobs/active')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((activeJob) => {
+          if (activeJob && activeJob.job_id) {
+            // Only show indicator if the job was started or interacted with in this session
+            const myJobId = sessionStorage.getItem('docxstacked_active_job_id');
+            if (myJobId === activeJob.job_id) {
+              setActiveRunningJobId(activeJob.job_id);
+              if (!jobId) setJobId(activeJob.job_id);
+            } else {
+              setActiveRunningJobId(null);
+            }
+          } else {
+            setActiveRunningJobId(null);
+            sessionStorage.removeItem('docxstacked_active_job_id');
+          }
+        })
+        .catch(() => {});
+    };
+
+    checkActiveJobs();
+    const jobPollInterval = setInterval(checkActiveJobs, 5000);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      clearInterval(jobPollInterval);
+    };
+  }, [syncFromUrl, activeRunningJobId, jobId]);
 
   const handleStartJob = async (
     selectedSubject: string,
@@ -151,7 +221,9 @@ export const App: React.FC = () => {
       }
 
       const data: JobStatusResponse = await resp.json();
+      sessionStorage.setItem('docxstacked_active_job_id', data.job_id);
       setJobId(data.job_id);
+      setActiveRunningJobId(data.job_id);
       navigateTo('progress', data.job_id);
     } catch (err: any) {
       alert(err.message || 'Lỗi kết nối tới máy chủ API');
@@ -161,12 +233,16 @@ export const App: React.FC = () => {
   };
 
   const handleComplete = (files: JobFile[], details: JobDetails) => {
+    setActiveRunningJobId(null);
+    sessionStorage.removeItem('docxstacked_active_job_id');
     setCompletedFiles(files);
     setCompletedDetails(details);
     navigateTo('result', jobId);
   };
 
   const handleRestart = () => {
+    setActiveRunningJobId(null);
+    sessionStorage.removeItem('docxstacked_active_job_id');
     setJobId(null);
     setCompletedFiles([]);
     setCompletedDetails(null);
@@ -188,47 +264,160 @@ export const App: React.FC = () => {
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-canvas)' }}>
       <Header
         currentScreen={currentScreen}
+        activeJobId={activeRunningJobId || (currentScreen !== 'progress' ? jobId : null)}
         onNavigateSettings={handleOpenSettings}
         onNavigateDocuments={() => navigateTo('documents')}
         onNavigateHome={() => navigateTo('select', null)}
+        onNavigateProgress={() => {
+          const target = activeRunningJobId || jobId;
+          if (target) navigateTo('progress', target);
+        }}
+        onOpenLogin={handleOpenLogin}
       />
 
       <main style={{ flex: 1, padding: 'var(--space-6) var(--space-4)' }}>
         <div style={{ maxWidth: '1080px', margin: '0 auto' }}>
-          {currentScreen === 'settings' && (
-            <ScreenSettings onBack={handleCloseSettings} />
-          )}
+          {!isAuthChecking && !isAuthenticated ? (
+            /* Blocking Login Gate Modal / Card */
+            <div
+              style={{
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-lg)',
+                padding: 'var(--space-8)',
+                textAlign: 'center',
+                maxWidth: '560px',
+                margin: 'var(--space-12) auto',
+                boxShadow: 'var(--shadow-lg, 0 10px 25px rgba(0,0,0,0.3))',
+              }}
+            >
+              <div
+                style={{
+                  width: '56px',
+                  height: '56px',
+                  margin: '0 auto var(--space-4)',
+                  borderRadius: '50%',
+                  backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: 'var(--primary, #6366f1)',
+                }}
+              >
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                </svg>
+              </div>
 
-          {currentScreen === 'documents' && (
-            <ScreenUserDocuments onBack={() => navigateTo('select', null)} />
-          )}
+              <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
+                Yêu cầu đăng nhập FUOverflow
+              </h2>
+              <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                {authDetail || 'Vui lòng đăng nhập tài khoản FUOverflow để kích hoạt dashboard và sử dụng các tính năng.'}
+              </p>
 
-          {currentScreen === 'select' && (
-            <ScreenSelectSubject
-              onStartJob={handleStartJob}
-              isLoading={isLoading}
-              initialOpenLogin={initialOpenLogin}
-            />
-          )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+                <a
+                  href="https://fuoverflow.com/login"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 'var(--space-2)',
+                    padding: 'var(--space-3) var(--space-6)',
+                    backgroundColor: 'var(--primary, #6366f1)',
+                    color: '#fff',
+                    borderRadius: 'var(--radius-md)',
+                    fontWeight: 600,
+                    fontSize: 'var(--text-sm)',
+                    textDecoration: 'none',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                    <polyline points="15 3 21 3 21 9"></polyline>
+                    <line x1="10" y1="14" x2="21" y2="3"></line>
+                  </svg>
+                  Mở fuoverflow.com để đăng nhập
+                </a>
 
-          {currentScreen === 'progress' && jobId && (
-            <ScreenProgress
-              jobId={jobId}
-              subjectCode={subjectCode}
-              examType={examType}
-              limit={limit}
-              onComplete={handleComplete}
-              onCancel={handleRestart}
-            />
-          )}
+                <button
+                  type="button"
+                  onClick={checkAuthStatus}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 'var(--space-2)',
+                    padding: 'var(--space-2) var(--space-4)',
+                    backgroundColor: 'transparent',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)',
+                    borderRadius: 'var(--radius-md)',
+                    fontSize: 'var(--text-xs)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Kiểm tra lại trạng thái
+                </button>
+              </div>
 
-          {currentScreen === 'result' && completedDetails && (
-            <ScreenResult
-              jobId={jobId || undefined}
-              files={completedFiles}
-              details={completedDetails}
-              onRestart={handleRestart}
-            />
+              <div
+                style={{
+                  marginTop: 'var(--space-6)',
+                  padding: 'var(--space-3)',
+                  backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: 'var(--text-xs)',
+                  color: 'var(--text-muted)',
+                }}
+              >
+                Hộp thoại sẽ tự động mở trang Dashboard ngay khi Extension hoặc trình duyệt xác nhận đã đăng nhập.
+              </div>
+            </div>
+          ) : (
+            <>
+              {currentScreen === 'settings' && (
+                <ScreenSettings onBack={handleCloseSettings} />
+              )}
+
+              {currentScreen === 'documents' && (
+                <ScreenUserDocuments onBack={() => navigateTo('select', null)} />
+              )}
+
+              {currentScreen === 'select' && (
+                <ScreenSelectSubject
+                  onStartJob={handleStartJob}
+                  isLoading={isLoading}
+                  initialOpenLogin={initialOpenLogin}
+                  loginTrigger={loginTrigger}
+                />
+              )}
+
+              {currentScreen === 'progress' && jobId && (
+                <ScreenProgress
+                  jobId={jobId}
+                  subjectCode={subjectCode}
+                  examType={examType}
+                  limit={limit}
+                  onComplete={handleComplete}
+                  onCancel={handleRestart}
+                />
+              )}
+
+              {currentScreen === 'result' && completedDetails && (
+                <ScreenResult
+                  jobId={jobId || undefined}
+                  files={completedFiles}
+                  details={completedDetails}
+                  onRestart={handleRestart}
+                />
+              )}
+            </>
           )}
         </div>
       </main>

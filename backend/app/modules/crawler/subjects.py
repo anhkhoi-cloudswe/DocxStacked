@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
 from backend.app.db.models import Subject
-from backend.app.modules.crawler.browser import get_browser_manager
+from backend.app.modules.crawler.browser import get_browser_manager, run_in_browser_thread
 from backend.app.modules.crawler.rate_limiter import get_rate_limiter
 
 logger = get_logger(__name__)
@@ -160,7 +160,7 @@ async def sync_subjects_from_web(
         rate_limiter = get_rate_limiter()
         await rate_limiter.wait_async()
         logger.info(f"Fetching subjects list from {category_url}...")
-        html = await asyncio.to_thread(_fetch_url_sync, category_url)
+        html = await run_in_browser_thread(_fetch_url_sync, category_url)
 
     if not html:
         logger.error("Failed to fetch HTML for subjects category page.")

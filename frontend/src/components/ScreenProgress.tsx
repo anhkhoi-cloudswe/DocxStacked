@@ -365,6 +365,19 @@ export const ScreenProgress: React.FC<Props> = ({
     }
   };
 
+  const handleExitOrCancel = async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1500);
+      await fetch(`/api/jobs/${jobId}/cancel`, { method: 'POST', signal: controller.signal }).catch(() => {});
+      clearTimeout(timeoutId);
+    } catch (e) {
+      // Ignore
+    } finally {
+      onCancel();
+    }
+  };
+
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
@@ -691,13 +704,13 @@ export const ScreenProgress: React.FC<Props> = ({
               {errorMessage}
             </div>
             {(() => {
-              const isAuthError = currentStep === 'auth_required' || errorMessage.includes('chính sách 1 phiên') || errorMessage.includes('Cần đăng nhập lại:');
+              const isAuthError = currentStep === 'auth_required' || errorMessage.includes('chính sách 1 phiên') || errorMessage.includes('Cần đăng nhập lại:') || errorMessage.includes('phiên bị đá');
               return (
                 <>
                   {isAuthError && (
                     <div style={{ marginTop: 'var(--space-2)', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
                       <LightbulbIcon size={14} style={{ flexShrink: 0, marginTop: '2px' }} />
-                      <span><em>Lưu ý:</em> FUOverflow chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc. Nếu bạn vừa mở FUOverflow trên trình duyệt khác, phiên hiện tại sẽ bị ngắt. Hãy đăng nhập lại rồi bấm <strong>"Chạy tiếp từ chỗ dừng"</strong> bên dưới để tiếp tục từ đúng câu hỏi dang dở mà không bị mất dữ liệu đã tải.</span>
+                      <span><em>Khuyến nghị bảo vệ phiên:</em> Nên dùng một tài khoản FUOverflow riêng cho công cụ và <strong>tuyệt đối không đăng nhập/mở diễn đàn ở trình duyệt khác khi job đang chạy</strong>. Diễn đàn chỉ cho phép đúng 1 phiên đăng nhập đồng thời. Khi tài khoản bị đăng nhập nơi khác, phiên tại đây sẽ bị đá lập tức. Hãy đăng nhập lại rồi mới bấm "Chạy tiếp từ chỗ dừng".</span>
                     </div>
                   )}
                   <div style={{ display: 'flex', gap: 'var(--space-2)', marginTop: 'var(--space-3)', flexWrap: 'wrap' }}>
@@ -729,32 +742,35 @@ export const ScreenProgress: React.FC<Props> = ({
                       </button>
                     ) : null}
 
-                    <button
-                      onClick={handleResume}
-                      disabled={isResuming}
-                      className="btn-primary"
-                      style={{
-                        fontSize: 'var(--text-xs)',
-                        padding: 'var(--space-2) var(--space-4)',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontWeight: 600,
-                        cursor: isResuming ? 'not-allowed' : 'pointer',
-                      }}
-                    >
-                      {isResuming ? (
-                        <>
-                          <RefreshIcon size={13} className="spin" />
-                          <span>Đang khôi phục...</span>
-                        </>
-                      ) : (
-                        <>
-                          <RefreshIcon size={13} />
-                          <span>Chạy tiếp từ chỗ dừng</span>
-                        </>
-                      )}
-                    </button>
+                    {/* Only show Resume button if not an active auth error, preventing pointless loop */}
+                    {!isAuthError ? (
+                      <button
+                        onClick={handleResume}
+                        disabled={isResuming}
+                        className="btn-primary"
+                        style={{
+                          fontSize: 'var(--text-xs)',
+                          padding: 'var(--space-2) var(--space-4)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          fontWeight: 600,
+                          cursor: isResuming ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        {isResuming ? (
+                          <>
+                            <RefreshIcon size={13} className="spin" />
+                            <span>Đang khôi phục...</span>
+                          </>
+                        ) : (
+                          <>
+                            <RefreshIcon size={13} />
+                            <span>Chạy tiếp từ chỗ dừng</span>
+                          </>
+                        )}
+                      </button>
+                    ) : null}
 
                     {!isAuthError && (
                       <button
@@ -784,7 +800,7 @@ export const ScreenProgress: React.FC<Props> = ({
                     )}
 
                     <button
-                      onClick={onCancel}
+                      onClick={handleExitOrCancel}
                       className="btn-secondary"
                       style={{ fontSize: 'var(--text-xs)', padding: 'var(--space-2) var(--space-3)' }}
                     >
@@ -846,7 +862,7 @@ export const ScreenProgress: React.FC<Props> = ({
         {/* Footer actions */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)' }}>
           <button
-            onClick={onCancel}
+            onClick={handleExitOrCancel}
             className="btn-secondary"
             style={{ fontSize: 'var(--text-sm)', padding: 'var(--space-2) var(--space-4)' }}
           >

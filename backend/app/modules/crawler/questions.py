@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
 from backend.app.db.models import Exam, Question, QuestionType
-from backend.app.modules.crawler.browser import AuthenticationRequiredError, get_browser_manager
+from backend.app.modules.crawler.browser import AuthenticationRequiredError, get_browser_manager, run_in_browser_thread
 from backend.app.modules.crawler.rate_limiter import get_rate_limiter
 from backend.app.storage.local import LocalStorage
 
@@ -19,18 +19,22 @@ settings = get_settings()
 
 
 def _fetch_thread_html_sync(url: str) -> Tuple[str, Optional[str]]:
-    """Fetch HTML of a thread page in worker thread. Returns (html, status)."""
+    """Fetch HTML of a thread page in worker thread using browser page. Returns (html, status)."""
     bm = get_browser_manager()
     for attempt in range(2):
         try:
-            ctx = bm.start_context(headless=True)
-            resp = ctx.request.get(url, timeout=30000)
+            page = bm.get_page()
+            resp = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            if not resp:
+                return "", "error_no_response"
             if resp.status == 403:
+                from backend.app.modules.crawler.browser import log_403_diagnostic
+                log_403_diagnostic(url, resp, bm._context)
                 logger.warning(f"Thread page returned 403 Forbidden: {url}")
                 return "", "403_forbidden"
             if resp.status == 200:
-                text = resp.text()
-                if 'data-logged-in="false"' in text and "/login" in resp.url:
+                text = page.content()
+                if 'data-logged-in="false"' in text and "/login" in page.url:
                     logger.warning(f"Thread page redirected to login: {url}")
                     return "", "unauthenticated"
                 return text, "ok"
@@ -50,71 +54,81 @@ def _download_image_sync(
     local_path: Path,
 ) -> Tuple[bool, Optional[str]]:
     """
-    Download image synchronously in worker thread.
-    1. Try direct full-res download from /media/.../full?
+    Download image synchronously in worker thread using browser page.
+    1. In-page fetch from within authenticated page context (carries all session cookies & headers).
     2. Fallback to Playwright element screenshot.
-    3. Fallback to thumbnail.
     Returns (success, status_code).
     """
-    bm = get_browser_manager()
-    try:
-        ctx = bm.start_context(headless=True)
-        _ = ctx.pages
-    except Exception:
-        bm.close()
-        ctx = bm.start_context(headless=True)
+    if not media_url:
+        return False, "no_url"
 
-    # 1. Option A: Direct download full-res
-    if media_url:
+    bm = get_browser_manager()
+    for attempt in range(2):
         try:
-            media_resp = ctx.request.get(media_url, timeout=15000)
-            if media_resp.status == 403:
+            page = bm.get_page()
+            resp = page.goto(media_url, wait_until="domcontentloaded", timeout=25000)
+            if not resp:
+                return False, "error_no_response"
+            if resp.status == 403:
+                from backend.app.modules.crawler.browser import log_403_diagnostic
+                log_403_diagnostic(media_url, resp, bm._context)
                 logger.warning(f"Media URL returned 403 Forbidden: {media_url}")
                 return False, "403_forbidden"
-            if media_resp.status == 200:
-                text = media_resp.text()
-                if 'data-logged-in="false"' in text and "/login" in media_resp.url:
-                    logger.warning(f"Media URL redirected to login: {media_url}")
-                    return False, "unauthenticated"
-                m_soup = BeautifulSoup(text, "html.parser")
-                img_tag = m_soup.select_one(".js-mediaImage, img[src*='/full?']")
-                if img_tag and img_tag.get("src"):
-                    full_src = img_tag.get("src")
-                    full_img_url = f"https://fuoverflow.com{full_src}" if full_src.startswith("/") else full_src
-                    img_resp = ctx.request.get(full_img_url, timeout=20000)
-                    if img_resp.status == 403:
-                        logger.warning(f"Full-res image returned 403: {full_img_url}")
-                        return False, "403_forbidden"
-                    if img_resp.status == 200 and len(img_resp.body()) > 8000:
-                        with open(local_path, "wb") as f_img:
-                            f_img.write(img_resp.body())
-                        logger.debug(f"Direct full-res download succeeded: {len(img_resp.body())} bytes")
-                        return True, "ok"
-        except Exception as e:
-            logger.warning(f"Direct full-res download failed for {media_url}: {e}")
-            if "closed" in str(e).lower():
-                bm.close()
+            if "/login" in page.url:
+                logger.warning(f"Media URL redirected to login: {media_url}")
+                return False, "unauthenticated"
 
-    # 2. Option B: Fallback to element screenshot
-    if media_url:
-        page = None
-        try:
-            logger.info(f"Direct download failed. Falling back to screenshot for {media_url}...")
-            page = ctx.new_page()
-            sc_resp = page.goto(media_url, wait_until="domcontentloaded", timeout=25000)
-            if sc_resp and sc_resp.status == 403:
-                return False, "403_forbidden"
-            img_loc = page.locator(".js-mediaImage, .xfmgMediaView-image img").first
+            # Locate media image
+            img_loc = page.locator(".js-mediaImage, .xfmgMediaView-image img, img[src*='/full?']").first
             if img_loc.is_visible(timeout=5000):
-                img_loc.screenshot(path=str(local_path))
-                if local_path.exists() and local_path.stat().st_size > 8000:
-                    logger.info(f"Screenshot fallback succeeded for {local_path.name}")
-                    return True, "ok"
-        except Exception as sc_err:
-            logger.error(f"Screenshot fallback failed: {sc_err}")
-        finally:
-            if page:
-                page.close()
+                src = img_loc.get_attribute("src")
+                if src:
+                    full_img_url = f"https://fuoverflow.com{src}" if src.startswith("/") else src
+                    # Option A: In-page fetch using browser's active session and cookies
+                    try:
+                        fetch_res = page.evaluate('''async (url) => {
+                            try {
+                                const resp = await fetch(url);
+                                if (!resp.ok) return { ok: false, status: resp.status };
+                                const blob = await resp.blob();
+                                return new Promise((resolve) => {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => resolve({ ok: true, data: reader.result });
+                                    reader.readAsDataURL(blob);
+                                });
+                            } catch (e) {
+                                return { ok: false, error: String(e) };
+                            }
+                        }''', full_img_url)
+                        if fetch_res.get("ok") and fetch_res.get("data"):
+                            import base64
+                            header, b64_data = fetch_res["data"].split(",", 1)
+                            raw_bytes = base64.b64decode(b64_data)
+                            if len(raw_bytes) > 2000:
+                                local_path.parent.mkdir(parents=True, exist_ok=True)
+                                with open(local_path, "wb") as f_img:
+                                    f_img.write(raw_bytes)
+                                logger.debug(f"In-page full-res download succeeded: {len(raw_bytes)} bytes")
+                                return True, "ok"
+                    except Exception as fetch_err:
+                        logger.debug(f"In-page fetch failed: {fetch_err}")
+
+                # Option B: Fallback to high-quality element screenshot
+                try:
+                    img_loc.screenshot(path=str(local_path))
+                    if local_path.exists() and local_path.stat().st_size > 2000:
+                        logger.info(f"Screenshot fallback succeeded for {local_path.name}")
+                        return True, "ok"
+                except Exception as sc_err:
+                    logger.error(f"Screenshot fallback failed: {sc_err}")
+
+            return False, "no_image_element"
+        except Exception as e:
+            err_name = type(e).__name__
+            logger.warning(f"Download image error ({err_name}: {e}) on attempt {attempt + 1}...")
+            bm.close()
+            if attempt == 1:
+                return False, f"error_{err_name}: {str(e)}"
 
     return False, "failed"
 
@@ -175,12 +189,12 @@ async def crawl_exam_questions(
     rate_limiter = get_rate_limiter()
     await rate_limiter.wait_async()
 
-    # Fetch thread page in worker thread
-    thread_html, thread_status = await asyncio.to_thread(_fetch_thread_html_sync, exam.url)
+    # Fetch thread page in dedicated browser worker thread
+    thread_html, thread_status = await run_in_browser_thread(_fetch_thread_html_sync, exam.url)
     if thread_status in ("403_forbidden", "unauthenticated"):
         raise AuthenticationRequiredError(
-            "Phiên đăng nhập FUOverflow đã bị ngắt hoặc hết hạn (do diễn đàn chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc). "
-            "Vui lòng đăng nhập lại và bấm 'Chạy tiếp từ chỗ dừng'!"
+            f"Không thể tải danh sách câu hỏi đề '{exam.title}' ({thread_status}). "
+            f"URL: {exam.url}. Hệ thống đã dừng tiến trình và không tính đề này là hoàn tất."
         )
     if not thread_html:
         if thread_status and thread_status.startswith("error_"):
@@ -256,17 +270,17 @@ async def crawl_exam_questions(
         if not already_downloaded:
             logger.info(f"Đang tải ảnh câu Q{q_index} ({idx}/{total_items}): {file_name}...")
             await rate_limiter.wait_async()
-            # Run image download in worker thread
-            dl_ok, dl_status = await asyncio.to_thread(_download_image_sync, media_url, thumb_url, local_path=local_img_path)
+            # Run image download in dedicated browser worker thread
+            dl_ok, dl_status = await run_in_browser_thread(_download_image_sync, media_url, thumb_url, local_path=local_img_path)
             if dl_status in ("403_forbidden", "unauthenticated"):
-                consecutive_auth_fails += 1
-                if consecutive_auth_fails >= 2:
-                    raise AuthenticationRequiredError(
-                        "Phiên đăng nhập FUOverflow đã bị ngắt hoặc hết hạn (do diễn đàn chỉ cho phép 1 phiên đăng nhập hoạt động cùng lúc). "
-                        "Vui lòng đăng nhập lại và bấm 'Chạy tiếp từ chỗ dừng'!"
-                    )
-            else:
-                consecutive_auth_fails = 0
+                raise AuthenticationRequiredError(
+                    f"Tải ảnh câu {q_index} ({file_name}) thất bại do máy chủ từ chối truy cập ({dl_status}). "
+                    f"URL: {media_url}. Hệ thống đã dừng tiến trình và không tính câu này là hoàn tất."
+                )
+            if not dl_ok or not local_img_path.exists() or local_img_path.stat().st_size <= 8000:
+                raise RuntimeError(
+                    f"Tải ảnh câu {q_index} ({file_name}) không thành công (kích thước file không hợp lệ hoặc thiếu ảnh)."
+                )
 
             if on_progress:
                 on_progress(idx, total_items, f"Đã tải {file_name}")

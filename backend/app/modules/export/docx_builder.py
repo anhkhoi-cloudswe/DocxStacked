@@ -1,7 +1,10 @@
+import difflib
 import io
+import os
 import re
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from PIL import Image
 from docx import Document
 from docx.shared import Cm, Pt, RGBColor
@@ -53,17 +56,127 @@ def format_exam_docx_filename(subject_code: str, exam: Exam) -> str:
     return f"{code} - {term_str} - {e_type}.docx"
 
 
+def cluster_text_answers(comments: List[Any], similarity_threshold: float = 0.85) -> Optional[str]:
+    """
+    Cluster text comments for missing_options questions (fuzzy ratio >= similarity_threshold).
+    Picks the most popular cluster and formats as 'Letter. Text' or just 'Text'.
+    """
+    if not comments:
+        return None
+
+    def _clean(t: str) -> str:
+        s = re.sub(r"^[A-D]\s*[\.\:\-\)]\s*", "", t.strip(), flags=re.I)
+        s = re.sub(r"^(?:đáp án là|chắc là|quy luật kinh tế)\s*", "", s, flags=re.I)
+        s = re.sub(r"[\.\,\;\:\!\?]+$", "", s).strip()
+        return s
+
+    groups: List[Dict[str, Any]] = []
+
+    for c in comments:
+        raw_text = getattr(c, "raw_text", "") or ""
+        if not raw_text.strip():
+            continue
+
+        m_let = re.match(r"^([A-D])\s*[\.\:\-\)]\s*(.*)$", raw_text.strip(), flags=re.I)
+        letter = m_let.group(1).upper() if m_let else None
+        cleaned = _clean(raw_text)
+        if not cleaned or len(cleaned) < 2:
+            continue
+
+        matched_group = None
+        for g in groups:
+            ratio = difflib.SequenceMatcher(None, g["canonical"].lower(), cleaned.lower()).ratio()
+            if ratio >= similarity_threshold:
+                matched_group = g
+                break
+
+        if matched_group:
+            matched_group["count"] += 1
+            if letter and not matched_group["letter"]:
+                matched_group["letter"] = letter
+            # Prefer title-cased or uppercase-starting version (e.g. 'Tuyệt đối...' over 'tuyệt đối...')
+            if cleaned[0].isupper() and not matched_group["canonical"][0].isupper():
+                matched_group["canonical"] = cleaned
+            elif len(cleaned) > len(matched_group["canonical"]) and cleaned[0].isupper() == matched_group["canonical"][0].isupper():
+                matched_group["canonical"] = cleaned
+        else:
+            groups.append({
+                "canonical": cleaned,
+                "count": 1,
+                "letter": letter,
+            })
+
+    if not groups:
+        return None
+
+    groups.sort(key=lambda g: g["count"], reverse=True)
+    top = groups[0]
+    canonical_text = top["canonical"].strip()
+    if top["letter"]:
+        return f"{top['letter']}. {canonical_text}"
+    return canonical_text
+
+
+def is_valid_keyword(kw: str, is_vietnamese_exam: bool = True) -> bool:
+    """
+    Validate keyword for options in Word document.
+    Rules:
+      - Reject placeholders like 'Không rõ từ hình ảnh', 'unknown', 'unclear', 'n/a'.
+      - Reject English keywords when the exam is Vietnamese (e.g. 'capitalist production costs').
+    """
+    if not kw or not isinstance(kw, str):
+        return False
+    kw_strip = kw.strip()
+    if not kw_strip:
+        return False
+
+    lower = kw_strip.lower()
+    placeholders = [
+        "không rõ từ hình ảnh",
+        "không rõ",
+        "chưa rõ",
+        "không có thông tin",
+        "unknown",
+        "unclear",
+        "not clear",
+        "n/a",
+        "none",
+    ]
+    if any(p in lower for p in placeholders):
+        return False
+
+    if is_vietnamese_exam:
+        has_vi_accents = bool(
+            re.search(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", lower)
+        )
+        if not has_vi_accents:
+            english_words = {
+                "capitalist", "production", "costs", "cost", "blurred", "surplus", "value",
+                "selling", "price", "actual", "smaller", "formation", "greater", "which",
+                "the", "of", "and", "in", "to", "for", "with", "on", "at", "by", "from",
+                "law", "economic", "fundamental", "absolute", "relative",
+            }
+            tokens = set(re.findall(r"\b[a-zA-Z]+\b", lower))
+            if tokens & english_words:
+                return False
+
+    return True
+
+
 def _render_question_to_doc(
     doc: Document,
     q: Question,
     cropped_dir: Path,
     highlight_check_needed: bool = True,
     answer_format: str = "letter_keyword",
+    multi_choice_format: str = "comma",
     add_divider: bool = True,
     add_question_number: bool = True,
     use_raw_fallback: bool = False,
     answers_map: Optional[Dict[int, Answer]] = None,
-) -> None:
+    subject_code: str = "",
+    exam_title: str = "",
+) -> str:
     # 0. Question Number Header (e.g. "Câu 1:")
     if add_question_number:
         num_paragraph = doc.add_paragraph()
@@ -95,25 +208,40 @@ def _render_question_to_doc(
                     target_img_path = full_raw_path
                     target_img = Image.open(full_raw_path)
                 else:
-                    # Check pre-saved cropped path on Question model
+                    # Priority: cropped_dir (freshly cropped by crop_exam_images) > q.cropped_image_path (may be stale)
                     target_img_path = None
-                    if getattr(q, "cropped_image_path", None):
+
+                    # 1st priority: check cropped_dir for this question
+                    cropped_filename = f"q{q.index:03d}.png"
+                    cropped_path = cropped_dir / cropped_filename
+                    if cropped_path.exists() and cropped_path.stat().st_size > 500:
+                        target_img_path = cropped_path
+
+                    # 2nd priority: pre-saved cropped_image_path on Question model (only if NOT already found in cropped_dir)
+                    if not target_img_path and getattr(q, "cropped_image_path", None):
                         cand_path = Path(q.cropped_image_path)
                         full_cand = cand_path if cand_path.is_absolute() else (settings.BASE_DIR / cand_path)
-                        if full_cand.exists() and full_cand.stat().st_size > 500:
+                        # Only use if it lives under the same cropped_dir (same exam, same algo version)
+                        try:
+                            full_cand.resolve().relative_to(cropped_dir.resolve())
+                            same_dir = True
+                        except ValueError:
+                            same_dir = False
+                        if same_dir and full_cand.exists() and full_cand.stat().st_size > 500:
                             target_img_path = full_cand
-
-                    if not target_img_path:
-                        cropped_filename = f"q{q.index:03d}.png"
-                        cropped_path = cropped_dir / cropped_filename
-                        if cropped_path.exists() and cropped_path.stat().st_size > 500:
-                            target_img_path = cropped_path
-                        else:
-                            crop_res = crop_question_single(
-                                input_path=full_raw_path,
-                                output_path=cropped_path,
+                        elif not same_dir:
+                            logger.debug(
+                                f"Skipping stale cropped_image_path for Q{q.index} "
+                                f"(different dir: {full_cand} vs {cropped_dir})"
                             )
-                            target_img_path = cropped_path
+
+                    # 3rd priority: re-crop on the fly
+                    if not target_img_path:
+                        crop_res = crop_question_single(
+                            input_path=full_raw_path,
+                            output_path=cropped_path,
+                        )
+                        target_img_path = cropped_path
 
                     target_img = Image.open(target_img_path)
 
@@ -133,9 +261,13 @@ def _render_question_to_doc(
         run_missing.font.italic = True
         run_missing.font.color.rgb = RGBColor(0x8C, 0x82, 0x78)
 
-    # Note if source screenshot was clipped
+    # Note if source screenshot was clipped (only when content is lost: right/top/bottom, or explicit source_clipped_content)
     warnings_list = getattr(q, "crop_warnings", []) or []
-    if "source_clipped" in warnings_list:
+    # If warnings list has "source_clipped_content" (or "source_clipped" when NOT general left-margin only)
+    has_content_clipping = "source_clipped_content" in warnings_list or (
+        "source_clipped" in warnings_list and "source_clipped_left_only" not in warnings_list
+    )
+    if has_content_clipping:
         note_p = doc.add_paragraph()
         note_p.paragraph_format.space_before = Pt(0)
         note_p.paragraph_format.space_after = Pt(2)
@@ -189,21 +321,68 @@ def _render_question_to_doc(
         else:
             ans_list = [str(raw_ans_set)]
 
-        if answer_format == "letter_keyword" and options_map:
-            formatted_parts = []
-            for letter in ans_list:
-                clean_letter = str(letter).strip().upper()
-                kw = options_map.get(clean_letter)
-                if kw:
-                    formatted_parts.append(f"{clean_letter}. {kw}")
-                else:
-                    formatted_parts.append(clean_letter)
-            ans_text = ", ".join(formatted_parts)
+        is_vi = (
+            subject_code.upper() in ["MLN122", "VIE101", "HCM202", "VNR202"]
+            or any(c in exam_title.lower() for c in "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+        )
+
+        if len(ans_list) > 1:
+            # Multi-choice question: ONLY write letters, NEVER output keywords!
+            if multi_choice_format == "joined":
+                ans_text = "".join(str(l).strip().upper() for l in ans_list)
+            else:
+                ans_text = ", ".join(str(l).strip().upper() for l in ans_list)
         else:
-            ans_text = ", ".join(str(letter).strip().upper() for letter in ans_list)
+            # Single-choice question
+            clean_letter = str(ans_list[0]).strip().upper() if ans_list else "?"
+            kw = options_map.get(clean_letter) if (answer_format == "letter_keyword" and options_map) else None
+            if kw and is_valid_keyword(kw, is_vietnamese_exam=is_vi):
+                ans_text = f"{clean_letter}. {kw.strip()}"
+            else:
+                ans_text = clean_letter
         status = ans_obj.status
     elif ans_obj and ans_obj.status:
         status = ans_obj.status
+
+    # Missing options in source image check: cluster text comments if available
+    raw_warnings = getattr(q, "crop_warnings", []) or []
+    if isinstance(raw_warnings, str):
+        try:
+            import json
+            raw_warnings = json.loads(raw_warnings)
+        except Exception:
+            raw_warnings = [raw_warnings]
+
+    # Detect if options are missing either from crop warnings or if comments are predominantly text descriptions
+    has_missing_options = "missing_options" in raw_warnings
+    q_comms = getattr(q, "comments", []) or []
+    if not has_missing_options and q_comms and len(q_comms) >= 1:
+        # Check if majority of comments are textual descriptive phrases rather than isolated letters
+        from backend.app.modules.analysis.parser import parse_comment_text
+        phrase_cnt = 0
+        letter_cnt = 0
+        for c_item in q_comms:
+            txt = getattr(c_item, "raw_text", "") or ""
+            parsed = parse_comment_text(txt)
+            if parsed and parsed.answers and any(a in ["A", "B", "C", "D"] for a in parsed.answers):
+                # If comment has letter but also substantial descriptive text (e.g. 'B. Tuyệt đối của chủ nghĩa tư bản')
+                cleaned = re.sub(r"^[A-Da-d][.\s:\-]+", "", txt.strip())
+                if len(cleaned.split()) >= 3:
+                    phrase_cnt += 1
+                else:
+                    letter_cnt += 1
+            elif len(txt.strip().split()) >= 3:
+                phrase_cnt += 1
+
+        if phrase_cnt > 0 and phrase_cnt >= letter_cnt and (status in (AnswerStatus.WEAK, AnswerStatus.NO_DATA) or not ans_obj or not ans_obj.answer_set):
+            has_missing_options = True
+
+    if has_missing_options:
+        text_answer = cluster_text_answers(q_comms)
+        if text_answer:
+            ans_text = f"{text_answer} (ảnh nguồn thiếu phương án)"
+        else:
+            ans_text = f"{ans_text} (ảnh nguồn thiếu phương án)"
 
     # Answer letter run
     run_ans = ans_paragraph.add_run(ans_text)
@@ -211,8 +390,12 @@ def _render_question_to_doc(
     run_ans.font.size = Pt(20)
     run_ans.font.color.rgb = RGBColor(0xEE, 0x00, 0x00)  # Teacher Red #EE0000
 
-    # Note run for low-confidence or conflict questions
-    if highlight_check_needed and (status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or ans_text == "?"):
+    # Note run for low-confidence, conflict, or missing options
+    if highlight_check_needed and (
+        status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA)
+        or ans_text.startswith("?")
+        or has_missing_options
+    ):
         run_note = ans_paragraph.add_run(" (cần kiểm tra lại)")
         run_note.bold = False
         run_note.font.size = Pt(11)
@@ -249,6 +432,7 @@ def build_exam_docx(
     highlight_check_needed: bool = True,
     cropped_dir: Optional[Path] = None,
     answer_format: str = "letter_keyword",
+    multi_choice_format: str = "comma",
     add_divider: bool = True,
     add_question_number: bool = True,
     unsupported_layout_warning: bool = False,
@@ -293,6 +477,23 @@ def build_exam_docx(
         warn_run.font.color.rgb = RGBColor(0xDC, 0x26, 0x26)
         warn_p.paragraph_format.space_after = Pt(12)
 
+    # Check if this exam has widespread left-edge clipping (ONLY if questions have actual content loss touching screenshot canvas)
+    has_exam_left_clipped = False
+    for q in questions:
+        q_warns = getattr(q, "crop_warnings", []) or []
+        # Only display exam-wide note if source screenshot canvas was genuinely clipped
+        if "source_clipped_content" in q_warns:
+            has_exam_left_clipped = True
+            break
+    if has_exam_left_clipped:
+        left_clip_p = doc.add_paragraph()
+        left_clip_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        left_clip_run = left_clip_p.add_run("Ảnh nguồn của đề này bị cụt mép trái")
+        left_clip_run.italic = True
+        left_clip_run.font.size = Pt(10.5)
+        left_clip_run.font.color.rgb = RGBColor(0x8C, 0x82, 0x78)
+        left_clip_p.paragraph_format.space_after = Pt(8)
+
     sorted_questions = sorted(questions, key=lambda q: q.index)
     rendered_q_mark_count = 0
     available_db_answers_count = 0
@@ -308,10 +509,13 @@ def build_exam_docx(
             cropped_dir=cropped_dir,
             highlight_check_needed=highlight_check_needed,
             answer_format=answer_format,
+            multi_choice_format=multi_choice_format,
             add_divider=add_divider,
             add_question_number=add_question_number,
             use_raw_fallback=use_raw_fallback,
             answers_map=answers_map,
+            subject_code=subject_code,
+            exam_title=exam.title,
         )
         if ans_rendered == "?" and ans_in_db and ans_in_db.answer_set and ans_in_db.status != AnswerStatus.NO_DATA:
             rendered_q_mark_count += 1
@@ -330,7 +534,38 @@ def build_exam_docx(
 
     filename = format_exam_docx_filename(subject_code, exam)
     file_path = output_dir / filename
-    doc.save(str(file_path))
+    temp_file_path = output_dir / f"{filename}.tmp_{os.getpid()}_{int(time.time())}.docx"
+
+    # Save initially to a temporary file
+    doc.save(str(temp_file_path))
+    temp_size = temp_file_path.stat().st_size
+
+    # Quality Gate Check 1: Abnormally small file when questions > 5
+    if len(questions) > 5 and temp_size < 50_000:
+        err_msg = (
+            f"Lỗi cổng chất lượng file Word: Kích thước file tạo ra quá nhỏ bất thường ({temp_size} bytes "
+            f"cho {len(questions)} câu). Đã chặn ghi đè tài liệu thật."
+        )
+        if temp_file_path.exists():
+            temp_file_path.unlink()
+        logger.error(err_msg)
+        raise RuntimeError(err_msg)
+
+    # Quality Gate Check 2: Reject overwriting a healthy file (>1MB) with an abnormally small file (<100KB)
+    if file_path.exists():
+        existing_size = file_path.stat().st_size
+        if existing_size > 1_000_000 and temp_size < 100_000:
+            err_msg = (
+                f"Lỗi cổng chất lượng: Từ chối ghi đè file Word hiện tại ({existing_size} bytes) "
+                f"bằng file mới nhỏ bất thường ({temp_size} bytes)."
+            )
+            if temp_file_path.exists():
+                temp_file_path.unlink()
+            logger.error(err_msg)
+            raise RuntimeError(err_msg)
+
+    # Atomic replace
+    os.replace(str(temp_file_path), str(file_path))
 
     logger.info(f"Generated clean Word document: {file_path} (Size: {file_path.stat().st_size} bytes)")
     return file_path
@@ -342,6 +577,7 @@ def build_merged_docx(
     output_dir: Optional[Path] = None,
     highlight_check_needed: bool = True,
     answer_format: str = "letter_keyword",
+    multi_choice_format: str = "comma",
     add_divider: bool = True,
     add_question_number: bool = True,
     answers_map: Optional[Dict[int, Answer]] = None,
@@ -381,9 +617,12 @@ def build_merged_docx(
                 cropped_dir=cropped_dir,
                 highlight_check_needed=highlight_check_needed,
                 answer_format=answer_format,
+                multi_choice_format=multi_choice_format,
                 add_divider=add_divider,
                 add_question_number=add_question_number,
                 answers_map=answers_map,
+                subject_code=code,
+                exam_title=exam.title,
             )
             if ans_rendered == "?" and ans_in_db and ans_in_db.answer_set and ans_in_db.status != AnswerStatus.NO_DATA:
                 merged_q_mark_count += 1

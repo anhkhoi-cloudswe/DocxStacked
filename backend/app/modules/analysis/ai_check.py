@@ -1,15 +1,21 @@
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import time
-from typing import Dict, List, Optional, Set, Tuple
-from PIL import Image
+from typing import Any, Dict, List, Optional, Set, Tuple
+import uuid
+from PIL import Image, ImageDraw
 import imagehash
 from pydantic import BaseModel, Field
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
+from backend.app.modules.analysis.gemini_guard import (
+    DailyQuotaExhaustedError,
+    get_daily_quota_tracker,
+)
 from backend.app.modules.analysis.providers import (
     VisionProvider,
     AnthropicProvider,
@@ -26,6 +32,8 @@ from backend.app.modules.analysis.providers import (
 
 logger = get_logger(__name__)
 settings = get_settings()
+
+PROMPT_VERSION = "v1.0"
 
 
 class AIQuestionAnalysis(BaseModel):
@@ -79,6 +87,90 @@ Please re-analyze the image and return ONLY a valid JSON object matching:
   }}
 }}
 Make sure every letter in "answers" is present in "options". Output only JSON."""
+
+
+BATCH_SYSTEM_PROMPT = (
+    "You are an expert exam solver. You analyze a composite image containing multiple multiple-choice questions "
+    "labeled ITEM_1, ITEM_2, etc., and extract the correct answer(s) for each item. Output ONLY valid JSON."
+)
+
+BATCH_BASE_PROMPT = """The provided image contains multiple exam questions vertically stacked, each separated by a header labeled ITEM_1, ITEM_2, etc.
+For EACH item:
+1. Determine all correct answer letters (e.g. ["B"], or ["A", "C"] if multiple).
+2. For each option present in that question (A, B, C, D...), extract a short summary keyword/phrase (maximum 6 words, keep technical terms intact).
+3. Determine a confidence score from 0.0 to 1.0.
+
+Return ONLY a valid JSON object in the following format:
+{
+  "ITEM_1": {
+    "answers": ["A"],
+    "type": "single",
+    "confidence": 0.95,
+    "options": {
+      "A": "keyword A",
+      "B": "keyword B",
+      "C": "keyword C",
+      "D": "keyword D"
+    }
+  },
+  "ITEM_2": {
+    "answers": ["B", "C"],
+    "type": "multiple",
+    "confidence": 0.90,
+    "options": {
+      "A": "keyword A",
+      "B": "keyword B",
+      "C": "keyword C",
+      "D": "keyword D"
+    }
+  }
+}
+Do NOT include any explanations, markdown code fences, or text outside the JSON."""
+
+
+def stitch_crop_images(
+    items: List[Dict[str, Any]],
+    output_path: Path,
+) -> Path:
+    """
+    Stitches multiple question crops vertically with clearly labeled banners.
+    Each item in items has: 'label', 'image_path', and optional 'hint'.
+    """
+    opened = []
+    for item in items:
+        p = Path(item["image_path"])
+        img = Image.open(p).convert("RGB")
+        opened.append((item, img))
+
+    max_width = max(max(img.width for _, img in opened), 600)
+    banner_height = 36
+    item_spacing = 16
+
+    total_height = sum(banner_height + img.height + item_spacing for _, img in opened)
+    composite = Image.new("RGB", (max_width, total_height), color="white")
+    draw = ImageDraw.Draw(composite)
+
+    current_y = 0
+    for item, img in opened:
+        label = item.get("label", "ITEM")
+        hint = item.get("hint", "")
+        banner_text = f"=== [{label}] {hint} ==="
+
+        draw.rectangle(
+            [0, current_y, max_width, current_y + banner_height],
+            fill=(235, 240, 248),
+            outline=(180, 200, 220),
+        )
+        draw.text((16, current_y + 10), banner_text, fill=(20, 30, 60))
+        current_y += banner_height
+
+        offset_x = (max_width - img.width) // 2
+        composite.paste(img, (offset_x, current_y))
+        current_y += img.height + item_spacing
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    composite.save(output_path, format="PNG")
+    return output_path
 
 
 class AICheckService:
@@ -185,14 +277,45 @@ class AICheckService:
         except Exception as e:
             logger.warning(f"Failed to save AI vision cache: {e}")
 
+    def compute_crop_hash(self, image_path: Path) -> str:
+        """Compute SHA256 hash of the cropped image file."""
+        with open(image_path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+
     def compute_phash(self, image_path: Path) -> str:
         """Compute perceptual hash for an image."""
         with Image.open(image_path) as im:
             return str(imagehash.phash(im.convert("RGB")))
 
-    def _get_cache_key(self, provider: VisionProvider, phash: str) -> str:
-        """Generate provider and model specific cache key."""
-        return f"{provider.name}:{provider.model}:{phash}"
+    def _get_cache_key(self, provider: VisionProvider, crop_hash: str, prompt_version: str = PROMPT_VERSION) -> str:
+        """Generate provider, model, prompt_version and crop_hash specific cache key."""
+        return f"{provider.name}:{provider.model}:{prompt_version}:{crop_hash}"
+
+    def _lookup_cache(self, provider: VisionProvider, image_path: Path) -> Optional[AIQuestionAnalysis]:
+        """Look up analysis in cache by (crop_hash, prompt_version) or legacy phash."""
+        try:
+            crop_hash = self.compute_crop_hash(image_path)
+            key_v1 = self._get_cache_key(provider, crop_hash, PROMPT_VERSION)
+            if key_v1 in self._cache:
+                res = AIQuestionAnalysis.model_validate(self._cache[key_v1])
+                res.provider = provider.name
+                res.model = provider.model
+                return res
+        except Exception:
+            pass
+
+        try:
+            phash = self.compute_phash(image_path)
+            legacy_key = f"{provider.name}:{provider.model}:{phash}"
+            if legacy_key in self._cache:
+                res = AIQuestionAnalysis.model_validate(self._cache[legacy_key])
+                res.provider = provider.name
+                res.model = provider.model
+                return res
+        except Exception:
+            pass
+
+        return None
 
     def _validate_and_parse_json(self, response_text: str) -> Tuple[Optional[AIQuestionAnalysis], Optional[str]]:
         """Validate and parse provider JSON output. Returns (analysis, error_detail)."""
@@ -285,7 +408,7 @@ class AICheckService:
         force_refresh: bool = False,
     ) -> Optional[AIQuestionAnalysis]:
         """
-        Analyze an image directly using a specified provider, honoring pHash cache.
+        Analyze an image directly using a specified provider, honoring cache.
         Useful for individual provider accuracy evaluation.
         """
         if not provider.is_available():
@@ -296,25 +419,27 @@ class AICheckService:
             logger.warning(f"Image not found: {image_path}")
             return None
 
-        phash = self.compute_phash(image_path)
-        cache_key = self._get_cache_key(provider, phash)
-
-        if not force_refresh and cache_key in self._cache:
-            try:
-                cached_data = self._cache[cache_key]
-                res = AIQuestionAnalysis.model_validate(cached_data)
-                res.provider = provider.name
-                res.model = provider.model
-                return res
-            except Exception as e:
-                logger.debug(f"Corrupted cache entry for {cache_key}: {e}")
+        if not force_refresh:
+            cached_res = self._lookup_cache(provider, image_path)
+            if cached_res:
+                return cached_res
 
         try:
             analysis = self._query_provider_with_format_retries(provider, image_path)
             if analysis:
-                self._cache[cache_key] = analysis.model_dump()
+                crop_hash = self.compute_crop_hash(image_path)
+                v1_key = self._get_cache_key(provider, crop_hash, PROMPT_VERSION)
+                self._cache[v1_key] = analysis.model_dump()
+                try:
+                    phash = self.compute_phash(image_path)
+                    self._cache[f"{provider.name}:{provider.model}:{phash}"] = analysis.model_dump()
+                except Exception:
+                    pass
                 self._save_cache()
                 return analysis
+        except DailyQuotaExhaustedError as e:
+            logger.warning(f"Provider '{provider.name}' daily quota exhausted: {e}")
+            return None
         except ProviderAuthError as e:
             logger.warning(f"Provider '{provider.name}' auth error (401/Invalid Key): {e}. Disabling provider.")
             self._disabled_providers.add(provider.name)
@@ -379,7 +504,6 @@ class AICheckService:
         is_ensemble = getattr(ai_cfg, "ensemble", False) if ai_cfg else False
         target_count = 2 if is_ensemble else 1
 
-        phash = self.compute_phash(image_path)
         available_providers = self.get_available_providers()
         if not available_providers:
             logger.warning("No AI providers available (missing API keys). Skipping AI.")
@@ -394,27 +518,27 @@ class AICheckService:
             if provider.name in used_providers:
                 continue
 
-            cache_key = self._get_cache_key(provider, phash)
-
             # Check cache first
-            if not force_refresh and cache_key in self._cache:
-                try:
-                    cached_data = self._cache[cache_key]
-                    res = AIQuestionAnalysis.model_validate(cached_data)
-                    res.provider = provider.name
-                    res.model = provider.model
-                    results.append(res)
+            if not force_refresh:
+                cached_res = self._lookup_cache(provider, image_path)
+                if cached_res:
+                    results.append(cached_res)
                     used_providers.add(provider.name)
                     logger.debug(f"AI Check cache HIT ({provider.name}:{provider.model}) for {image_path.name}")
                     continue
-                except Exception as cache_parse_err:
-                    logger.debug(f"AI Check cached payload invalid for {cache_key}: {cache_parse_err}", exc_info=True)
 
             # Make API Call with fallback handling
             try:
                 analysis = self._query_provider_with_format_retries(provider, image_path)
                 if analysis:
-                    self._cache[cache_key] = analysis.model_dump()
+                    crop_hash = self.compute_crop_hash(image_path)
+                    v1_key = self._get_cache_key(provider, crop_hash, PROMPT_VERSION)
+                    self._cache[v1_key] = analysis.model_dump()
+                    try:
+                        phash = self.compute_phash(image_path)
+                        self._cache[f"{provider.name}:{provider.model}:{phash}"] = analysis.model_dump()
+                    except Exception:
+                        pass
                     self._save_cache()
                     results.append(analysis)
                     used_providers.add(provider.name)
@@ -422,6 +546,10 @@ class AICheckService:
                         self._job_call_counts[job_id] = self._job_call_counts.get(job_id, 0) + 1
                 else:
                     logger.warning(f"Provider '{provider.name}' failed to produce valid result. Falling back to next...")
+            except DailyQuotaExhaustedError as e:
+                logger.warning(f"AI daily quota exhausted for {provider.name}:{provider.model} ({e}). Falling back to next provider...")
+                self._disabled_providers.add(f"{provider.name}:{provider.model}")
+                continue
             except ProviderAuthError as e:
                 logger.warning(f"Provider '{provider.name}' auth failed (401/Invalid Key): {e}. Disabling provider for this session.")
                 self._disabled_providers.add(provider.name)
@@ -434,6 +562,169 @@ class AICheckService:
                 logger.warning(f"Unexpected error in provider '{provider.name}': {type(e).__name__}. Falling back...")
 
         return results
+
+    def batch_analyze_questions(
+        self,
+        items: List[Dict[str, Any]],
+        provider: Optional[VisionProvider] = None,
+        batch_size: int = 5,
+        force_refresh: bool = False,
+    ) -> Dict[int, Optional[AIQuestionAnalysis]]:
+        """
+        Batches multiple question crops (5-8 crops) into composite images to maximize
+        free tier quota efficiency (e.g. 5 questions per 1 API call).
+        
+        items: list of dicts with:
+            'question_id': int,
+            'image_path': Path,
+            'multi_choice_n': Optional[int],
+            'q_num': Optional[int],
+        
+        Returns:
+            Dict mapping question_id -> AIQuestionAnalysis (or None if failed)
+        """
+        results: Dict[int, Optional[AIQuestionAnalysis]] = {}
+        active_provider = provider
+        if active_provider is None:
+            available = [p for p in self._providers if p.is_available() and p.name not in self._disabled_providers]
+            if not available:
+                logger.warning("No vision AI providers available for batch analysis.")
+                return {item["question_id"]: None for item in items}
+            active_provider = available[0]
+
+        to_call_items = []
+        for item in items:
+            q_id = item["question_id"]
+            img_path = Path(item["image_path"])
+            if not img_path.exists():
+                results[q_id] = None
+                continue
+
+            if not force_refresh:
+                cached = self._lookup_cache(active_provider, img_path)
+                if cached:
+                    results[q_id] = cached
+                    continue
+
+            to_call_items.append(item)
+
+        if not to_call_items:
+            return results
+
+        # Process non-cached items in batches
+        for chunk_idx in range(0, len(to_call_items), batch_size):
+            chunk = to_call_items[chunk_idx : chunk_idx + batch_size]
+
+            if len(chunk) == 1:
+                item = chunk[0]
+                q_id = item["question_id"]
+                ans = self.analyze_with_provider(active_provider, Path(item["image_path"]), force_refresh=force_refresh)
+                results[q_id] = ans
+                continue
+
+            batch_manifest = []
+            for i, item in enumerate(chunk):
+                label = f"ITEM_{i + 1}"
+                q_num = item.get("q_num", item["question_id"])
+                hint = f"Question {q_num}"
+                if item.get("multi_choice_n") and item["multi_choice_n"] > 1:
+                    hint += f" (Choose {item['multi_choice_n']})"
+                batch_manifest.append({
+                    "label": label,
+                    "image_path": Path(item["image_path"]),
+                    "hint": hint,
+                    "item_data": item,
+                })
+
+            cache_dir = settings.STORAGE_DIR / "cache"
+            composite_path = cache_dir / f"batch_composite_{uuid.uuid4().hex[:8]}.png"
+
+            try:
+                stitch_crop_images(batch_manifest, composite_path)
+                logger.info(
+                    f"Sending batch of {len(chunk)} questions to {active_provider.name}:{active_provider.model}..."
+                )
+                raw_response = active_provider.call_with_retry(
+                    composite_path,
+                    BATCH_BASE_PROMPT,
+                    BATCH_SYSTEM_PROMPT,
+                )
+
+                clean_json = raw_response.strip()
+                if clean_json.startswith("```"):
+                    clean_json = re.sub(r"^```[a-zA-Z]*\n?", "", clean_json)
+                    clean_json = re.sub(r"\n?```$", "", clean_json)
+                parsed_batch = json.loads(clean_json)
+
+                for entry in batch_manifest:
+                    lbl = entry["label"]
+                    item_data = entry["item_data"]
+                    q_id = item_data["question_id"]
+                    img_p = Path(item_data["image_path"])
+
+                    if lbl in parsed_batch and isinstance(parsed_batch[lbl], dict):
+                        try:
+                            item_dict = parsed_batch[lbl]
+                            ans_list = item_dict.get("answers", [])
+                            if isinstance(ans_list, str):
+                                ans_list = [ans_list.strip().upper()]
+                            else:
+                                ans_list = [str(a).strip().upper() for a in ans_list]
+
+                            ans_list = [a for a in ans_list if re.match(r"^[A-Z]$", a)]
+                            opts = item_dict.get("options", {})
+                            conf = float(item_dict.get("confidence", 0.9))
+                            q_type = str(item_dict.get("type", "single" if len(ans_list) <= 1 else "multiple"))
+
+                            analysis = AIQuestionAnalysis(
+                                answers=ans_list,
+                                type=q_type,
+                                confidence=conf,
+                                options=opts,
+                                provider=active_provider.name,
+                                model=active_provider.model,
+                            )
+                            crop_hash = self.compute_crop_hash(img_p)
+                            v1_key = self._get_cache_key(active_provider, crop_hash, PROMPT_VERSION)
+                            self._cache[v1_key] = analysis.model_dump()
+                            try:
+                                phash = self.compute_phash(img_p)
+                                self._cache[f"{active_provider.name}:{active_provider.model}:{phash}"] = analysis.model_dump()
+                            except Exception:
+                                pass
+
+                            results[q_id] = analysis
+                        except Exception as parse_err:
+                            logger.warning(f"Failed to parse item {lbl}: {parse_err}")
+                            results[q_id] = None
+                    else:
+                        results[q_id] = None
+
+                self._save_cache()
+
+            except DailyQuotaExhaustedError as e:
+                logger.warning(f"Batch analysis quota exhausted: {e}")
+                for entry in batch_manifest:
+                    q_id = entry["item_data"]["question_id"]
+                    if q_id not in results:
+                        results[q_id] = None
+                break
+            except Exception as e:
+                logger.warning(f"Batch vision call failed: {e}. Falling back to single-question calls...")
+                for entry in batch_manifest:
+                    item_data = entry["item_data"]
+                    q_id = item_data["question_id"]
+                    try:
+                        ans = self.analyze_with_provider(active_provider, Path(item_data["image_path"]), force_refresh=force_refresh)
+                        results[q_id] = ans
+                    except Exception:
+                        results[q_id] = None
+            finally:
+                if composite_path.exists():
+                    composite_path.unlink(missing_ok=True)
+
+        return results
+
 
 
 _ai_service_instance: Optional[AICheckService] = None

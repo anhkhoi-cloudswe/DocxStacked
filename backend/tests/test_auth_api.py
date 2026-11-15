@@ -68,3 +68,35 @@ async def test_auth_cookies_validation():
         data = resp.json()
         assert data["success"] is False
         assert "không tìm thấy" in data["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_app_startup_and_consecutive_auth_status_calls():
+    """
+    Test application startup and 5 consecutive calls to /api/auth/status without crashing,
+    ensuring DB event loop and server connection remain fully intact.
+    """
+    from backend.app.db.models import Subject
+    from backend.app.db.session import async_session_factory
+    from sqlalchemy import select
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Verify DB query succeeds initially
+        async with async_session_factory() as db:
+            res_before = await db.execute(select(Subject).limit(1))
+            _ = res_before.scalars().all()
+
+        # 2. Call /api/auth/status 5 times consecutively
+        for i in range(5):
+            resp = await client.get("/api/auth/status")
+            assert resp.status_code == 200, f"Call {i+1} failed with status {resp.status_code}"
+            data = resp.json()
+            assert "logged_in" in data
+            assert "status_code" in data
+            assert data["status_code"] in ("logged_in", "not_logged_in", "profile_locked", "network_error")
+
+        # 3. Verify DB query still succeeds without 'attached to a different loop' error
+        async with async_session_factory() as db:
+            res_after = await db.execute(select(Subject).limit(1))
+            _ = res_after.scalars().all()

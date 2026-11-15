@@ -41,6 +41,52 @@ class AuthenticationRequiredError(Exception):
     pass
 
 
+def log_403_diagnostic(url: str, resp, ctx: Optional[BrowserContext] = None):
+    """
+    Log comprehensive forensic diagnostic details on the first/any 403 Forbidden:
+    - Target URL
+    - First 300 characters of response body
+    - Key headers (server, cf-ray, set-cookie, content-type)
+    - Cookie names loaded in browser context along with their expiration
+    """
+    try:
+        import datetime
+        headers = dict(resp.headers) if hasattr(resp, "headers") else {}
+        server = headers.get("server", "unknown")
+        cf_ray = headers.get("cf-ray", "none")
+        set_cookie = headers.get("set-cookie", "none")
+        content_type = headers.get("content-type", "unknown")
+
+        body_text = ""
+        try:
+            if hasattr(resp, "text"):
+                body_text = resp.text()[:300]
+        except Exception:
+            body_text = "<could not read body>"
+
+        cookies_info = []
+        if ctx:
+            try:
+                for c in ctx.cookies():
+                    exp = c.get("expires", -1)
+                    exp_s = str(datetime.datetime.fromtimestamp(exp)) if exp and exp > 0 else "session"
+                    cookies_info.append(f"{c.get('name')}(exp={exp_s})")
+            except Exception as ce:
+                cookies_info.append(f"<err reading cookies: {ce}>")
+
+        logger.error(
+            f"\n[403 FORBIDDEN FORENSIC DIAGNOSTIC]\n"
+            f"  URL: {url}\n"
+            f"  Headers: server={server} | cf-ray={cf_ray} | content-type={content_type} | set-cookie={set_cookie}\n"
+            f"  Cookies in Context ({len(cookies_info)}): {', '.join(cookies_info) if cookies_info else 'NONE'}\n"
+            f"  First 300 chars of body:\n"
+            f"    {body_text}\n"
+            f"[END 403 DIAGNOSTIC]\n"
+        )
+    except Exception as diag_err:
+        logger.error(f"Error logging 403 diagnostic for {url}: {diag_err}")
+
+
 class SessionManager:
     """
     Coordinates browser session lifecycle.
@@ -106,17 +152,7 @@ class BrowserManager:
             except Exception as e:
                 logger.debug(f"Could not switch thread desktop: {e}")
 
-        # Ensure no residual running loop in current thread blocks Playwright Sync API
-        try:
-            import asyncio
-            asyncio._set_running_loop(None)
-        except Exception:
-            pass
-        try:
-            import asyncio
-            asyncio.set_event_loop(None)
-        except Exception:
-            pass
+
 
         # Clean any stale Chrome processes locking this profile directory before launch
         clean_stale_profile_processes(self.profile_dir)
@@ -128,6 +164,11 @@ class BrowserManager:
             "--start-maximized",
         ]
 
+        default_user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+
         try:
             self._context = self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
@@ -135,6 +176,7 @@ class BrowserManager:
                 headless=is_headless,
                 viewport={"width": 1366, "height": 850} if is_headless else None,
                 no_viewport=not is_headless,
+                user_agent=default_user_agent,
                 args=launch_args,
             )
         except Exception as e:
@@ -142,6 +184,7 @@ class BrowserManager:
             self._context = self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
                 headless=is_headless,
+                user_agent=default_user_agent,
                 args=launch_args,
             )
 
@@ -157,6 +200,14 @@ class BrowserManager:
 
         self._primary_page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self._context
+
+    def get_page(self) -> Page:
+        """Get or create primary page within persistent context."""
+        if not self._context:
+            self.start_context()
+        if not self._primary_page or self._primary_page.is_closed():
+            self._primary_page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        return self._primary_page
 
     def close(self) -> None:
         """Close browser context and stop playwright."""
@@ -174,16 +225,6 @@ class BrowserManager:
             except Exception as e:
                 logger.debug(f"Playwright stop error: {e}")
             self._playwright = None
-            try:
-                import asyncio
-                asyncio._set_running_loop(None)
-            except Exception:
-                pass
-            try:
-                import asyncio
-                asyncio.set_event_loop(None)
-            except Exception:
-                pass
 
     def has_valid_saved_cookies(self) -> bool:
         """Fast check if data/auth/cookies.json has active unexpired session without launching browser."""
@@ -298,6 +339,21 @@ class BrowserManager:
 
 
 _default_browser_manager: Optional[BrowserManager] = None
+from concurrent.futures import ThreadPoolExecutor
+
+_browser_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="browser_worker")
+
+
+async def run_in_browser_thread(func, *args, **kwargs):
+    """
+    Execute a synchronous browser function on a single dedicated worker thread.
+    Guarantees Playwright's greenlet context never switches threads.
+    """
+    import asyncio
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        return await loop.run_in_executor(_browser_executor, lambda: func(*args, **kwargs))
+    return await loop.run_in_executor(_browser_executor, func, *args)
 
 
 def get_browser_manager() -> BrowserManager:

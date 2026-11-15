@@ -27,6 +27,7 @@ from backend.app.modules.settings.service import (
     mask_settings_for_api,
     update_settings,
     reset_settings,
+    clean_expired_data,
 )
 
 logger = get_logger(__name__)
@@ -58,6 +59,33 @@ class TestConnectionRequest(BaseModel):
     base_url: Optional[str] = None
 
 
+class CleanDataRequest(BaseModel):
+    retention_days: int = 14
+    dry_run: bool = False
+    vacuum: bool = True
+
+
+@router.post("/clean-data")
+async def clean_data_endpoint(
+    req: CleanDataRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Clean raw/cropped images of completed exams older than retention_days and run SQLite VACUUM."""
+    try:
+        res = await clean_expired_data(
+            db=db,
+            retention_days=req.retention_days,
+            dry_run=req.dry_run,
+            vacuum=req.vacuum,
+        )
+        return res
+    except Exception as e:
+        logger.error(f"Error during data cleanup: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
 class ModelInfo(BaseModel):
     id: str
     name: str
@@ -79,8 +107,6 @@ FALLBACK_MODELS: Dict[str, List[Dict[str, Any]]] = {
     "gemini": [
         {"id": "gemini-2.5-flash", "name": "gemini-2.5-flash", "supports_vision": True},
         {"id": "gemini-2.0-flash", "name": "gemini-2.0-flash", "supports_vision": True},
-        {"id": "gemini-1.5-flash", "name": "gemini-1.5-flash", "supports_vision": True},
-        {"id": "gemini-1.5-pro", "name": "gemini-1.5-pro", "supports_vision": True},
     ],
     "openai": [
         {"id": "gpt-4o-mini", "name": "gpt-4o-mini", "supports_vision": True},
@@ -111,7 +137,13 @@ FALLBACK_MODELS: Dict[str, List[Dict[str, Any]]] = {
 async def get_settings_endpoint(db: AsyncSession = Depends(get_db)):
     """Retrieve currently active settings with credentials masked."""
     active = await get_active_settings(db)
-    return mask_settings_for_api(active)
+    masked = mask_settings_for_api(active)
+    # Include ingest token & extension id for UI display
+    masked["extension"] = {
+        "ingest_token": settings.INGEST_TOKEN,
+        "extension_id": settings.EXTENSION_ID or "",
+    }
+    return masked
 
 
 @router.put("")
@@ -143,6 +175,86 @@ async def reset_settings_endpoint(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error resetting settings: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Lỗi khi đặt lại cài đặt")
+
+
+class KeyStatusItem(BaseModel):
+    provider: str
+    env_var: str
+    has_key: bool
+    key_length: int
+    last4: Optional[str] = None
+    masked_key: Optional[str] = None
+
+
+class SaveKeyRequest(BaseModel):
+    api_key: str
+    api_key_env: Optional[str] = None
+
+
+@router.get("/keys/status", response_model=List[KeyStatusItem])
+async def get_keys_status_endpoint(db: AsyncSession = Depends(get_db)):
+    """
+    Get API key status for each provider (configured in .env, key length, last 4 chars).
+    Never exposes raw API keys.
+    """
+    from dotenv import dotenv_values
+    root_env = settings.BASE_DIR / ".env"
+    root_vals = dotenv_values(root_env) if root_env.exists() else {}
+
+    active = await get_active_settings(db)
+    providers = active.get("ai", {}).get("providers", [])
+
+    items: List[KeyStatusItem] = []
+    for p in providers:
+        p_name = p.get("name", "")
+        env_var = p.get("api_key_env", f"{p_name.upper()}_API_KEY")
+        val_env = root_vals.get(env_var)
+        import os
+        val_sys = os.environ.get(env_var, "")
+        effective_val = val_env if (val_env and len(val_env.strip()) > 3) else (val_sys if (val_sys and len(val_sys.strip()) > 3) else "")
+
+        has_key = bool(effective_val)
+        length = len(effective_val) if effective_val else 0
+        last4 = effective_val[-4:] if length >= 4 else (effective_val if length > 0 else None)
+        masked_key = f"••••{last4}" if last4 else None
+
+        items.append(
+            KeyStatusItem(
+                provider=p_name,
+                env_var=env_var,
+                has_key=has_key,
+                key_length=length,
+                last4=last4,
+                masked_key=masked_key,
+            )
+        )
+    return items
+
+
+@router.post("/keys/{provider_name}")
+async def save_single_key_endpoint(
+    provider_name: str,
+    payload: SaveKeyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Save or update API key for a single provider directly into .env and return updated masked settings.
+    Logs key name and length without exposing the raw secret.
+    """
+    from backend.app.modules.settings.service import save_api_key_to_env
+    clean_key = payload.api_key.strip()
+    if len(clean_key) <= 3:
+        raise HTTPException(status_code=400, detail="Khoá API quá ngắn")
+
+    active = await get_active_settings(db)
+    providers = active.get("ai", {}).get("providers", [])
+    target_p = next((p for p in providers if p.get("name", "").lower() == provider_name.strip().lower()), None)
+
+    env_var = payload.api_key_env or (target_p.get("api_key_env") if target_p else f"{provider_name.upper()}_API_KEY")
+    save_api_key_to_env(env_var, clean_key)
+
+    active_updated = await get_active_settings(db)
+    return mask_settings_for_api(active_updated)
 
 
 @router.get("/providers/{provider_name}/models", response_model=ProviderModelsResponse)

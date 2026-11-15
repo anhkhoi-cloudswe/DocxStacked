@@ -2,12 +2,21 @@ from abc import ABC, abstractmethod
 import base64
 import os
 from pathlib import Path
+import random
 import time
 from typing import Optional
 from dotenv import dotenv_values, load_dotenv
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
+from backend.app.modules.analysis.gemini_guard import (
+    AIRateLimiter,
+    DailyQuotaExhaustedError,
+    execute_with_timeout,
+    get_ai_rate_limiter,
+    get_daily_quota_tracker,
+    parse_retry_after,
+)
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -55,9 +64,12 @@ class VisionProvider(ABC):
         model: str,
         api_key_env: str,
         base_url: Optional[str] = None,
-        max_retries: int = 2,
+        max_retries: int = 4,
         backoff_seconds: float = 2.0,
         api_key: Optional[str] = None,
+        timeout_seconds: float = 60.0,
+        rate_limiter: Optional[AIRateLimiter] = None,
+        skip_quota_check: bool = False,
     ):
         self.name = name
         self.model = model
@@ -65,6 +77,9 @@ class VisionProvider(ABC):
         self.base_url = base_url
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.timeout_seconds = timeout_seconds
+        self.rate_limiter = rate_limiter
+        self.skip_quota_check = skip_quota_check
         self._explicit_api_key = api_key.strip() if api_key and len(api_key.strip()) > 3 else None
 
     def get_api_key(self) -> Optional[str]:
@@ -102,22 +117,70 @@ class VisionProvider(ABC):
 
     def call_with_retry(self, image_path: Path, prompt: str, system_prompt: str) -> str:
         """
-        Execute API call with backoff on 429 rate limits and network errors.
-        Raises ProviderRateLimitError or ProviderNetworkError if all retries fail.
+        Execute API call with rate limiter (concurrency=1, 7s interval),
+        timeout (60s), 4 retries with exponential backoff + jitter,
+        Retry-After header parsing, and daily quota tracking.
         """
+        if not self.skip_quota_check:
+            quota = get_daily_quota_tracker()
+            if not quota.can_call(model=self.model):
+                raise DailyQuotaExhaustedError(f"Daily AI call limit reached for model '{self.model}'")
+
         attempts = self.max_retries + 1
         last_error = None
+        rate_limiter = self.rate_limiter or get_ai_rate_limiter()
+        skip_throttle = self.backoff_seconds <= 0.05
 
         for attempt in range(1, attempts + 1):
             try:
-                return self.call_vision_api(image_path, prompt, system_prompt)
+                if skip_throttle:
+                    res = execute_with_timeout(
+                        self.call_vision_api,
+                        self.timeout_seconds,
+                        image_path,
+                        prompt,
+                        system_prompt,
+                    )
+                else:
+                    with rate_limiter:
+                        res = execute_with_timeout(
+                            self.call_vision_api,
+                            self.timeout_seconds,
+                            image_path,
+                            prompt,
+                            system_prompt,
+                        )
+                if not self.skip_quota_check:
+                    quota.record_call(model=self.model)
+                return res
+            except TimeoutError as te:
+                last_error = ProviderNetworkError(f"Provider '{self.name}' timed out after {self.timeout_seconds}s")
+                if attempt < attempts:
+                    jitter = random.uniform(0.1, 1.0)
+                    sleep_time = self.backoff_seconds * (2 ** (attempt - 1)) + jitter
+                    logger.warning(
+                        f"Provider '{self.name}' timed out (attempt {attempt}/{attempts}). "
+                        f"Retrying in {sleep_time:.1f}s..."
+                    )
+                    time.sleep(sleep_time)
+                else:
+                    logger.warning(f"Provider '{self.name}' exhausted timeout retries.")
+                    raise last_error
             except ProviderRateLimitError as e:
                 last_error = e
+                # Check if it was daily quota
+                if "daily" in str(e).lower() or "day" in str(e).lower():
+                    quota.mark_exhausted(str(e), model=self.model)
+                    raise DailyQuotaExhaustedError(f"Provider {self.name} daily quota exhausted: {e}") from e
+
                 if attempt < attempts:
-                    sleep_time = self.backoff_seconds * (2 ** (attempt - 1))
+                    retry_after = parse_retry_after(e)
+                    jitter = random.uniform(0.1, 1.0)
+                    base_sleep = self.backoff_seconds * (2 ** (attempt - 1)) + jitter
+                    sleep_time = max(base_sleep, retry_after) if retry_after else base_sleep
                     logger.warning(
                         f"Provider '{self.name}' hit 429 Rate Limit (attempt {attempt}/{attempts}). "
-                        f"Retrying in {sleep_time:.1f}s..."
+                        f"Retry-After: {retry_after}s. Sleeping for {sleep_time:.1f}s..."
                     )
                     time.sleep(sleep_time)
                 else:
@@ -126,9 +189,12 @@ class VisionProvider(ABC):
             except ProviderNetworkError as e:
                 last_error = e
                 if attempt < attempts:
-                    sleep_time = self.backoff_seconds * (2 ** (attempt - 1))
+                    retry_after = parse_retry_after(e)
+                    jitter = random.uniform(0.1, 1.0)
+                    base_sleep = self.backoff_seconds * (2 ** (attempt - 1)) + jitter
+                    sleep_time = max(base_sleep, retry_after) if retry_after else base_sleep
                     logger.warning(
-                        f"Provider '{self.name}' hit network error (attempt {attempt}/{attempts}). "
+                        f"Provider '{self.name}' hit network/server error (attempt {attempt}/{attempts}). "
                         f"Retrying in {sleep_time:.1f}s..."
                     )
                     time.sleep(sleep_time)
@@ -140,7 +206,6 @@ class VisionProvider(ABC):
             except ProviderAPIError:
                 raise
             except Exception as e:
-                # Catch-all unexpected exceptions
                 logger.warning(f"Provider '{self.name}' unexpected call error: {type(e).__name__}")
                 raise ProviderAPIError(f"Unexpected error in {self.name}: {type(e).__name__}") from e
 
@@ -158,11 +223,12 @@ class AnthropicProvider(VisionProvider):
         model: str = "claude-3-5-haiku-20241022",
         api_key_env: str = "ANTHROPIC_API_KEY",
         base_url: Optional[str] = None,
-        max_retries: int = 2,
+        max_retries: int = 4,
         backoff_seconds: float = 2.0,
         api_key: Optional[str] = None,
+        timeout_seconds: float = 60.0,
     ):
-        super().__init__(name, model, api_key_env, base_url, max_retries, backoff_seconds, api_key=api_key)
+        super().__init__(name, model, api_key_env, base_url, max_retries, backoff_seconds, api_key=api_key, timeout_seconds=timeout_seconds)
         self._client = None
 
     def _get_client(self):
@@ -232,11 +298,12 @@ class GeminiProvider(VisionProvider):
         model: str = "gemini-2.5-flash",
         api_key_env: str = "GEMINI_API_KEY",
         base_url: Optional[str] = None,
-        max_retries: int = 2,
+        max_retries: int = 4,
         backoff_seconds: float = 2.0,
         api_key: Optional[str] = None,
+        timeout_seconds: float = 60.0,
     ):
-        super().__init__(name, model, api_key_env, base_url, max_retries, backoff_seconds, api_key=api_key)
+        super().__init__(name, model, api_key_env, base_url, max_retries, backoff_seconds, api_key=api_key, timeout_seconds=timeout_seconds)
         self._client = None
 
     def _get_client(self):
@@ -246,10 +313,10 @@ class GeminiProvider(VisionProvider):
         if not api_key:
             raise ProviderAPIError(f"Missing API key for provider {self.name} ({self.api_key_env})")
         from google import genai
-        kwargs = {"api_key": api_key}
+        http_opts = {"api_version": "v1beta"}
         if self.base_url:
-            kwargs["http_options"] = {"base_url": self.base_url}
-        self._client = genai.Client(**kwargs)
+            http_opts["base_url"] = self.base_url
+        self._client = genai.Client(api_key=api_key, http_options=http_opts)
         return self._client
 
     def call_vision_api(self, image_path: Path, prompt: str, system_prompt: str) -> str:
@@ -261,18 +328,31 @@ class GeminiProvider(VisionProvider):
 
         combined_prompt = f"{system_prompt}\n\n{prompt}"
         try:
-            response = client.models.generate_content(
-                model=self.model,
-                contents=[
-                    types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
-                    combined_prompt,
-                ],
-                config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    response_mime_type="application/json",
-                ),
-            )
-            return response.text or ""
+            try:
+                response = client.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                        combined_prompt,
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=0.0,
+                        response_mime_type="application/json",
+                    ),
+                )
+                return response.text or ""
+            except Exception as json_err:
+                if "JSON mode is not enabled" in str(json_err) or "INVALID_ARGUMENT" in str(json_err):
+                    response = client.models.generate_content(
+                        model=self.model,
+                        contents=[
+                            types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
+                            combined_prompt,
+                        ],
+                        config=types.GenerateContentConfig(temperature=0.0),
+                    )
+                    return response.text or ""
+                raise
         except errors.APIError as e:
             code = getattr(e, "code", getattr(e, "status_code", None))
             if code in (401, 403) or "API_KEY_INVALID" in str(e).upper():
@@ -303,11 +383,12 @@ class OpenAICompatibleProvider(VisionProvider):
         model: str = "gpt-4o-mini",
         api_key_env: str = "OPENAI_API_KEY",
         base_url: Optional[str] = None,
-        max_retries: int = 2,
+        max_retries: int = 4,
         backoff_seconds: float = 2.0,
         api_key: Optional[str] = None,
+        timeout_seconds: float = 60.0,
     ):
-        super().__init__(name, model, api_key_env, base_url, max_retries, backoff_seconds, api_key=api_key)
+        super().__init__(name, model, api_key_env, base_url, max_retries, backoff_seconds, api_key=api_key, timeout_seconds=timeout_seconds)
         self._client = None
 
     def _get_client(self):
@@ -385,9 +466,10 @@ def create_provider(
     model: str,
     api_key_env: str,
     base_url: Optional[str] = None,
-    max_retries: int = 2,
+    max_retries: int = 4,
     backoff_seconds: float = 2.0,
     api_key: Optional[str] = None,
+    timeout_seconds: float = 60.0,
 ) -> VisionProvider:
     """Factory creating appropriate VisionProvider instance based on name."""
     norm_name = name.strip().lower()
@@ -400,6 +482,7 @@ def create_provider(
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
             api_key=api_key,
+            timeout_seconds=timeout_seconds,
         )
     elif "gemini" in norm_name or "google" in norm_name:
         return GeminiProvider(
@@ -410,6 +493,29 @@ def create_provider(
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
             api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+    elif "groq" in norm_name:
+        return OpenAICompatibleProvider(
+            name=name,
+            model=model or "llama-3.2-11b-vision-preview",
+            api_key_env=api_key_env or "GROQ_API_KEY",
+            base_url=base_url or "https://api.groq.com/openai/v1",
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+    elif "openrouter" in norm_name:
+        return OpenAICompatibleProvider(
+            name=name,
+            model=model or "meta-llama/llama-3.2-11b-vision-instruct",
+            api_key_env=api_key_env or "OPENROUTER_API_KEY",
+            base_url=base_url or "https://openrouter.ai/api/v1",
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
         )
     else:
         # Default to OpenAI-compatible
@@ -421,4 +527,5 @@ def create_provider(
             max_retries=max_retries,
             backoff_seconds=backoff_seconds,
             api_key=api_key,
+            timeout_seconds=timeout_seconds,
         )

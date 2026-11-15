@@ -16,6 +16,9 @@ def main():
     print(f">> Thu muc goc du an: {PROJECT_ROOT}")
     print(f">> Python runtime   : {PYTHON_EXE}")
 
+    # Parse command line flags: --no-reload
+    no_reload = "--no-reload" in sys.argv
+
     # 1. Start Backend FastAPI
     print("\n[1/2] Dang khoi dong Backend FastAPI tai http://127.0.0.1:8000...")
     backend_cmd = [
@@ -23,12 +26,16 @@ def main():
         "-m",
         "uvicorn",
         "backend.app.main:app",
-        "--reload",
         "--host",
         "127.0.0.1",
         "--port",
         "8000",
     ]
+    if not no_reload:
+        backend_cmd.extend(["--reload", "--reload-dir", "backend/app"])
+        print(">> Chế độ auto-reload: BẬT (chỉ theo dõi 'backend/app' để tránh restart khi ghi data/db/output).")
+    else:
+        print(">> Chế độ auto-reload: TẮT (--no-reload flag).")
     backend_proc = subprocess.Popen(
         backend_cmd,
         cwd=str(PROJECT_ROOT),

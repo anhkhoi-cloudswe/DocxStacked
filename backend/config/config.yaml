@@ -24,22 +24,26 @@ ai:
   backoff_seconds: 2.0       # thời gian chờ cơ bản khi gặp 429 hoặc lỗi mạng (thử lại với backoff)
   max_retries: 2             # số lần thử lại tối đa cho mỗi provider
   providers:
-    - name: anthropic
-      model: claude-3-5-haiku-20241022
-      api_key_env: ANTHROPIC_API_KEY
     - name: gemini
       model: gemini-2.5-flash
       api_key_env: GEMINI_API_KEY
+      enabled: true
+    - name: anthropic
+      model: claude-3-5-haiku-20241022
+      api_key_env: ANTHROPIC_API_KEY
+      enabled: false
     - name: openai_compatible
       model: gpt-4o-mini
       api_key_env: OPENAI_API_KEY
       base_url: https://api.openai.com/v1
+      enabled: false
 export:
   formats: [docx]          # thêm pdf, json nếu cần
   image_width_cm: 16.51
   image_zoom_percent: 100  # độ phóng ảnh (%) mặc định 100%
   highlight_low_confidence: true
   answer_format: letter_keyword
+  multi_choice_format: comma
   merge: false
 
 image_crop:

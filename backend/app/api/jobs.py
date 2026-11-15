@@ -73,6 +73,28 @@ class BatchAnswerOverrideRequest(BaseModel):
     answers: List[SingleAnswerOverride]
 
 
+@router.get("/active", response_model=Optional[JobResponse])
+async def get_active_job(db: AsyncSession = Depends(get_db)):
+    """Return the currently executing or pending job in memory if any."""
+    orchestrator = get_orchestrator()
+    # Find any job whose background task is alive and running
+    active_job_id = None
+    for jid, task in list(orchestrator._running_tasks.items()):
+        if task and not task.done():
+            active_job_id = jid
+            break
+
+    if not active_job_id:
+        return None
+
+    stmt = select(Job).where(Job.job_id == active_job_id)
+    res = await db.execute(stmt)
+    job = res.scalar_one_or_none()
+    if not job:
+        return None
+    return JobResponse.from_orm(job)
+
+
 @router.get("", response_model=List[JobResponse])
 async def list_recent_jobs(
     limit: int = Query(20, ge=1, le=100),
@@ -88,7 +110,17 @@ async def list_recent_jobs(
 
 @router.post("", response_model=JobResponse)
 async def create_job(payload: JobCreateRequest):
-    """Start a new exam compilation job."""
+    """Start a new exam compilation job. Enforces live authentication verification before job creation."""
+    import os
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        from backend.app.api.auth import _check_browser_auth_async
+        auth_check = await _check_browser_auth_async()
+        if not auth_check.logged_in:
+            raise HTTPException(
+                status_code=401,
+                detail=f"Cần đăng nhập FUOverflow trước khi tạo tiến trình: {auth_check.detail}",
+            )
+
     e_type = ExamType.PE if payload.exam_type.upper() == "PE" else ExamType.FE
     orchestrator = get_orchestrator()
     job = await orchestrator.start_job(

@@ -18,32 +18,40 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
   };
 
   const handleDownloadFolder = async () => {
-    // Sequentially download each file directly into the user's browser default Downloads folder
     if (files.length === 0) return;
     setDownloadingFolder(true);
-    setOpenFolderStatus(`Đang tải ${files.length} file về thư mục Downloads...`);
+    setOpenFolderStatus(`Đang tạo folder và lưu vào thư mục Downloads...`);
 
     try {
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const downloadUrl = `/api/exports/download?path=${encodeURIComponent(file.path)}`;
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = file.filename || file.path.split(/[/\\]/).pop() || 'exam.docx';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+      // Direct Server-side folder creator: saves directly into user's Downloads/{SUBJECT}_{CAT} without zip
+      const resp = await fetch('/api/exports/export-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_id: jobId || undefined,
+          subject: details.subject_code || undefined,
+          exam_type: details.exam_type || undefined,
+          paths: files.map((f) => f.path),
+        }),
+      });
 
-        // Small interval between downloads so browser doesn't block bulk triggers
-        if (i < files.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 400));
-        }
+      if (resp.ok) {
+        const data = await resp.json();
+        setOpenFolderStatus(data.message || `Đã lưu thành công vào folder Downloads/${data.folder_name}!`);
+        setTimeout(() => setOpenFolderStatus(null), 6000);
+        // Automatically open the created folder in Windows Explorer
+        fetch('/api/exports/open-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: data.folder_path }),
+        }).catch(() => {});
+        return;
       }
-      setOpenFolderStatus(`Đã tải thành công ${files.length} file Word về thư mục Downloads!`);
-      setTimeout(() => setOpenFolderStatus(null), 5000);
-    } catch (err) {
-      console.error('Error downloading files:', err);
-      // Fallback
+
+      throw new Error(`Server returned HTTP ${resp.status}`);
+    } catch (err: any) {
+      console.error('Error saving folder:', err);
+      // Fallback: trigger zip download if server export failed
       const url = jobId
         ? `/api/jobs/${encodeURIComponent(jobId)}/download-folder`
         : `/api/exports/download-folder?subject=${encodeURIComponent(details.subject_code || '')}&type=${encodeURIComponent(details.exam_type || '')}`;

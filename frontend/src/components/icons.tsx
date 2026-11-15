@@ -596,3 +596,21 @@ export const LeafIcon: React.FC<IconProps> = ({ size = 16, className = "", ...pr
     <path d="M2 21c0-3 1.85-5.36 5.08-6" />
   </svg>
 );
+
+export const ActivityIcon: React.FC<IconProps> = ({ size = 16, className = "", ...props }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.75}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden="true"
+    {...props}
+  >
+    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+  </svg>
+);

@@ -2,14 +2,15 @@ import copy
 import os
 from pathlib import Path
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from dotenv import dotenv_values, load_dotenv
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-from backend.app.db.models import Setting
+from backend.app.db.models import Setting, Exam, Question
 
 logger = get_logger(__name__)
 app_settings = get_settings()
@@ -38,13 +39,14 @@ def get_default_settings() -> Dict[str, Any]:
                 "name": p.name,
                 "model": p.model,
                 "api_key_env": p.api_key_env,
-                "base_url": p.base_url,
+                "base_url": getattr(p, "base_url", None),
+                "enabled": getattr(p, "enabled", False),
             })
     else:
         providers_list = [
-            {"name": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY", "base_url": None},
-            {"name": "gemini", "model": "gemini-2.5-flash", "api_key_env": "GEMINI_API_KEY", "base_url": None},
-            {"name": "openai_compatible", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1"},
+            {"name": "gemini", "model": "gemini-2.5-flash", "api_key_env": "GEMINI_API_KEY", "base_url": None, "enabled": True},
+            {"name": "anthropic", "model": "claude-3-5-haiku-20241022", "api_key_env": "ANTHROPIC_API_KEY", "base_url": None, "enabled": False},
+            {"name": "openai_compatible", "model": "gpt-4o-mini", "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1", "enabled": False},
         ]
 
     return {
@@ -54,6 +56,7 @@ def get_default_settings() -> Dict[str, Any]:
             "image_zoom_percent": int(getattr(yaml_cfg.export, "image_zoom_percent", 100)),
             "highlight_low_confidence": bool(getattr(yaml_cfg.export, "highlight_low_confidence", True)),
             "answer_format": "letter_keyword",  # 'letter' or 'letter_keyword'
+            "multi_choice_format": getattr(yaml_cfg.export, "multi_choice_format", "comma"),  # 'comma' ("A, B, C") or 'joined' ("ABC")
             "show_question_number": True,  # 'Câu 1:', 'Câu 2:' prefix
             "show_separator_line": True,  # '===' double border divider
             "page_size": "letter",  # Standard Letter 8.5 x 11 inch
@@ -80,6 +83,10 @@ def get_default_settings() -> Dict[str, Any]:
             "headless": bool(getattr(yaml_cfg.crawl, "headless", False)),
             "max_retries": int(getattr(yaml_cfg.crawl, "max_retries", 3)),
             "default_count": int(getattr(yaml_cfg.exam, "default_count", 4)),
+        },
+        "storage": {
+            "retention_days": 14,
+            "auto_clean": True,
         },
     }
 
@@ -178,7 +185,8 @@ def validate_settings(settings_data: Dict[str, Any]) -> None:
 
 def save_api_key_to_env(env_var_name: str, key_value: str) -> None:
     """
-    Persist API key securely to the single root .env file without logging or printing.
+    Persist API key securely to the single root .env file.
+    Logs key name and length without leaking raw secret.
     """
     clean_val = key_value.strip()
     root_env = app_settings.BASE_DIR / ".env"
@@ -194,11 +202,29 @@ def save_api_key_to_env(env_var_name: str, key_value: str) -> None:
             else:
                 new_content = content.rstrip() + f"\n{env_var_name}={clean_val}\n"
             root_env.write_text(new_content, encoding="utf-8")
+        logger.info(f"đã ghi {env_var_name} (len {len(clean_val)}) vào .env")
     except Exception as e:
         logger.warning(f"Could not update .env file: {e}")
 
     # Update in-memory os.environ
     os.environ[env_var_name] = clean_val
+
+
+def delete_api_key_from_env(env_var_name: str) -> None:
+    """
+    Remove API key securely from the root .env file and in-memory os.environ.
+    """
+    root_env = app_settings.BASE_DIR / ".env"
+    try:
+        if root_env.exists():
+            content = root_env.read_text(encoding="utf-8")
+            pattern = re.compile(rf"^{re.escape(env_var_name)}=.*(?:\r?\n)?", re.MULTILINE)
+            new_content = pattern.sub("", content)
+            root_env.write_text(new_content, encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Could not remove {env_var_name} from .env: {e}")
+
+    os.environ.pop(env_var_name, None)
 
 
 def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -224,18 +250,21 @@ def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
                 key_source = "Đã lưu trong .env" if val_env else "Biến môi trường hệ thống"
                 tail = effective_val[-4:] if len(effective_val) >= 4 else effective_val
                 masked_key = f"••••{tail}"
+                key_length = len(effective_val)
             else:
                 has_key = False
                 key_source = None
                 masked_key = None
+                key_length = 0
 
             p.pop("api_key", None)  # Ensure no key field exists
             p["has_api_key"] = has_key
             p["masked_key"] = masked_key
+            p["key_length"] = key_length
             p["status"] = "configured" if has_key else "not_configured"
             p["key_source"] = key_source
             if "enabled" not in p:
-                p["enabled"] = True
+                p["enabled"] = False
 
     return safe_data
 
@@ -253,8 +282,11 @@ async def update_settings(db: AsyncSession, new_settings: Dict[str, Any]) -> Dic
         for p in clean_settings["ai"]["providers"]:
             api_key = p.pop("api_key", None)
             env_var = p.get("api_key_env")
-            if api_key and isinstance(api_key, str) and len(api_key.strip()) > 3:
-                save_api_key_to_env(env_var, api_key.strip())
+            if env_var:
+                if api_key == "__DELETE__":
+                    delete_api_key_from_env(env_var)
+                elif api_key and isinstance(api_key, str) and len(api_key.strip()) > 3:
+                    save_api_key_to_env(env_var, api_key.strip())
 
     # Save to database
     sections = ["export", "ai", "voting", "crawl"]
@@ -289,4 +321,116 @@ async def reset_settings(db: AsyncSession) -> Dict[str, Any]:
 
     active = await get_active_settings(db)
     return mask_settings_for_api(active)
+
+
+async def clean_expired_data(
+    db: AsyncSession,
+    retention_days: int = 14,
+    dry_run: bool = False,
+    vacuum: bool = True,
+) -> Dict[str, Any]:
+    """
+    Delete raw and cropped images of completed/exported exams older than `retention_days`.
+    Optionally execute SQLite VACUUM to reclaim storage space.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+
+    query = select(Exam).where(Exam.status.in_(["completed", "exported"]))
+    if retention_days > 0:
+        query = query.where(Exam.updated_at <= cutoff)
+
+    result = await db.execute(query)
+    exams = result.scalars().all()
+
+    deleted_files = 0
+    reclaimed_bytes = 0
+    cleaned_exams = 0
+    storage_dir = app_settings.STORAGE_DIR
+
+    for exam in exams:
+        q_result = await db.execute(select(Question).where(Question.exam_id == exam.id))
+        questions = q_result.scalars().all()
+        exam_deleted_any = False
+
+        for q in questions:
+            for attr in ["local_image_path", "cropped_image_path", "choice_hint_path"]:
+                path_str = getattr(q, attr, None)
+                if path_str:
+                    p = Path(path_str)
+                    if not p.is_absolute():
+                        p = storage_dir / p
+                    if p.exists() and p.is_file():
+                        file_sz = p.stat().st_size
+                        if not dry_run:
+                            try:
+                                p.unlink(missing_ok=True)
+                                setattr(q, attr, None)
+                            except Exception as e:
+                                logger.warning(f"Could not delete {p}: {e}")
+                                continue
+                        deleted_files += 1
+                        reclaimed_bytes += file_sz
+                        exam_deleted_any = True
+
+        cropped_exam_dir = storage_dir / "cropped" / f"exam_{exam.id}"
+        if cropped_exam_dir.exists() and cropped_exam_dir.is_dir():
+            for child in cropped_exam_dir.glob("*"):
+                if child.is_file():
+                    sz = child.stat().st_size
+                    if not dry_run:
+                        try:
+                            child.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    deleted_files += 1
+                    reclaimed_bytes += sz
+                    exam_deleted_any = True
+            if not dry_run:
+                try:
+                    if not any(cropped_exam_dir.iterdir()):
+                        cropped_exam_dir.rmdir()
+                except Exception:
+                    pass
+
+        if exam_deleted_any:
+            cleaned_exams += 1
+
+    # Also clean orphaned cache files older than cutoff
+    cache_dir = storage_dir / "cache"
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.png"):
+            try:
+                mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+                if retention_days == 0 or mtime <= cutoff:
+                    sz = f.stat().st_size
+                    if not dry_run:
+                        f.unlink(missing_ok=True)
+                    deleted_files += 1
+                    reclaimed_bytes += sz
+            except Exception:
+                pass
+
+    if not dry_run:
+        await db.commit()
+
+    vacuum_done = False
+    if vacuum and not dry_run:
+        try:
+            await db.execute(text("VACUUM"))
+            vacuum_done = True
+        except Exception as e:
+            logger.warning(f"VACUUM execution failed: {e}")
+
+    reclaimed_mb = round(reclaimed_bytes / (1024 * 1024), 2)
+    return {
+        "success": True,
+        "retention_days": retention_days,
+        "exams_cleaned": cleaned_exams,
+        "files_deleted": deleted_files,
+        "reclaimed_bytes": reclaimed_bytes,
+        "reclaimed_mb": reclaimed_mb,
+        "vacuum_performed": vacuum_done,
+        "message": f"Đã dọn dẹp {deleted_files} tệp ({reclaimed_mb} MB) từ {cleaned_exams} đề và {'tối ưu hóa DB (VACUUM)' if vacuum_done else 'không chạy VACUUM'}."
+    }
+
 

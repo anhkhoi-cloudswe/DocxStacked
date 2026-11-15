@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { BookIcon, LogoutIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon } from './icons';
+import { ActivityIcon, BookIcon, LogoutIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon } from './icons';
 
 interface HeaderProps {
   onNavigateSettings?: () => void;
   onNavigateHome?: () => void;
   onNavigateDocuments?: () => void;
+  onNavigateProgress?: () => void;
+  activeJobId?: string | null;
+  onOpenLogin?: () => void;
   currentScreen?: string;
 }
 
@@ -12,6 +15,9 @@ export const Header: React.FC<HeaderProps> = ({
   onNavigateSettings,
   onNavigateHome,
   onNavigateDocuments,
+  onNavigateProgress,
+  activeJobId,
+  onOpenLogin,
   currentScreen,
 }) => {
   const [isDark, setIsDark] = useState<boolean>(() => {
@@ -38,11 +44,15 @@ export const Header: React.FC<HeaderProps> = ({
   const handleLogout = async () => {
     if (!window.confirm('Bạn có chắc chắn muốn đăng xuất phiên tài khoản FUOverflow?')) return;
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-      setAuthStatus({ logged_in: false });
-      window.location.reload();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal }).catch(() => {});
+      clearTimeout(timeoutId);
     } catch (e) {
       console.error('Logout error:', e);
+    } finally {
+      setAuthStatus({ logged_in: false });
+      window.location.reload();
     }
   };
 
@@ -111,6 +121,34 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Navigation & Controls */}
         <nav className="header-nav" aria-label="Điều hướng chính">
+          {activeJobId && currentScreen !== 'progress' && onNavigateProgress && (
+            <button
+              type="button"
+              onClick={onNavigateProgress}
+              aria-label="Quay lại tiến trình đang chạy"
+              style={{
+                background: 'var(--primary-subtle)',
+                border: '1px solid var(--primary-border)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '6px 12px',
+                fontSize: 'var(--text-xs)',
+                fontWeight: 600,
+                color: 'var(--primary)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                minHeight: '34px',
+                boxShadow: 'var(--shadow-sm)',
+                animation: 'pulseGlow 2s infinite ease-in-out',
+              }}
+              title="Nhấn để quay lại màn hình theo dõi tiến trình cào đề đang thực hiện"
+            >
+              <ActivityIcon size={14} className="spin-slow" />
+              <span>Đang cào (Xem tiến trình)</span>
+            </button>
+          )}
+
           {onNavigateDocuments && (
             <button
               type="button"
@@ -161,7 +199,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {authStatus?.logged_in && (
+          {authStatus?.logged_in ? (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
               <span
                 style={{
@@ -204,6 +242,29 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>Thoát</span>
               </button>
             </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenLogin}
+              style={{
+                fontSize: 'var(--text-xs)',
+                fontWeight: 600,
+                color: 'var(--primary)',
+                backgroundColor: 'var(--bg-surface)',
+                padding: '5px 10px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--primary)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                minHeight: '34px',
+              }}
+              title="Đăng nhập tài khoản FUOverflow"
+            >
+              <UserIcon size={13} />
+              <span>Đăng nhập</span>
+            </button>
           )}
 
           <button

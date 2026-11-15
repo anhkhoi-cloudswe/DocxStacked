@@ -3,7 +3,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from pydantic import BaseModel
 
 from backend.app.db.models import AnswerStatus, Comment
-from backend.app.modules.analysis.parser import parse_comment_text
+from backend.app.modules.analysis.parser import (
+    infer_multi_choice_n_from_comments,
+    parse_choice_hint,
+    parse_comment_text,
+)
 
 
 class VoterContribution(BaseModel):
@@ -39,6 +43,7 @@ def tally_votes(
     ai_disagreement_policy: str = "flag",
     multi_choice_n: Optional[int] = None,
     max_option_letter: str = "H",
+    choice_hint_text: Optional[str] = None,
 ) -> VotingResult:
     """
     Tally votes from student comments and optional AI input.
@@ -49,6 +54,25 @@ def tally_votes(
     Ties within the top-N set are NOT a conflict.
     max_option_letter: Letters beyond this letter (default 'H') are discarded.
     """
+    if choice_hint_text:
+        hint_multi, hint_n = parse_choice_hint(choice_hint_text)
+        if is_multi_override is None:
+            is_multi_override = hint_multi
+        if multi_choice_n is None and hint_n is not None:
+            multi_choice_n = hint_n
+
+    if is_multi_override and multi_choice_n is None:
+        inferred_n = infer_multi_choice_n_from_comments(comments, max_option_letter)
+        if inferred_n:
+            multi_choice_n = inferred_n
+    elif is_multi_override is None and multi_choice_n is None:
+        inferred_n = infer_multi_choice_n_from_comments(comments, max_option_letter)
+        if inferred_n and inferred_n >= 2:
+            is_multi_override = True
+            multi_choice_n = inferred_n
+
+    is_multi_choice = bool(is_multi_override or multi_choice_n)
+
     if not comments and not ai_answer and not ai_votes:
         return VotingResult(
             answer_set=["?"],
@@ -57,7 +81,7 @@ def tally_votes(
             total_weight=0.0,
             vote_breakdown={},
             voters_count=0,
-            is_multi_choice=False,
+            is_multi_choice=is_multi_choice,
             contributions=[],
         )
 
@@ -90,6 +114,7 @@ def tally_votes(
             c.raw_text,
             max_option_letter=max_option_letter,
             multi_choice_n=multi_choice_n,
+            is_multi_choice=is_multi_choice,
         )
 
         # Skip ambiguous non-answers unless it's an agreement
@@ -103,9 +128,11 @@ def tally_votes(
                 parent_c.raw_text,
                 max_option_letter=max_option_letter,
                 multi_choice_n=multi_choice_n,
+                is_multi_choice=is_multi_choice,
             ) if parent_c else None
             if parent_parsed and parent_parsed.answers:
-                parent_weight = 1.0 + math.log2(1.0 + (parent_c.upvotes or 0))
+                parent_upvotes = max(0, parent_c.upvotes or 0)
+                parent_weight = 1.0 + math.log2(1.0 + parent_upvotes)
                 agree_weight = round(parent_weight * 0.5, 3)
                 seen_authors.add(author)
                 contributions.append(
@@ -122,7 +149,8 @@ def tally_votes(
                 )
         elif parsed.answers:
             # Direct answer
-            weight = round(1.0 + math.log2(1.0 + (c.upvotes or 0)), 3)
+            upvote_val = max(0, c.upvotes or 0)
+            weight = round(1.0 + math.log2(1.0 + upvote_val), 3)
             seen_authors.add(author)
             contributions.append(
                 VoterContribution(
@@ -141,7 +169,9 @@ def tally_votes(
         for idx, vote in enumerate(ai_votes):
             answers = vote.get("answers", [])
             provider_name = vote.get("provider", f"provider_{idx+1}")
-            weight = vote.get("weight", ai_weight)
+            conf = vote.get("confidence")
+            base_w = vote.get("weight", ai_weight)
+            effective_w = base_w * 0.5 if (conf is not None and conf < 0.6) else base_w
             if answers:
                 contributions.append(
                     VoterContribution(
@@ -149,19 +179,20 @@ def tally_votes(
                         comment_id=f"ai_{provider_name}",
                         answers=[a.upper() for a in answers],
                         upvotes=0,
-                        weight=round(weight, 3),
+                        weight=round(effective_w, 3),
                         raw_text=f"AI Analysis ({provider_name})",
                         is_agreement=False,
                     )
                 )
     elif ai_answer:
+        effective_w = ai_weight * 0.5 if (ai_confidence is not None and ai_confidence < 0.6) else ai_weight
         contributions.append(
             VoterContribution(
                 author_hash="ai_agent",
                 comment_id="ai_vote",
                 answers=[a.upper() for a in ai_answer],
                 upvotes=0,
-                weight=round(ai_weight, 3),
+                weight=round(effective_w, 3),
                 raw_text="AI Analysis",
                 is_agreement=False,
             )
@@ -184,7 +215,16 @@ def tally_votes(
     if is_multi_override is not None:
         is_multi = is_multi_override
     else:
-        is_multi = multi_voters > (len(contributions) / 2)
+        is_multi = (multi_voters > (len(contributions) / 2)) or (multi_choice_n is not None and multi_choice_n >= 2)
+
+    if is_multi and multi_choice_n is None:
+        lens = [len(vc.answers) for vc in contributions if len(vc.answers) >= 2]
+        if lens:
+            from collections import Counter
+            counts = Counter(lens)
+            mode_len, _ = counts.most_common(1)[0]
+            if mode_len >= 2:
+                multi_choice_n = mode_len
 
     # 5. Tally weights and distinct voters per option
     weights_per_option: Dict[str, float] = {}
@@ -204,7 +244,7 @@ def tally_votes(
     weights_per_option = {k: round(v, 3) for k, v in weights_per_option.items()}
     total_weight = round(total_weight, 3)
 
-    sorted_options = sorted(weights_per_option.items(), key=lambda item: item[1], reverse=True)
+    sorted_options = sorted(weights_per_option.items(), key=lambda item: (-item[1], item[0]))
 
     if not sorted_options:
         return VotingResult(
@@ -228,17 +268,17 @@ def tally_votes(
             top_n = sorted_options[:n_target]
             winning_letters = [opt for opt, w in top_n]
             answer_set = sorted(winning_letters)
-
+            
             # Confidence for multi-choice: average share of top-N options relative to total weight
             top_n_weight = sum(w for opt, w in top_n)
             confidence = round(top_n_weight / max(total_weight * n_target, 1.0), 3)
             # Alternatively, ratio of top-N weight to total
             set_ratio = top_n_weight / max(total_weight, 1.0)
-
+            
             # Check margin to (N+1)-th option
             next_opt = sorted_options[n_target] if len(sorted_options) > n_target else None
             nth_weight = top_n[-1][1]
-
+            
             if next_opt and nth_weight > 0:
                 next_ratio = next_opt[1] / nth_weight
                 # If next option is close (> 40% of N-th option weight) -> ambiguous boundary
@@ -255,7 +295,7 @@ def tally_votes(
             answer_set = sorted(winning_letters)
             top_weight = sorted_options[0][1]
             confidence = round(top_weight / max(total_weight, 1.0), 3)
-
+            
             # For multi-choice without known N, check margin to next unselected option
             if len(sorted_options) > len(winning_letters):
                 unselected_top = sorted_options[len(winning_letters)][1]

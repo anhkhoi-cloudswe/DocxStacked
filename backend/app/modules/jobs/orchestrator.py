@@ -10,12 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-from backend.app.db.models import Answer, Comment, Exam, ExamType, Job, JobStatus, Question, Subject
+from backend.app.db.models import Answer, AnswerStatus, Comment, Exam, ExamType, Job, JobStatus, Question, Subject
 from backend.app.db.session import async_session_factory
 from backend.app.modules.analysis.ai_check import get_ai_check_service
 from backend.app.modules.analysis.voting import tally_votes
 from backend.app.modules.settings.service import get_active_settings
-from backend.app.modules.crawler.browser import AuthenticationRequiredError, get_browser_manager
+from backend.app.modules.crawler.browser import AuthenticationRequiredError, get_browser_manager, run_in_browser_thread
 from backend.app.modules.crawler.comments import crawl_exam_comments
 from backend.app.modules.crawler.exams import crawl_subject_exams
 from backend.app.modules.crawler.questions import crawl_exam_questions
@@ -38,6 +38,7 @@ def compute_doc_settings_hash(config_snapshot: Dict[str, Any]) -> str:
     ai_cfg = config_snapshot.get("ai", {})
     key_data = {
         "answer_format": export_cfg.get("answer_format", "letter_keyword"),
+        "multi_choice_format": export_cfg.get("multi_choice_format", "comma"),
         "image_width_cm": float(export_cfg.get("image_width_cm", 16.51)),
         "image_zoom_percent": int(export_cfg.get("image_zoom_percent", 100)),
         "highlight_low_confidence": bool(export_cfg.get("highlight_low_confidence", True)),
@@ -227,11 +228,11 @@ class JobOrchestrator:
                 # 2. Check Authentication
                 bm = get_browser_manager()
                 try:
-                    is_auth = await asyncio.to_thread(bm.ensure_logged_in, 30, True)
+                    is_auth = await run_in_browser_thread(bm.ensure_logged_in, 30, True)
                     if not is_auth:
                         raise AuthenticationRequiredError("Phiên đăng nhập hết hạn hoặc chưa xác thực")
                 except AuthenticationRequiredError as auth_err:
-                    error_msg = "Cần đăng nhập lại: phiên đăng nhập hết hạn hoặc chưa xác thực"
+                    error_msg = f"Cần đăng nhập lại FUOverflow: {auth_err}"
                     logger.error(f"Job {job_id} failed: {error_msg}")
                     job.status = JobStatus.FAILED
                     job.error_message = error_msg
@@ -491,6 +492,33 @@ class JobOrchestrator:
                         on_progress=on_c_progress,
                     )
 
+                    # Crop questions by layout with self-adaptation across exam
+                    cropped_dir = settings.STORAGE_DIR / "cropped" / subject_code / f"exam_{exam.id}"
+                    crop_summary = crop_exam_images(
+                        exam_id=exam.id,
+                        exam_title=exam.title,
+                        questions=questions,
+                        cropped_dir=cropped_dir,
+                    )
+                    exam.crop_layout = crop_summary.dominant_layout
+                    for q, res in zip(questions, crop_summary.results):
+                        q.crop_layout = res.layout
+                        q.crop_warnings = res.warnings
+                        if res.output_path:
+                            q.cropped_image_path = str(res.output_path)
+                        if res.choice_hint_path:
+                            q.choice_hint_path = str(res.choice_hint_path)
+                        q.choice_hint_width_px = res.choice_hint_width_px
+                    await db.commit()
+
+                    self._broadcast(job_id, {
+                        "type": "log",
+                        "step": "cropping",
+                        "message": f"Đã cắt ảnh đề '{exam.title}': kiểu {crop_summary.dominant_layout}, {crop_summary.clean_questions}/{crop_summary.total_questions} ảnh sạch"
+                        + (f" (Cảnh báo: {crop_summary.flagged_questions} ảnh cần xem lại)" if crop_summary.flagged_questions else ""),
+                        "progress": min(exam_progress_base + int(40 / total_exams), 95),
+                    })
+
                     # Tally votes for each question
                     self._broadcast(job_id, {
                         "type": "log",
@@ -517,7 +545,9 @@ class JobOrchestrator:
                         )
 
                         need_ai = False
-                        if ai_enabled and ai_service.is_available():
+                        # Never call AI for questions with missing_options
+                        has_missing_options = "missing_options" in (q.crop_warnings or [])
+                        if ai_enabled and ai_service.is_available() and not has_missing_options:
                             if ai_mode == "all":
                                 need_ai = True
                             elif ai_mode == "off":
@@ -528,7 +558,7 @@ class JobOrchestrator:
 
                         ai_votes = []
                         ai_options = {}
-                        img_path = getattr(q, "local_image_path", None)
+                        img_path = getattr(q, "cropped_image_path", None) or getattr(q, "local_image_path", None)
                         if need_ai and img_path:
                             local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
                             if local_img.exists():
@@ -575,33 +605,6 @@ class JobOrchestrator:
                             q.answer.vote_breakdown = breakdown
                     await db.commit()
 
-                    # Crop questions by layout with self-adaptation across exam
-                    cropped_dir = settings.STORAGE_DIR / "cropped" / subject_code / f"exam_{exam.id}"
-                    crop_summary = crop_exam_images(
-                        exam_id=exam.id,
-                        exam_title=exam.title,
-                        questions=questions,
-                        cropped_dir=cropped_dir,
-                    )
-                    exam.crop_layout = crop_summary.dominant_layout
-                    for q, res in zip(questions, crop_summary.results):
-                        q.crop_layout = res.layout
-                        q.crop_warnings = res.warnings
-                        if res.output_path:
-                            q.cropped_image_path = str(res.output_path)
-                        if res.choice_hint_path:
-                            q.choice_hint_path = str(res.choice_hint_path)
-                        q.choice_hint_width_px = res.choice_hint_width_px
-                    await db.commit()
-
-                    self._broadcast(job_id, {
-                        "type": "log",
-                        "step": "cropping",
-                        "message": f"Đã cắt ảnh đề '{exam.title}': kiểu {crop_summary.dominant_layout}, {crop_summary.clean_questions}/{crop_summary.total_questions} ảnh sạch"
-                        + (f" (Cảnh báo: {crop_summary.flagged_questions} ảnh cần xem lại)" if crop_summary.flagged_questions else ""),
-                        "progress": min(exam_progress_base + int(48 / total_exams), 95),
-                    })
-
                     all_exam_question_pairs.append((exam, questions))
                     ans_fmt = job_cfg.get("export", {}).get("answer_format", "letter_keyword")
 
@@ -622,6 +625,7 @@ class JobOrchestrator:
                         exam=exam,
                         questions=questions,
                         answer_format=ans_fmt,
+                        multi_choice_format=job_cfg.get("export", {}).get("multi_choice_format", "comma"),
                         highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
                         add_divider=job_cfg.get("export", {}).get("show_separator_line", True),
                         add_question_number=job_cfg.get("export", {}).get("show_question_number", True),
@@ -697,6 +701,7 @@ class JobOrchestrator:
                         subject_code=subject_code,
                         exams_data=all_exam_question_pairs,
                         answer_format=ans_fmt,
+                        multi_choice_format=job_cfg.get("export", {}).get("multi_choice_format", "comma"),
                         highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
                         add_divider=job_cfg.get("export", {}).get("show_separator_line", True),
                         add_question_number=job_cfg.get("export", {}).get("show_question_number", True),

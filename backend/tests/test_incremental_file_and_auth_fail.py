@@ -71,4 +71,5 @@ async def test_download_image_consecutive_403_raises_auth_error(tmp_path):
                     db=mock_db,
                     storage=mock_storage,
                 )
-            assert "1 phiên đăng nhập" in str(exc_info.value)
+            assert "403_forbidden" in str(exc_info.value)
+            assert "Hệ thống đã dừng tiến trình và không tính câu này là hoàn tất" in str(exc_info.value)

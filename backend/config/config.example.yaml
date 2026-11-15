@@ -1,0 +1,70 @@
+exam:
+  default_count: 4        # Số đề mặc định tải về
+  min_count: 1
+  order: newest_first
+crawl:
+  delay_seconds: [1.5, 4.0] # Độ trễ cào ngẫu nhiên giữa các trang (giây)
+  concurrency: 1          # Số luồng cào đồng thời
+  headless: false         # false để vượt kiểm tra bot và dễ đăng nhập
+  max_retries: 3
+analysis:
+  use_ai: true            # Bật kiểm tra chéo đáp án bằng AI vision
+  max_ai_calls: 300       # Trần số lần gọi AI mỗi job
+  vote_weight: log_upvotes
+  multi_choice_threshold: 0.5
+  confident_min_ratio: 0.7
+  confident_min_comments: 2
+  use_llm_for_ambiguous: false
+  dedupe: true
+  dedupe_hamming: 6
+ai:
+  enabled: true           # Bật/tắt AI vision
+  ensemble: false         # Chế độ đồng thuận 2 model
+  max_ai_calls: 300       # Giới hạn gọi AI
+  backoff_seconds: 2.0
+  max_retries: 2
+  providers:
+    - name: gemini
+      model: gemini-2.5-flash
+      api_key_env: GEMINI_API_KEY
+      enabled: true
+    - name: groq
+      model: llama-3.2-11b-vision-preview
+      api_key_env: GROQ_API_KEY
+      base_url: https://api.groq.com/openai/v1
+      enabled: false
+    - name: anthropic
+      model: claude-3-5-haiku-20241022
+      api_key_env: ANTHROPIC_API_KEY
+      enabled: false
+    - name: openai_compatible
+      model: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+      base_url: https://api.openai.com/v1
+      enabled: false
+export:
+  formats: [docx]
+  image_width_cm: 16.51
+  image_zoom_percent: 100
+  highlight_low_confidence: true
+  answer_format: letter_keyword
+  merge: false
+
+image_crop:
+  red_min_r: 170
+  red_max_g: 80
+  red_max_b: 80
+  red_min_frac: 0.3
+  white_min_val: 252
+  closing_kernel_size: 9
+  white_panel_min_area_ratio: 0.02
+  white_panel_max_width_ratio: 0.95
+  dark_threshold: 140
+  color_diff_threshold: 60
+  border_dark_ratio: 0.50
+  border_edge_depth: 15
+  padding_px: 12
+  crop_too_large_ratio: 0.85
+  min_height_px: 100
+  min_width_px: 150
+  warning_rate_threshold: 0.20

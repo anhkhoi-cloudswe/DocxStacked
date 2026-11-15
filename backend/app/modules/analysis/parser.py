@@ -1,5 +1,6 @@
+from collections import Counter
 import re
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set, Tuple
 from pydantic import BaseModel
 
 
@@ -9,6 +10,102 @@ class ParsedComment(BaseModel):
     is_agreement: bool = False
     is_ambiguous: bool = False
     explanation: Optional[str] = None
+
+
+NUM_WORDS = {
+    "hai": 2, "ba": 3, "bốn": 4, "bon": 4, "năm": 5, "nam": 5,
+    "sáu": 6, "sau": 6, "bảy": 7, "bay": 7, "tám": 8, "tam": 8,
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "một": 1, "mot": 1,
+}
+
+
+def parse_choice_hint(text: str) -> Tuple[bool, Optional[int]]:
+    """
+    Parse multiple-choice hint from question stem, image OCR, or label text.
+    Handles Vietnamese and English variations:
+      - "(chọn nhiều đáp án)" -> (True, None)
+      - "(chọn các đáp án đúng)" -> (True, None)
+      - "(lựa chọn ba đáp án)" -> (True, 3)
+      - "(chọn 3 phương án đúng)" -> (True, 3)
+      - "(chọn hai đáp án)" -> (True, 2)
+      - "(chọn 2 đáp án)" -> (True, 2)
+      - "(chọn bốn phương án đúng)" -> (True, 4)
+      - "(Choose 1 answer)" -> (False, 1)
+      - "(Choose 2 answers)" -> (True, 2)
+      - "(Choose 3 answers)" -> (True, 3)
+      - "(Choose multiple answers)" -> (True, None)
+      - "(Select 2 options)" -> (True, 2)
+      - "(Select multiple options)" -> (True, None)
+    Returns (is_multi_choice, n_answers).
+    """
+    if not text:
+        return False, None
+    t = text.lower().strip()
+
+    # 1. Explicit multi without N: (chọn nhiều đáp án), (chọn các phương án đúng), choose multiple answers
+    if re.search(r"(?:chọn|lựa chọn)\s+(?:nhiều|các)\s+(?:đáp án|phương án|câu trả lời)", t) or \
+       re.search(r"(?:choose|select)\s+multiple\s+(?:answers?|options?)", t):
+        return True, None
+
+    # 2. Vietnamese with number (digits or words)
+    m_vi = re.search(r"(?:chọn|lựa chọn)\s+(\d+|hai|ba|bốn|bon|năm|nam|một|mot)\s+(?:đáp án|phương án|câu trả lời)", t)
+    if not m_vi:
+        m_vi = re.search(r"(?:chọn|lựa chọn)\s+(\d+|hai|ba|bốn|bon|năm|nam|một|mot)\s+(?:phương án|đáp án)\s+đúng", t)
+    if m_vi:
+        raw_n = m_vi.group(1)
+        n = int(raw_n) if raw_n.isdigit() else NUM_WORDS.get(raw_n, None)
+        if n == 1:
+            return False, 1
+        return True, n
+
+    # 3. English with number
+    m_en = re.search(r"(?:choose|select)\s+(\d+|one|two|three|four|five)\s+(?:answers?|options?)", t)
+    if m_en:
+        raw_n = m_en.group(1)
+        n = int(raw_n) if raw_n.isdigit() else NUM_WORDS.get(raw_n, None)
+        if n == 1:
+            return False, 1
+        return True, n
+
+    return False, None
+
+
+def infer_multi_choice_n_from_comments(comments: List[Any], max_option_letter: str = "H") -> Optional[int]:
+    """
+    Infer the expected number of answers N for a multiple choice question
+    from the most frequent length (mode) among pure-letter comments (e.g. 'ABC', 'abc', 'A, B, C').
+    """
+    if not comments:
+        return None
+    max_char = max_option_letter.upper()
+    lengths = []
+
+    for c in comments:
+        raw_text = getattr(c, "raw_text", str(c)).strip()
+        if not raw_text:
+            continue
+        # Check separated letters e.g. "A, B, C" or "A B C"
+        tokens = re.findall(rf"\b[A-{max_char}]\b", raw_text, re.IGNORECASE)
+        if len(tokens) >= 2 and len(tokens) == len(set(tokens)):
+            # Check if text is essentially just these letters
+            clean_check = re.sub(r"[\s,;+./&()\[\]-]", "", raw_text)
+            if len(clean_check) == len(tokens):
+                lengths.append(len(tokens))
+                continue
+
+        # Check concatenated pure letters e.g. "ABC", "abc"
+        m_concat = re.fullmatch(rf"([a-zA-Z]{{2,6}})", raw_text.strip())
+        if m_concat:
+            letters = list(m_concat.group(1).upper())
+            if all(l <= max_char for l in letters) and len(letters) == len(set(letters)):
+                lengths.append(len(letters))
+
+    if not lengths:
+        return None
+    counts = Counter(lengths)
+    mode_n, _ = counts.most_common(1)[0]
+    return mode_n if mode_n >= 2 else None
 
 
 def normalize_vietnamese_text(text: str) -> str:
@@ -21,6 +118,7 @@ def parse_comment_text(
     raw_text: str,
     max_option_letter: str = "H",
     multi_choice_n: Optional[int] = None,
+    is_multi_choice: bool = False,
 ) -> ParsedComment:
     """
     Parse student comment text to extract voted answer(s) using structural rules.
@@ -82,6 +180,11 @@ def parse_comment_text(
     if m_single:
         return ParsedComment(raw_text=raw_text, answers=[m_single.group(1).upper()])
 
+    # 5b. Leading letter with dot or colon followed by text: 'B. Tuyệt đối của chủ nghĩa tư bản', 'c. xii nhé mn'
+    m_lead_dot = re.match(rf"^({valid_pattern})[.:]\s+(?!sao|hả|hở|nhỉ).+", cleaned, re.IGNORECASE)
+    if m_lead_dot:
+        return ParsedComment(raw_text=raw_text, answers=[m_lead_dot.group(1).upper()])
+
     # 6. Check explicit prefix/suffix patterns:
     # 'đáp án C', 'dap an C', 'chọn B', 'chon B', 'ans: D', 'answer: E', 'câu này E'
     m_explicit = re.search(rf"\b(?:đáp án|dap an|chọn|chon|ans|answer|câu này|cau nay|câu|cau)[:\s]+({valid_pattern})\b", cleaned, re.IGNORECASE)
@@ -116,22 +219,23 @@ def parse_comment_text(
                 return ParsedComment(raw_text=raw_text, answers=letters)
 
     # 10. Concatenated letters: 'AC', 'ABD', 'abd', 'BCDE', 'ae', 'be', 'de', 'ad', 'ABE'
-    # Rule 2: Chuỗi liền chỉ nhận khi câu đó là nhiều đáp án và số chữ cái đúng bằng N.
+    # Rule 2: Chuỗi liền chỉ nhận khi câu đó là nhiều đáp án.
     m_concat = re.fullmatch(r"([a-zA-Z]{2,6})", cleaned)
     if m_concat:
         word = m_concat.group(1).upper()
         letters = list(word)
-        # Check all letters in valid range
-        if all(l <= max_char for l in letters):
-            # Must strictly match multi_choice_n if specified!
+        # Check all letters in valid range and no duplicate letters in the same token
+        if all(l <= max_char for l in letters) and len(letters) == len(set(letters)):
             if multi_choice_n is not None and multi_choice_n >= 2:
-                if len(letters) == multi_choice_n and len(letters) == len(set(letters)):
-                    # Strictly ascending or exact set
+                if len(letters) == multi_choice_n or (is_multi_choice and len(letters) <= multi_choice_n):
                     return ParsedComment(raw_text=raw_text, answers=sorted(letters))
                 else:
                     return ParsedComment(raw_text=raw_text, is_ambiguous=True)
+            elif is_multi_choice:
+                # Multi-choice question where N is unknown: accept concatenated letters (e.g. 'ABC', 'abc', 'AC', 'AB')
+                return ParsedComment(raw_text=raw_text, answers=sorted(letters))
             else:
-                # If multi_choice_n is not specified, concatenated words that look like Vietnamese
+                # If multi_choice is False and N is not specified, concatenated words that look like Vietnamese
                 # e.g. 'ae' (anh em), 'be' (bé), 'de' (dễ), 'ad' (admin) MUST NOT be recognized as answers!
                 return ParsedComment(raw_text=raw_text, is_ambiguous=True)
 

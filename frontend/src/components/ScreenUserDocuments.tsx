@@ -51,8 +51,10 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const loadData = () => {
-    setIsLoading(true);
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+
+  const loadData = (silent: boolean = false) => {
+    if (!silent) setIsLoading(true);
     Promise.all([
       fetch('/api/user/me').then((r) => (r.ok ? r.json() : null)),
       fetch('/api/user/documents').then((r) => (r.ok ? r.json() : [])),
@@ -63,16 +65,25 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
       })
       .catch((err) => {
         console.error('Error fetching user documents:', err);
-        showToast('Không thể tải danh sách tài liệu từ máy chủ.', 'error');
+        if (!silent) showToast('Không thể tải danh sách tài liệu từ máy chủ.', 'error');
       })
       .finally(() => {
-        setIsLoading(false);
+        if (!silent) setIsLoading(false);
       });
   };
 
   useEffect(() => {
     loadData();
   }, []);
+
+  // Auto-refresh interval (every 8 seconds when enabled)
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = setInterval(() => {
+      loadData(true);
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [autoRefresh]);
 
   // Compute unique subjects and their stats
   const subjectsWithCounts = useMemo(() => {
@@ -115,25 +126,35 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
     const targetDocs = filteredDocs.filter((d) => !subj || d.subject_code === subj);
     if (targetDocs.length === 0) return;
 
-    showToast(`Đang tải ${targetDocs.length} file về thư mục Downloads...`, 'success');
+    showToast(`Đang lưu ${targetDocs.length} file vào thư mục Downloads...`, 'success');
 
     try {
-      for (let i = 0; i < targetDocs.length; i++) {
-        const doc = targetDocs[i];
-        const a = document.createElement('a');
-        a.href = doc.download_url;
-        a.download = doc.filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+      // Direct Server-side folder creator (saves directly into user Downloads/{SUBJECT}_{CAT} without zip)
+      const resp = await fetch('/api/exports/export-folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: subj || undefined,
+          paths: targetDocs.map((d) => `data/output/${d.subject_code}/${d.filename}`),
+        }),
+      });
 
-        if (i < targetDocs.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 400));
-        }
+      if (resp.ok) {
+        const data = await resp.json();
+        showToast(data.message || `Đã lưu thành công vào folder Downloads/${data.folder_name}!`, 'success');
+        // Open folder in File Explorer for user
+        fetch('/api/exports/open-folder', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: data.folder_path }),
+        }).catch(() => {});
+        return;
       }
-      showToast(`Đã tải thành công ${targetDocs.length} file Word về thư mục Downloads!`, 'success');
-    } catch (err) {
-      console.error('Error downloading files:', err);
+
+      throw new Error(`Server returned HTTP ${resp.status}`);
+    } catch (err: any) {
+      console.error('Error saving folder:', err);
+      // Final Fallback: trigger zip download
       const url = subj
         ? `/api/exports/download-folder?subject=${encodeURIComponent(subj)}`
         : `/api/exports/download-folder`;
@@ -311,6 +332,62 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
               </button>
             </div>
           )}
+
+          {/* Auto Refresh & Manual Refresh Control */}
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <button
+              type="button"
+              onClick={() => loadData(false)}
+              className="btn-secondary"
+              disabled={isLoading}
+              style={{
+                fontSize: 'var(--text-xs)',
+                padding: 'var(--space-2) var(--space-3)',
+                minHeight: '38px',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontWeight: 600,
+                cursor: isLoading ? 'not-allowed' : 'pointer',
+              }}
+              title="Cập nhật danh sách tài liệu mới nhất từ đĩa"
+            >
+              <RefreshIcon size={14} className={isLoading ? 'spin' : ''} />
+              <span>Làm mới</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setAutoRefresh(!autoRefresh)}
+              style={{
+                fontSize: '11px',
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                border: `1px solid ${autoRefresh ? 'var(--status-confident-border)' : 'var(--border-subtle)'}`,
+                backgroundColor: autoRefresh ? 'var(--status-confident-bg)' : 'var(--bg-canvas)',
+                color: autoRefresh ? 'var(--status-confident-text)' : 'var(--text-muted)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontWeight: 600,
+                minHeight: '38px',
+                transition: 'all var(--transition-fast)',
+              }}
+              title={autoRefresh ? 'Tự động làm mới đang BẬT (mỗi 8s)' : 'Tự động làm mới đang TẮT'}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  backgroundColor: autoRefresh ? 'var(--status-confident-text)' : 'var(--text-muted)',
+                  display: 'inline-block',
+                }}
+              />
+              <span>Tự động cập nhật {autoRefresh ? 'BẬT' : 'TẮT'}</span>
+            </button>
+          </div>
 
           <button
             onClick={onBack}

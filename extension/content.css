@@ -1,0 +1,66 @@
+/* content.css - Styles for injected elements on FuOverflow thread pages */
+
+.docxstacked-btn-container {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 12px;
+  vertical-align: middle;
+}
+
+.docxstacked-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.35);
+  transition: all 0.2s ease;
+  text-decoration: none !important;
+}
+
+.docxstacked-btn:hover {
+  background: linear-gradient(135deg, #4338ca 0%, #6d28d9 100%) !important;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.5);
+  transform: translateY(-1px);
+}
+
+.docxstacked-btn:active {
+  transform: translateY(0);
+}
+
+.docxstacked-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: #1e1b4b;
+  color: #ffffff;
+  padding: 12px 18px;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 999999;
+  border: 1px solid #6366f1;
+  animation: docxstacked-fadein 0.3s ease;
+}
+
+@keyframes docxstacked-fadein {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

@@ -113,18 +113,25 @@ def text_mask(
     box: Tuple[int, int, int, int],
     dark_threshold: int = 140,
     color_diff_threshold: int = 60,
+    allow_subpixel: bool = False,
     border_dark_ratio: float = 0.50,
     border_edge_depth: int = 15,
 ) -> np.ndarray:
     """
     Create boolean mask of text inside box:
     - Dark pixels (brightness < dark_threshold) and near-gray (diff < color_diff_threshold).
+    - If allow_subpixel=True (for red-bar layouts), includes subpixel LCD antialiasing (diff < 120 or min < 80).
     - Discard edge rows/cols where dark fraction > border_dark_ratio (border lines).
-    - Remove tiny noise speckles (< 6 pixels).
+    - Preserves all text punctuation marks and subpixel anti-aliasing.
     """
     x0, y0, x1, y1 = box
     p = a[y0:y1, x0:x1].astype(int)
-    m = (p.mean(2) < dark_threshold) & ((p.max(2) - p.min(2)) < color_diff_threshold)
+    is_dark = p.mean(2) < dark_threshold
+    if allow_subpixel:
+        is_neutral = ((p.max(2) - p.min(2)) < max(color_diff_threshold, 120)) | (p.min(2) < 80)
+    else:
+        is_neutral = (p.max(2) - p.min(2)) < color_diff_threshold
+    m = is_dark & is_neutral
 
     # Discard border lines near outer perimeter
     H_m, W_m = m.shape
@@ -148,7 +155,45 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "2.2.0-missing-stem"
+CROP_ALGORITHM_VERSION = "2.5.0-top-left-panel-no-red-bar"
+
+
+def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Find white question panel in the top-left corner (for layouts without vertical red bar,
+    e.g., software screenshots with gray background, FUO watermark in mid-region, and yellow 'Q: N' label in bottom-right).
+    Returns (0, 0, panel_x_end, panel_y_end) if detected, else None.
+    """
+    H, W = a.shape[:2]
+    # Check top-left corner brightness: must be near-white/white
+    is_pure_white = a.min(axis=2) >= min_val
+    if not is_pure_white[:10, :10].all() and a[:10, :10].mean() < 240:
+        return None
+
+    mid_w = min(W, 1200)
+    white_per_row = is_pure_row = is_pure_white[:, :mid_w].sum(axis=1)
+    if white_per_row[:10].mean() < 50:
+        return None
+
+    # Find where white drops vertically (bottom of panel)
+    panel_y_end = H
+    for y in range(15, len(white_per_row) - 5):
+        if (white_per_row[y : y + 5] < 50).all():
+            panel_y_end = y
+            break
+
+    # Find where white drops horizontally (right of panel)
+    white_per_col = is_pure_white[:panel_y_end, :].sum(axis=0)
+    panel_x_end = W
+    for x in range(50, len(white_per_col) - 5):
+        if (white_per_col[x : x + 5] < min(30, panel_y_end * 0.2)).all():
+            panel_x_end = x
+            break
+
+    if panel_x_end < 100 or panel_y_end < 40:
+        return None
+
+    return (0, 0, panel_x_end, panel_y_end)
 
 
 def count_text_lines(m: np.ndarray) -> int:
@@ -190,14 +235,15 @@ def detect_and_mask_2026_features(im: Image.Image) -> Image.Image:
         y_cut = min(H, max(significant_blue_rows) + 5)
         draw.rectangle([0, 0, W, y_cut], fill=(255, 255, 255))
 
-    # 2. Detect bottom-left watermark logo FUO
-    if H > 400:
-        bot_region = a[int(H * 0.75) :, : min(int(W * 0.3), 350)]
-        diff = bot_region.max(2) - bot_region.min(2)
+    # 2. Detect bottom-left watermark logo FUO (restricted to bottom 85px to avoid wiping out question text)
+    if H > 200:
+        wm_search_y = max(0, H - 85)
+        bot_region = a[wm_search_y:, : min(int(W * 0.3), 250)]
+        diff = bot_region.max(2).astype(int) - bot_region.min(2).astype(int)
         gray_wm = (diff < 20) & (bot_region.mean(2) >= 120) & (bot_region.mean(2) <= 230)
         if gray_wm.sum() > 200:
             ys, xs = np.where(gray_wm)
-            y_start = int(H * 0.75) + int(ys.min()) - 4
+            y_start = wm_search_y + int(ys.min()) - 4
             x_end = int(xs.max()) + 8
             draw.rectangle([0, y_start, x_end, H], fill=(255, 255, 255))
 
@@ -384,7 +430,20 @@ def crop_question_single(
             )
             if wp:
                 layout = "red_bar+white_panel"
-                box = (wp[0], wp[1] + y_start, wp[2], wp[3] + y_start)
+                # Check whether canvas outside panel has gray background (SP 2024 layouts with watermark / corner tag)
+                # or pure white canvas (FA 2024 wide layouts where text flows across container).
+                right_bg_mean = float(a[100 : max(101, H - 100), max(0, W - 50) :].mean())
+                bottom_bg_mean = float(a[max(0, H - 50) :, 100 : max(101, W - 100)].mean())
+                is_gray_canvas = (right_bg_mean < 246) or (bottom_bg_mean < 246)
+
+                if is_gray_canvas or bar[0] < 350:
+                    # In gray canvas layouts (e.g. PRM392 SP24 FE/RE), constrain search to white card panel (+ 30px)
+                    # to isolate out FUO watermark in mid canvas and yellow "Q: N" tag in bottom-right corner.
+                    box = (wp[0], wp[1] + y_start, min(W, wp[2] + 30), min(H, wp[3] + y_start + 30))
+                else:
+                    # For pure white wide layouts (e.g. FA 2024 RE), search spans full right canvas (W, H)
+                    # so text overflowing panel boundary is never clamped or truncated.
+                    box = (wp[0], wp[1] + y_start, W, H)
 
             # 3. Text mask
             m = text_mask(
@@ -392,6 +451,7 @@ def crop_question_single(
                 box,
                 dark_threshold=cfg.dark_threshold,
                 color_diff_threshold=cfg.color_diff_threshold,
+                allow_subpixel=True,
                 border_dark_ratio=cfg.border_dark_ratio,
                 border_edge_depth=cfg.border_edge_depth,
             )
@@ -413,6 +473,8 @@ def crop_question_single(
                     warnings.append("few_lines")
                 if 2 <= num_lines <= 4 and not is_split_2col:
                     warnings.append("missing_stem")
+                if ((bx[3] - bx[1]) < 80 or num_lines <= 1) and not is_split_2col:
+                    warnings.append("missing_options")
 
             # Handle split 2-column question: combine left question text + right chart into stacked image
             if is_split_2col and box_l is not None:
@@ -436,39 +498,75 @@ def crop_question_single(
                 )
 
         else:
-            # 4. No red bar: modern 2026 or plain layout
-            masked_im = detect_and_mask_2026_features(im)
-            m_arr = np.array(masked_im)
-
-            # Use robust text_mask to identify content, ignoring subtle edge artifacts
-            m = text_mask(
-                m_arr,
-                (0, 0, W, H),
-                dark_threshold=cfg.dark_threshold,
-                color_diff_threshold=cfg.color_diff_threshold,
-                border_dark_ratio=cfg.border_dark_ratio,
-                border_edge_depth=cfg.border_edge_depth,
-            )
-            ys, xs = np.where(m)
-
-            if len(ys) == 0:
-                # Fallback to broader threshold if needed
-                dark = (m_arr[..., 0] < 240) | (m_arr[..., 1] < 240) | (m_arr[..., 2] < 240)
-                ys, xs = np.where(dark)
-
-            if len(ys) == 0:
-                warnings.append("no_text")
-                bx = (0, 0, W, H)
-                layout = "layout_unknown"
+            # 4. No red bar: check top-left white panel first (software layouts with gray background, FUO watermark, and Q:N corner tag)
+            tl_wp = find_top_left_white_panel(a, min_val=cfg.white_min_val)
+            if tl_wp:
+                layout = "top_left_white_panel"
+                box = tl_wp
+                # Extract text strictly inside top-left white panel, isolating out watermark FUO and bottom-right yellow label
+                m = text_mask(
+                    a,
+                    box,
+                    dark_threshold=cfg.dark_threshold,
+                    color_diff_threshold=cfg.color_diff_threshold,
+                    allow_subpixel=True,
+                    border_dark_ratio=cfg.border_dark_ratio,
+                    border_edge_depth=cfg.border_edge_depth,
+                )
+                ys, xs = np.where(m)
+                if len(ys) == 0:
+                    warnings.append("no_text")
+                    bx = box
+                else:
+                    bx = (
+                        int(box[0] + xs.min()),
+                        int(box[1] + ys.min()),
+                        int(box[0] + xs.max() + 1),
+                        int(box[1] + ys.max() + 1),
+                    )
+                    num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                    if num_lines < 3:
+                        warnings.append("few_lines")
+                    if 2 <= num_lines <= 4:
+                        warnings.append("missing_stem")
+                    if (bx[3] - bx[1]) < 80 or num_lines <= 1:
+                        warnings.append("missing_options")
             else:
-                layout = "modern_2026"
-                bx = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
-                # Structural check on detected region
-                num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
-                if num_lines < 3:
-                    warnings.append("few_lines")
-                if 2 <= num_lines <= 4:
-                    warnings.append("missing_stem")
+                # Modern 2026 or plain layout
+                masked_im = detect_and_mask_2026_features(im)
+                m_arr = np.array(masked_im)
+
+                # Use robust text_mask to identify content, ignoring subtle edge artifacts
+                m = text_mask(
+                    m_arr,
+                    (0, 0, W, H),
+                    dark_threshold=cfg.dark_threshold,
+                    color_diff_threshold=cfg.color_diff_threshold,
+                    border_dark_ratio=cfg.border_dark_ratio,
+                    border_edge_depth=cfg.border_edge_depth,
+                )
+                ys, xs = np.where(m)
+
+                if len(ys) == 0:
+                    # Fallback to broader threshold if needed
+                    dark = (m_arr[..., 0] < 240) | (m_arr[..., 1] < 240) | (m_arr[..., 2] < 240)
+                    ys, xs = np.where(dark)
+
+                if len(ys) == 0:
+                    warnings.append("no_text")
+                    bx = (0, 0, W, H)
+                    layout = "layout_unknown"
+                else:
+                    layout = "modern_2026"
+                    bx = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
+                    # Structural check on detected region
+                    num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                    if num_lines < 3:
+                        warnings.append("few_lines")
+                    if 2 <= num_lines <= 4:
+                        warnings.append("missing_stem")
+                    if (bx[3] - bx[1]) < 80 or num_lines <= 1:
+                        warnings.append("missing_options")
 
         # Quality Gate Checks on Bounding Box
         if bx[1] <= 2:
@@ -479,6 +577,50 @@ def crop_question_single(
         crop_area = (bx[2] - bx[0]) * (bx[3] - bx[1])
         if crop_area > cfg.crop_too_large_ratio * W * H:
             warnings.append("crop_too_large")
+
+        # source_clipped check:
+        # Only evaluate on red_bar layouts (2024/2025 raw software screenshots)
+        if bar:
+            # 1. Content loss: ONLY when text touches the border of the ACTUAL SOURCE SCREENSHOT (<= 3px to outer canvas edge)
+            canvas_clipped_sides: list = []
+            if bx[2] >= W - 3:
+                canvas_clipped_sides.append("phải")
+            if bx[1] <= 3:
+                canvas_clipped_sides.append("trên")
+            if bx[3] >= H - 3:
+                canvas_clipped_sides.append("dưới")
+
+            # 2. Wide sidebar layout (bar[0] >= 500, e.g. ITE302c FA24 RE):
+            # Inner application container cuts leading labels A./B./C. at x ~ 832.
+            # This is an exam-level left edge clipping (handled by top document note, no per-question note).
+            is_fa24_left_clipped = False
+            if bar[0] >= 500 and "no_text" not in warnings and box:
+                p_box = a[box[1]:box[3], box[0]:box[2]].astype(int)
+                m_strict = (p_box.mean(2) < 140) & ((p_box.max(2) - p_box.min(2)) < 60)
+                row_sums_m = m_strict.sum(axis=1)
+                lines_m = [y_idx for y_idx, c in enumerate(row_sums_m) if c > 0]
+                groups_m = []
+                cur_g = []
+                for y_val in lines_m:
+                    if not cur_g or y_val == cur_g[-1] + 1:
+                        cur_g.append(y_val)
+                    else:
+                        groups_m.append(cur_g)
+                        cur_g = [y_val]
+                if cur_g:
+                    groups_m.append(cur_g)
+                short_h_count = sum(1 for g in groups_m if len(g) <= 5)
+                if len(groups_m) > 0 and (short_h_count / len(groups_m)) >= 0.5:
+                    is_fa24_left_clipped = True
+
+            if canvas_clipped_sides:
+                warnings.append("source_clipped")
+                warnings.append("source_clipped_content")
+                logger.debug(f"source_clipped (canvas touch) detected on sides: {canvas_clipped_sides}")
+            elif is_fa24_left_clipped:
+                warnings.append("source_clipped")
+                warnings.append("source_clipped_left_only")
+                logger.debug("source_clipped_left_only detected (inner exam container clipped A./B./C.)")
 
         # 5. Crop text and add white margin via canvas expansion (if not already prepared)
         if final_cropped is None:
@@ -591,14 +733,16 @@ def crop_exam_images(
 
     # --- Pass 3: Warning Rate Evaluation ---
     total = len(results)
-    flagged = [r for r in results if r.warnings]
-    warning_rate = (len(flagged) / total) if total > 0 else 0.0
+    critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options"}
+    critical_flagged = [r for r in results if any(w in critical_warnings for w in r.warnings)]
+    warning_rate = (len(critical_flagged) / total) if total > 0 else 0.0
     fallback_to_raw = warning_rate > cfg.warning_rate_threshold
 
-    clean_count = total - len(flagged)
+    all_flagged = [r for r in results if r.warnings]
+    clean_count = total - len(all_flagged)
     if fallback_to_raw:
         logger.warning(
-            f"Đề {exam_title}: Kiểu ảnh của đề này chưa được hỗ trợ (>20% cảnh báo: {len(flagged)}/{total}), chuyển sang tạo Word từ ảnh gốc kèm cảnh báo."
+            f"Đề {exam_title}: Kiểu ảnh của đề này chưa được hỗ trợ (>20% cảnh báo: {len(critical_flagged)}/{total}), chuyển sang tạo Word từ ảnh gốc kèm cảnh báo."
         )
         exam_layout = "unsupported_fallback_raw"
     else:
@@ -610,7 +754,7 @@ def crop_exam_images(
         dominant_layout=exam_layout,
         total_questions=total,
         clean_questions=clean_count,
-        flagged_questions=len(flagged),
+        flagged_questions=len(all_flagged),
         warning_rate=warning_rate,
         fallback_to_raw=fallback_to_raw,
         results=results,

@@ -283,6 +283,117 @@ class OpenFolderRequest(BaseModel):
     path: Optional[str] = None
 
 
+class ExportToFolderRequest(BaseModel):
+    job_id: Optional[str] = None
+    subject: Optional[str] = None
+    exam_type: Optional[str] = None
+    paths: Optional[List[str]] = None
+    target_dir: Optional[str] = None  # Custom target directory path, e.g. Downloads/MLN122_FE
+
+
+class ExportToFolderResponse(BaseModel):
+    success: bool
+    folder_path: str
+    folder_name: str
+    files_copied: int
+    files: List[str]
+    message: str
+
+
+@router.post("/export-folder", response_model=ExportToFolderResponse)
+async def export_files_to_named_folder(
+    req: ExportToFolderRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export Word documents directly into a real directory on disk named according to:
+    {SUBJECT}_{CATEGORY} (e.g. MLN122_FE or MLN122_PE), without creating a zip file.
+    FE and RE exams are grouped into {SUBJECT}_FE, and PE exams into {SUBJECT}_PE.
+    Places the folder inside the user's Downloads directory (or specified target_dir).
+    """
+    import os
+    import shutil
+
+    output_dir = settings.OUTPUT_DIR
+    target_files: List[Path] = []
+    fallback_sub = req.subject or "EXAMS"
+    fallback_cat = req.exam_type or "FE"
+
+    if req.job_id:
+        stmt = select(Job).where(Job.job_id == req.job_id)
+        res = await db.execute(stmt)
+        job = res.scalar_one_or_none()
+        if job:
+            if not req.subject:
+                fallback_sub = job.subject_code or fallback_sub
+            if not req.exam_type:
+                fallback_cat = job.exam_type or fallback_cat
+            job_files = (job.details or {}).get("files", [])
+            for jf in job_files:
+                p_str = jf.get("path")
+                if p_str:
+                    clean_p = p_str.replace("\\", "/").lstrip("/")
+                    full_p = (settings.BASE_DIR / clean_p).resolve()
+                    if full_p.exists() and full_p.is_file() and full_p.is_relative_to(output_dir.resolve()):
+                        if full_p not in target_files:
+                            target_files.append(full_p)
+
+    if req.paths:
+        for p_str in req.paths:
+            clean_p = p_str.replace("\\", "/").lstrip("/")
+            full_p = (settings.BASE_DIR / clean_p).resolve()
+            if full_p.exists() and full_p.is_file() and full_p.is_relative_to(output_dir.resolve()):
+                if full_p not in target_files:
+                    target_files.append(full_p)
+
+    if not target_files:
+        if req.subject:
+            sub_dir = output_dir / req.subject
+            if sub_dir.exists():
+                target_files = [p for p in sub_dir.glob("*.docx") if p.is_file()] + [p for p in sub_dir.glob("*.zip") if p.is_file()]
+        else:
+            target_files = [p for p in output_dir.rglob("*.docx") if p.is_file()]
+
+    if not target_files:
+        raise HTTPException(status_code=404, detail="Không tìm thấy file nào để xuất vào folder.")
+
+    # Determine default destination root (Downloads directory)
+    if req.target_dir:
+        base_dest = Path(req.target_dir).resolve()
+    else:
+        downloads_path = Path.home() / "Downloads"
+        base_dest = downloads_path if downloads_path.exists() else output_dir
+
+    copied_files_list: List[str] = []
+    dest_folders_set = set()
+
+    for src_file in target_files:
+        sub, cat = parse_subject_and_category(src_file.name, fallback_subject=fallback_sub, fallback_type=fallback_cat)
+        folder_name = f"{sub}_{cat}"
+        dest_folder = base_dest / folder_name
+        dest_folder.mkdir(parents=True, exist_ok=True)
+        dest_folders_set.add(dest_folder)
+
+        dest_file = dest_folder / src_file.name
+        try:
+            shutil.copy2(src_file, dest_file)
+            copied_files_list.append(src_file.name)
+        except Exception as copy_err:
+            logger.error(f"Failed to copy {src_file} to {dest_file}: {copy_err}")
+
+    primary_folder = list(dest_folders_set)[0] if dest_folders_set else base_dest
+    primary_name = primary_folder.name
+
+    return ExportToFolderResponse(
+        success=True,
+        folder_path=str(primary_folder.resolve()),
+        folder_name=primary_name,
+        files_copied=len(copied_files_list),
+        files=copied_files_list,
+        message=f"Đã lưu thành công {len(copied_files_list)} file vào folder '{primary_name}' (tại {primary_folder})",
+    )
+
+
 @router.post("/open-folder")
 async def open_local_folder(req: Optional[OpenFolderRequest] = None):
     """

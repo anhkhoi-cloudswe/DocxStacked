@@ -20,9 +20,10 @@ interface Props {
   onStartJob: (subjectCode: string, examType: 'FE' | 'PE', limit: number, examIds?: number[]) => void;
   isLoading: boolean;
   initialOpenLogin?: boolean;
+  loginTrigger?: number;
 }
 
-export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, initialOpenLogin }) => {
+export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, initialOpenLogin, loginTrigger }) => {
   // Subjects list & search
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [totalSubjects, setTotalSubjects] = useState<number>(0);
@@ -69,6 +70,14 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [showCookieModal]);
+
+  // Open modal when header login button or URL trigger is clicked
+  useEffect(() => {
+    if (loginTrigger && loginTrigger > 0 && (!authStatus || !authStatus.logged_in)) {
+      setShowCookieModal(true);
+      setLoginModalMode('account');
+    }
+  }, [loginTrigger, authStatus]);
 
   // Debounce search query 250ms
   useEffect(() => {
@@ -146,7 +155,12 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
   const checkAuth = () => {
     fetch('/api/auth/status')
       .then((res) => (res.ok ? res.json() : { logged_in: false }))
-      .then((data: AuthStatus) => setAuthStatus(data))
+      .then((data: AuthStatus) => {
+        setAuthStatus(data);
+        if (data && data.logged_in) {
+          setShowCookieModal(false);
+        }
+      })
       .catch(() => setAuthStatus({ logged_in: false }));
   };
 
@@ -371,6 +385,48 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
 
   return (
     <div className="select-subject-layout">
+      {/* Session Authentication Warning Banner */}
+      {authStatus && !authStatus.logged_in && (
+        <div
+          style={{
+            gridColumn: '1 / -1',
+            backgroundColor: 'var(--status-weak-bg, #FEF3C7)',
+            border: '1px solid var(--status-weak-border, #F59E0B)',
+            color: 'var(--status-weak-text, #92400E)',
+            padding: 'var(--space-3) var(--space-4)',
+            borderRadius: 'var(--radius-md)',
+            marginBottom: 'var(--space-2)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 'var(--space-3)',
+            boxShadow: 'var(--shadow-sm)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 600 }}>
+            <WarningIcon size={18} />
+            <span>Chưa đăng nhập FUOverflow hoặc phiên đã hết hạn. Bạn cần đăng nhập để cào đề và tải tài nguyên.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => { setShowCookieModal(true); setLoginModalMode('account'); }}
+            style={{
+              padding: '6px 14px',
+              fontSize: 'var(--text-xs)',
+              fontWeight: 700,
+              backgroundColor: '#9A3412',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Đăng nhập ngay
+          </button>
+        </div>
+      )}
+
       {/* Left Column: Subjects and Exams List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
         {/* Card: Danh sách môn học */}
