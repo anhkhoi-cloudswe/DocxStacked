@@ -15,7 +15,24 @@ const state = {
   count403: 0,
   countRetries: 0,
   existingExam: null,
+  activeTab: "soande",
+  settingsData: null,
+  documentsData: [],
 };
+
+// Common API helper for Extension with pinned header
+async function apiFetch(endpoint, options = {}) {
+  const headers = options.headers || {};
+  headers["X-DocxStacked-Ext"] = EXTENSION_ID;
+  const userToken = (elInputIngestToken && elInputIngestToken.value.trim()) || "";
+  if (userToken) {
+    headers["X-Ingest-Token"] = userToken;
+  }
+  return fetch(`${BACKEND_URL}${endpoint}`, {
+    ...options,
+    headers,
+  });
+}
 
 // DOM Elements
 const elBackendStatus = document.getElementById("backend-status");
@@ -25,8 +42,6 @@ const elInputThreadUrl = document.getElementById("input-thread-url");
 const elBtnSyncTab = document.getElementById("btn-sync-tab");
 const elBtnMainAction = document.getElementById("btn-main-action");
 const elProgressBar = document.getElementById("progress-bar");
-const elProgressStatus = document.getElementById("progress-status");
-const elProgressPercent = document.getElementById("progress-percent");
 const elStatsSummaryLine = document.getElementById("stats-summary-line");
 const elOfflineRecoveryRow = document.getElementById("offline-recovery-row");
 const elBtnRetryIngest = document.getElementById("btn-retry-ingest");
@@ -45,6 +60,21 @@ const elReopenText = document.getElementById("reopen-text");
 const elBtnReopenDownload = document.getElementById("btn-reopen-download");
 const elBtnReopenUpdate = document.getElementById("btn-reopen-update");
 const elCheckRedownloadImages = document.getElementById("check-redownload-images");
+
+// Tab elements
+const tabButtons = document.querySelectorAll(".tab-btn");
+const tabPanels = {
+  soande: document.getElementById("tab-panel-soande"),
+  dasoan: document.getElementById("tab-panel-dasoan"),
+  caidat: document.getElementById("tab-panel-caidat"),
+};
+const elDocsContainer = document.getElementById("docs-list-container");
+const elBtnRefreshDocs = document.getElementById("btn-refresh-docs");
+const elProvidersContainer = document.getElementById("providers-list-container");
+const elOptMultiComma = document.getElementById("opt-multi-comma");
+const elOptMultiJoined = document.getElementById("opt-multi-joined");
+const elBtnOpenFolderSettings = document.getElementById("btn-open-folder-settings");
+const elBtnCleanData = document.getElementById("btn-clean-data");
 
 function showNotice(msg) {
   if (!elUiNoticeBox) return;
@@ -81,17 +111,248 @@ if (elBtnCopyLog) {
 
 function updateProgress(percent, statusText) {
   if (elProgressBar) elProgressBar.style.width = `${percent}%`;
-  if (elProgressPercent) elProgressPercent.innerText = `${percent}%`;
-  if (elProgressStatus) elProgressStatus.innerText = statusText;
+  updateStatsLine(statusText);
 }
 
-function updateStatsLine() {
+function updateStatsLine(overrideStatus) {
   if (!elStatsSummaryLine) return;
-  let text = `${state.processedQuestions}/${state.totalQuestions} câu · ${state.collectedComments} bình luận`;
+  let text = "";
+  if (state.isRunning) {
+    text = `${state.processedQuestions}/${state.totalQuestions} câu · ${state.collectedComments} bình luận`;
+  } else if (overrideStatus) {
+    text = overrideStatus;
+  } else {
+    text = `${state.processedQuestions}/${state.totalQuestions} câu · ${state.collectedComments} bình luận`;
+  }
   if (state.count403 > 0) {
     text += ` · ${state.count403} lỗi 403`;
   }
   elStatsSummaryLine.innerText = text;
+}
+
+// Tab Switching Logic
+function switchTab(tabKey) {
+  state.activeTab = tabKey;
+  tabButtons.forEach(btn => {
+    if (btn.dataset.tab === tabKey) btn.classList.add("active");
+    else btn.classList.remove("active");
+  });
+  Object.keys(tabPanels).forEach(key => {
+    if (key === tabKey && tabPanels[key]) tabPanels[key].classList.add("active");
+    else if (tabPanels[key]) tabPanels[key].classList.remove("active");
+  });
+
+  if (tabKey === "dasoan") {
+    loadDocuments();
+  } else if (tabKey === "caidat") {
+    loadSettings();
+  }
+}
+
+tabButtons.forEach(btn => {
+  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+});
+
+// Load Documents for Tab "Đã soạn"
+async function loadDocuments() {
+  if (!elDocsContainer) return;
+  elDocsContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 12px;">Đang tải danh sách tài liệu...</div>';
+  try {
+    const res = await apiFetch("/api/user/documents");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const docs = await res.json();
+    state.documentsData = docs;
+
+    if (!docs || docs.length === 0) {
+      elDocsContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 16px;">Chưa có tài liệu nào được soạn.</div>';
+      return;
+    }
+
+    elDocsContainer.innerHTML = "";
+    docs.forEach(doc => {
+      const item = document.createElement("div");
+      item.className = "doc-item";
+
+      const timeStr = doc.created_at || "--:--";
+      item.innerHTML = `
+        <div class="doc-item-title" title="${doc.exam_title || doc.filename}">${doc.exam_title || doc.filename}</div>
+        <div class="doc-item-meta">
+          <span>${doc.questions_count} câu · ${doc.size_formatted}</span>
+          <span>${timeStr}</span>
+        </div>
+        <div class="doc-item-actions">
+          <a class="btn-secondary btn-download" style="font-size: 11px; padding: 3px 6px;" href="${BACKEND_URL}${doc.download_url}" target="_blank">Tải file</a>
+          <button class="btn-secondary btn-open-doc-folder" style="font-size: 11px; padding: 3px 6px;">Mở thư mục</button>
+          <button class="btn-secondary btn-re-ingest-doc" style="font-size: 11px; padding: 3px 6px;">Cập nhật</button>
+        </div>
+      `;
+
+      item.querySelector(".btn-open-doc-folder").addEventListener("click", async () => {
+        try {
+          await apiFetch("/api/exports/open-folder", { method: "POST" });
+        } catch (e) {
+          log(`Lỗi mở thư mục: ${e.message}`, "warn");
+        }
+      });
+
+      item.querySelector(".btn-re-ingest-doc").addEventListener("click", () => {
+        switchTab("soande");
+        // Pre-fill thread URL based on subject/title if available
+        if (elInputThreadUrl && doc.filename) {
+          const matchCode = doc.filename.match(/^([A-Za-z0-9]+)/);
+          log(`Đã chọn đề: ${doc.filename}. Bạn có thể kiểm tra URL và bấm Cập nhật bình luận.`, "info");
+        }
+      });
+
+      elDocsContainer.appendChild(item);
+    });
+  } catch (e) {
+    elDocsContainer.innerHTML = `<div style="color: #fca5a5; font-size: 11px; padding: 8px;">Không thể tải danh sách tài liệu: ${e.message}</div>`;
+  }
+}
+
+if (elBtnRefreshDocs) {
+  elBtnRefreshDocs.addEventListener("click", loadDocuments);
+}
+
+// Load Settings for Tab "Cài đặt"
+async function loadSettings() {
+  if (!elProvidersContainer) return;
+  elProvidersContainer.innerHTML = '<div style="color: var(--muted); font-size: 11px;">Đang tải cấu hình...</div>';
+  try {
+    const res = await apiFetch("/api/settings");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    state.settingsData = data;
+
+    // Multi choice format radio
+    const multiFmt = data.export?.multi_choice_format || "comma";
+    if (multiFmt === "joined") {
+      if (elOptMultiJoined) elOptMultiJoined.checked = true;
+    } else {
+      if (elOptMultiComma) elOptMultiComma.checked = true;
+    }
+
+    // Providers
+    const providers = data.ai?.providers || [];
+    elProvidersContainer.innerHTML = "";
+
+    providers.forEach((p, idx) => {
+      const pRow = document.createElement("div");
+      pRow.className = "provider-row";
+
+      const isInvalid = p.key_invalid || p.status === "key_invalid";
+      const masked = p.masked_key || (p.has_api_key ? "•••• Đã lưu" : "Chưa có khoá");
+      const isEnabled = p.enabled ?? true;
+
+      pRow.innerHTML = `
+        <div class="provider-header">
+          <span style="font-weight: 600; font-size: 12px; text-transform: uppercase;">${p.name}</span>
+          <div style="display: flex; gap: 4px; align-items: center;">
+            ${isInvalid ? '<span class="badge-invalid">Khoá không hợp lệ</span>' : ''}
+            <label style="display: inline-flex; align-items: center; gap: 3px; font-size: 11px; cursor: pointer;">
+              <input type="checkbox" class="check-provider-toggle" ${isEnabled ? "checked" : ""} />
+              <span>${isEnabled ? "Bật" : "Tắt"}</span>
+            </label>
+          </div>
+        </div>
+        <div style="font-size: 11px; color: var(--muted);">${p.model} · ${masked}</div>
+        <div style="display: flex; gap: 4px; margin-top: 2px;">
+          <input type="password" class="thread-url-input input-api-key" placeholder="Nhập khoá mới để lưu" style="font-size: 11px; padding: 4px 6px;" />
+          <button class="btn-secondary btn-save-key" style="flex: 0; padding: 4px 8px; font-size: 11px;">Lưu</button>
+        </div>
+      `;
+
+      // Toggle provider enabled
+      pRow.querySelector(".check-provider-toggle").addEventListener("change", async (e) => {
+        const checked = e.target.checked;
+        try {
+          const payload = { ...state.settingsData };
+          payload.ai.providers[idx].enabled = checked;
+          await apiFetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          log(`Đã ${checked ? "bật" : "tắt"} provider ${p.name}`, "info");
+        } catch (err) {
+          log(`Lỗi cập nhật provider: ${err.message}`, "error");
+        }
+      });
+
+      // Save new API key (Write-only)
+      pRow.querySelector(".btn-save-key").addEventListener("click", async () => {
+        const keyInput = pRow.querySelector(".input-api-key");
+        const newKey = keyInput.value.trim();
+        if (!newKey) return;
+        try {
+          const payload = { ...state.settingsData };
+          payload.ai.providers[idx].api_key = newKey;
+          await apiFetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          keyInput.value = "";
+          log(`Đã cập nhật khoá mới cho ${p.name}`, "success");
+          loadSettings();
+        } catch (err) {
+          log(`Lỗi lưu khoá: ${err.message}`, "error");
+        }
+      });
+
+      elProvidersContainer.appendChild(pRow);
+    });
+
+  } catch (e) {
+    elProvidersContainer.innerHTML = `<div style="color: #fca5a5; font-size: 11px;">Lỗi tải cài đặt: ${e.message}</div>`;
+  }
+}
+
+// Multi-choice format change listener
+[elOptMultiComma, elOptMultiJoined].forEach(radio => {
+  if (radio) {
+    radio.addEventListener("change", async () => {
+      const val = elOptMultiJoined && elOptMultiJoined.checked ? "joined" : "comma";
+      if (!state.settingsData) return;
+      try {
+        const payload = { ...state.settingsData };
+        if (!payload.export) payload.export = {};
+        payload.export.multi_choice_format = val;
+        await apiFetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        log(`Đã đổi định dạng đa đáp án sang: ${val === "joined" ? "ABC" : "A, B, C"}`, "info");
+      } catch (err) {
+        log(`Lỗi lưu định dạng: ${err.message}`, "error");
+      }
+    });
+  }
+});
+
+if (elBtnOpenFolderSettings) {
+  elBtnOpenFolderSettings.addEventListener("click", async () => {
+    try {
+      await apiFetch("/api/exports/open-folder", { method: "POST" });
+    } catch (e) {
+      log(`Lỗi mở thư mục: ${e.message}`, "warn");
+    }
+  });
+}
+
+if (elBtnCleanData) {
+  elBtnCleanData.addEventListener("click", async () => {
+    if (!confirm("Dọn dẹp ảnh tạm của các đề thi đã hoàn tất?")) return;
+    try {
+      const res = await apiFetch("/api/settings/clean-data", { method: "POST" });
+      const data = await res.json();
+      log(`Đã dọn dẹp dữ liệu tạm (${data.message || "hoàn tất"}).`, "info");
+    } catch (e) {
+      log(`Lỗi dọn dữ liệu: ${e.message}`, "warn");
+    }
+  });
 }
 
 // IndexedDB Helper
@@ -161,10 +422,7 @@ async function sleep(ms) {
 // 1. Check Backend Connectivity
 async function checkBackend() {
   try {
-    const res = await fetch(`${BACKEND_URL}/api/health`, {
-      method: "GET",
-      headers: { "X-DocxStacked-Ext": EXTENSION_ID },
-    });
+    const res = await apiFetch("/api/health", { method: "GET" });
     if (res.ok) {
       elBackendStatus.className = "status-chip chip-online";
       elBackendStatus.innerText = "Backend Online";
@@ -202,12 +460,9 @@ async function checkFuOverflowAuth() {
 
       // Notify backend immediately
       try {
-        await fetch(`${BACKEND_URL}/api/auth/extension-heartbeat`, {
+        await apiFetch("/api/auth/extension-heartbeat", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-DocxStacked-Ext": EXTENSION_ID,
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ logged_in: true, username: username }),
         });
       } catch (e) {}
@@ -215,12 +470,9 @@ async function checkFuOverflowAuth() {
       return true;
     } else {
       try {
-        await fetch(`${BACKEND_URL}/api/auth/extension-heartbeat`, {
+        await apiFetch("/api/auth/extension-heartbeat", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-DocxStacked-Ext": EXTENSION_ID,
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ logged_in: false, username: null }),
         });
       } catch (e) {}
@@ -239,10 +491,7 @@ async function checkExamAlreadyCompiled(url) {
     return;
   }
   try {
-    const res = await fetch(`${BACKEND_URL}/api/ingest/check-exam?url=${encodeURIComponent(url)}`, {
-      method: "GET",
-      headers: { "X-DocxStacked-Ext": EXTENSION_ID },
-    });
+    const res = await apiFetch(`/api/ingest/check-exam?url=${encodeURIComponent(url)}`, { method: "GET" });
     if (res.ok) {
       const data = await res.json();
       if (data.exists) {
@@ -371,15 +620,8 @@ async function startIngestion(options = {}) {
   }
 
   // 1. Verify Backend Connectivity before starting
-  const userToken = (elInputIngestToken && elInputIngestToken.value.trim()) || "";
   try {
-    const pingHeaders = { "X-DocxStacked-Ext": EXTENSION_ID };
-    if (userToken) pingHeaders["X-Ingest-Token"] = userToken;
-
-    const pingRes = await fetch(`${BACKEND_URL}/api/ingest/ping`, {
-      method: "GET",
-      headers: pingHeaders,
-    });
+    const pingRes = await apiFetch("/api/ingest/ping", { method: "GET" });
     if (!pingRes.ok) {
       showNotice("Lỗi xác thực với backend (401/403). Kiểm tra Token hoặc Extension ID!");
       return;
@@ -532,7 +774,7 @@ async function startIngestion(options = {}) {
       comments_count: state.collectedComments,
     };
     await saveExamToIndexedDB(examBuffer);
-    await sendPayloadToBackend(examBuffer, userToken);
+    await sendPayloadToBackend(examBuffer);
 
   } catch (err) {
     if (err.message === "USER_STOPPED") {
@@ -553,7 +795,7 @@ async function startIngestion(options = {}) {
   }
 }
 
-async function sendPayloadToBackend(examBuffer, userToken) {
+async function sendPayloadToBackend(examBuffer) {
   if (state.isStopped) throw new Error("USER_STOPPED");
   log("Đang gửi dữ liệu sang Backend xuất file Word...", "info");
   updateProgress(88, "Backend đang xuất file Word...");
@@ -565,22 +807,14 @@ async function sendPayloadToBackend(examBuffer, userToken) {
     questions: examBuffer.questions,
     options: {
       answer_format: "letter_keyword",
-      multi_choice_format: "comma",
+      multi_choice_format: elOptMultiJoined && elOptMultiJoined.checked ? "joined" : "comma",
       ai_enabled: true,
     },
   };
 
-  const headers = {
-    "Content-Type": "application/json",
-    "X-DocxStacked-Ext": EXTENSION_ID,
-  };
-  if (userToken) {
-    headers["X-Ingest-Token"] = userToken;
-  }
-
-  const ingestRes = await fetch(`${BACKEND_URL}/api/ingest`, {
+  const ingestRes = await apiFetch("/api/ingest", {
     method: "POST",
-    headers: headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
@@ -627,10 +861,7 @@ if (elBtnReopenUpdate) {
 if (elBtnOpenFolder) {
   elBtnOpenFolder.addEventListener("click", async () => {
     try {
-      await fetch(`${BACKEND_URL}/api/exports/open-folder`, {
-        method: "POST",
-        headers: { "X-DocxStacked-Ext": EXTENSION_ID },
-      });
+      await apiFetch("/api/exports/open-folder", { method: "POST" });
       log("Đã mở thư mục chứa file Word.", "info");
     } catch (e) {
       log(`Không thể mở thư mục: ${e.message}`, "warn");
@@ -642,7 +873,6 @@ if (elBtnOpenFolder) {
 if (elBtnRetryIngest) {
   elBtnRetryIngest.addEventListener("click", async () => {
     const url = elInputThreadUrl.value.trim();
-    const userToken = (elInputIngestToken && elInputIngestToken.value.trim()) || "";
     const bufferedExam = await getExamFromIndexedDB(url);
     if (!bufferedExam) {
       showNotice("Không tìm thấy dữ liệu đệm trong máy!");
@@ -651,7 +881,7 @@ if (elBtnRetryIngest) {
     }
     try {
       log(`[IndexedDB] Đang gửi lại ${bufferedExam.questions.length} câu từ bộ đệm...`, "info");
-      await sendPayloadToBackend(bufferedExam, userToken);
+      await sendPayloadToBackend(bufferedExam);
     } catch (err) {
       log(`[Gửi lại thất bại] ${err.message}`, "error");
     }

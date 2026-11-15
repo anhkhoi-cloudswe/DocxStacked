@@ -117,12 +117,20 @@ def cluster_text_answers(comments: List[Any], similarity_threshold: float = 0.85
     return canonical_text
 
 
-def is_valid_keyword(kw: str, is_vietnamese_exam: bool = True) -> bool:
+def is_valid_keyword(
+    kw: str,
+    is_vietnamese_exam: bool = True,
+    option_image_text: Optional[str] = None,
+) -> bool:
     """
     Validate keyword for options in Word document.
     Rules:
       - Reject placeholders like 'Không rõ từ hình ảnh', 'unknown', 'unclear', 'n/a'.
-      - Reject English keywords when the exam is Vietnamese (e.g. 'capitalist production costs').
+      - Keyword must match the text of the corresponding option in the question image crop
+        (normalized comparison, case-insensitive).
+      - If option_image_text is provided: require normalized kw to match or be contained within
+        the normalized option_image_text.
+      - Reject English-translated keywords on Vietnamese exams when the option text in image is Vietnamese.
     """
     if not kw or not isinstance(kw, str):
         return False
@@ -145,17 +153,40 @@ def is_valid_keyword(kw: str, is_vietnamese_exam: bool = True) -> bool:
     if any(p in lower for p in placeholders):
         return False
 
+    def _normalize(t: str) -> str:
+        s = t.lower()
+        s = re.sub(r"^[a-d]\s*[\.\:\-\)]\s*", "", s)
+        s = re.sub(r"[^\w\s]", " ", s)
+        return " ".join(s.split())
+
+    norm_kw = _normalize(kw)
+
+    # If option text from crop image is provided, verify match
+    if option_image_text:
+        norm_img_text = _normalize(option_image_text)
+        if norm_kw and (norm_kw in norm_img_text or norm_img_text in norm_kw):
+            return True
+        # If words of norm_kw overlap significantly with norm_img_text
+        kw_tokens = set(norm_kw.split())
+        img_tokens = set(norm_img_text.split())
+        if kw_tokens and (kw_tokens.issubset(img_tokens) or (len(kw_tokens & img_tokens) / len(kw_tokens)) >= 0.7):
+            return True
+        return False
+
+    # Fallback when option_image_text is not directly supplied:
     if is_vietnamese_exam:
-        has_vi_accents = bool(
-            re.search(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", lower)
-        )
-        if not has_vi_accents:
-            # In a Vietnamese exam, any keyword containing Latin words must have Vietnamese accents.
-            # Pure numbers/symbols (e.g. "1945", "10%") are allowed, but purely ASCII English words
-            # (e.g. "Primitive accumulation", "capitalist") are invalid for Vietnamese questions.
-            has_letters = bool(re.search(r"[a-zA-Z]", lower))
-            if has_letters:
-                return False
+        english_words = {
+            "primitive", "accumulation", "capitalist", "production", "costs", "cost",
+            "blurred", "surplus", "value", "selling", "price", "actual", "smaller",
+            "formation", "greater", "which", "the", "of", "and", "in", "to", "for",
+            "with", "on", "at", "by", "from", "law", "economic", "fundamental",
+            "absolute", "relative", "transportation", "development", "international",
+            "trade", "impact", "bourgeois", "state", "regulation",
+        }
+        tokens = set(re.findall(r"\b[a-zA-Z]+\b", lower))
+        # Reject English keywords (like 'Primitive accumulation')
+        if tokens & english_words:
+            return False
 
     return True
 

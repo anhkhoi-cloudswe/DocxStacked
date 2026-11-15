@@ -29,6 +29,7 @@
       background-color: var(--bg);
       color: var(--text);
       padding: 12px;
+      padding-bottom: 54px; /* Space for bottom tab bar */
       font-size: 13px;
       line-height: 1.4;
       min-height: 100vh;
@@ -233,17 +234,7 @@
       height: 100%;
       width: 0%;
       background: var(--primary);
-      transition: width 0.2s ease;
-    }
-
-    .progress-subtitle {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      font-size: 11px;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
+      transition: width 0.15s ease;
     }
 
     /* Compact Stats Line */
@@ -370,11 +361,163 @@
       color: #fca5a5;
       border: 1px solid rgba(239, 68, 68, 0.3);
     }
+
+    /* Tab Panels */
+    .tab-panel {
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .tab-panel.active {
+      display: flex;
+    }
+
+    /* Tab: Đã soạn (Documents List) */
+    .doc-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+    }
+
+    .doc-item-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .doc-item-meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .doc-item-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    /* Tab: Cài đặt (Settings) */
+    .setting-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+    }
+
+    .setting-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .setting-sub {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .provider-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+    }
+
+    .provider-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
+    .badge-invalid {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    /* 7. Bottom Navigation Bar */
+    .tab-bar-container {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      z-index: 100;
+    }
+
+    .tab-bar {
+      display: flex;
+      align-items: stretch;
+      height: 38px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+    }
+
+    .tab-btn.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+      background: rgba(99, 102, 241, 0.08);
+    }
+
+    .dashboard-link {
+      padding: 2px 8px;
+      font-size: 10px;
+      text-align: center;
+      color: var(--muted);
+      text-decoration: none;
+      background: #0b1120;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dashboard-link:hover {
+      color: var(--primary);
+    }
   </style>
 </head>
 <body>
 
-  <!-- 1. Header: Short Title & Status Chip -->
+  <!-- Top Header: Short Title & Status Chip -->
   <div class="header">
     <span class="brand-title">DocxStacked</span>
     <span id="backend-status" class="status-chip chip-offline">Backend Offline</span>
@@ -383,105 +526,172 @@
   <!-- Notification Banner -->
   <div id="ui-notice-box" class="notice-box"></div>
 
-  <!-- 2. Exam Card: Truncated Title & Read from Tab Icon Button -->
-  <div class="card">
-    <div class="exam-header">
-      <span id="thread-title-display" class="exam-title-text" title="Chưa chọn đề thi nào">
-        Chưa chọn đề thi nào
-      </span>
-      <button id="btn-sync-tab" class="btn-icon" title="Đọc từ tab hiện tại">
-        Đọc từ tab
-      </button>
-    </div>
-    <input type="text" id="input-thread-url" class="thread-url-input" placeholder="https://fuoverflow.com/threads/..." />
-
-    <!-- Reopen Card for already compiled exam -->
-    <div id="reopen-card" class="reopen-banner">
-      <div id="reopen-text" class="reopen-title">Đã soạn lúc --:-- (0 câu)</div>
-      <div class="reopen-actions">
-        <a id="btn-reopen-download" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
-          Tải file
-        </a>
-        <button id="btn-reopen-update" class="btn-secondary" style="flex: 1;">
-          Cập nhật bình luận
+  <!-- TAB 1: SOẠN ĐỀ (Active by default) -->
+  <div id="tab-panel-soande" class="tab-panel active">
+    <!-- Exam Card: Truncated Title & Read from Tab Icon Button -->
+    <div class="card">
+      <div class="exam-header">
+        <span id="thread-title-display" class="exam-title-text" title="Chưa chọn đề thi nào">
+          Chưa chọn đề thi nào
+        </span>
+        <button id="btn-sync-tab" class="btn-icon" title="Đọc từ tab hiện tại">
+          Đọc từ tab
         </button>
       </div>
-      <label class="reopen-checkbox-label">
-        <input type="checkbox" id="check-redownload-images" />
-        <span>Tải lại cả ảnh</span>
-      </label>
+      <input type="text" id="input-thread-url" class="thread-url-input" placeholder="https://fuoverflow.com/threads/..." />
+
+      <!-- Reopen Card for already compiled exam -->
+      <div id="reopen-card" class="reopen-banner">
+        <div id="reopen-text" class="reopen-title">Đã soạn lúc --:-- (0 câu)</div>
+        <div class="reopen-actions">
+          <a id="btn-reopen-download" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
+            Tải file
+          </a>
+          <button id="btn-reopen-update" class="btn-secondary" style="flex: 1;">
+            Cập nhật bình luận
+          </button>
+        </div>
+        <label class="reopen-checkbox-label">
+          <input type="checkbox" id="check-redownload-images" />
+          <span>Tải lại cả ảnh</span>
+        </label>
+      </div>
     </div>
-  </div>
 
-  <!-- 3. Action Controls: Single Primary Button & Progress Bar -->
-  <div class="card">
-    <button id="btn-main-action" class="btn-main btn-start">
-      Bắt đầu soạn
-    </button>
+    <!-- Action Controls: Single Primary Button & Progress Bar -->
+    <div class="card">
+      <button id="btn-main-action" class="btn-main btn-start">
+        Bắt đầu soạn
+      </button>
 
-    <!-- Progress & Compact Subtitle -->
-    <div style="display: flex; flex-direction: column; gap: 4px;">
+      <!-- Progress Bar -->
       <div class="progress-bar-bg">
         <div id="progress-bar" class="progress-bar-fill"></div>
       </div>
-      <div class="progress-subtitle">
-        <span id="progress-status">Sẵn sàng</span>
-        <span id="progress-percent">0%</span>
+
+      <!-- Single Progress Line (No duplication) -->
+      <div id="stats-summary-line" class="stats-line">
+        0/0 câu · 0 bình luận
+      </div>
+
+      <!-- Offline recovery / retry row -->
+      <div id="offline-recovery-row" style="display: none; gap: 6px;">
+        <button id="btn-retry-ingest" class="btn-secondary" style="flex: 2; font-size: 11px;">
+          Gửi lại dữ liệu
+        </button>
+        <button id="btn-clear-idb" class="btn-secondary" style="flex: 1; font-size: 11px; color: #fca5a5;">
+          Xoá
+        </button>
       </div>
     </div>
 
-    <!-- Compact Stats Line -->
-    <div id="stats-summary-line" class="stats-line">
-      0/0 câu · 0 bình luận
+    <!-- Result Card -->
+    <div id="result-card" class="result-card">
+      <div id="result-filename" class="result-title">
+        Xuất file Word thành công!
+      </div>
+      <div class="result-btn-row">
+        <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank">
+          Tải Word
+        </a>
+        <button id="btn-open-folder" class="btn-secondary">
+          Mở thư mục
+        </button>
+      </div>
     </div>
 
-    <!-- Offline recovery / retry row -->
-    <div id="offline-recovery-row" style="display: none; gap: 6px;">
-      <button id="btn-retry-ingest" class="btn-secondary" style="flex: 2; font-size: 11px;">
-        Gửi lại dữ liệu
-      </button>
-      <button id="btn-clear-idb" class="btn-secondary" style="flex: 1; font-size: 11px; color: #fca5a5;">
-        Xoá
-      </button>
+    <!-- Collapsible Log ("Chi tiết") -->
+    <details id="details-logs">
+      <summary>
+        <span>Chi tiết</span>
+        <button id="btn-copy-log" class="btn-icon" style="padding: 1px 4px; font-size: 10px;">Sao chép nhật ký</button>
+      </summary>
+      <div id="log-box" class="log-box">
+        <div class="log-line log-info">[Khởi động] Sẵn sàng.</div>
+      </div>
+    </details>
+
+    <!-- Collapsible Advanced ("Nâng cao") -->
+    <details id="details-advanced">
+      <summary>
+        <span>Nâng cao</span>
+      </summary>
+      <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px;">
+        <label style="font-size: 11px; color: var(--muted);">Token thủ công (tuỳ chọn)</label>
+        <input type="password" id="input-ingest-token" class="thread-url-input" placeholder="(Mặc định để trống)" />
+      </div>
+    </details>
+  </div>
+
+  <!-- TAB 2: ĐÃ SOẠN (Documents List) -->
+  <div id="tab-panel-dasoan" class="tab-panel">
+    <div class="card" style="padding: 8px 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 12px; font-weight: 600;">Danh sách đề đã cào</span>
+        <button id="btn-refresh-docs" class="btn-icon">Làm mới</button>
+      </div>
+    </div>
+    <div id="docs-list-container" style="display: flex; flex-direction: column; gap: 6px;">
+      <div style="text-align: center; color: var(--muted); font-size: 12px; padding: 16px;">
+        Đang tải danh sách tài liệu...
+      </div>
     </div>
   </div>
 
-  <!-- 4. Result Card -->
-  <div id="result-card" class="result-card">
-    <div id="result-filename" class="result-title">
-      Xuất file Word thành công!
+  <!-- TAB 3: CÀI ĐẶT (Settings) -->
+  <div id="tab-panel-caidat" class="tab-panel">
+    <!-- Format Setting -->
+    <div class="setting-group">
+      <label class="setting-label">Định dạng đa đáp án</label>
+      <div style="display: flex; gap: 12px; font-size: 12px; margin-top: 2px;">
+        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="radio" name="multi_format" id="opt-multi-comma" value="comma" checked />
+          <span>A, B, C</span>
+        </label>
+        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="radio" name="multi_format" id="opt-multi-joined" value="joined" />
+          <span>ABC</span>
+        </label>
+      </div>
     </div>
-    <div class="result-btn-row">
-      <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank">
-        Tải Word
-      </a>
-      <button id="btn-open-folder" class="btn-secondary">
-        Mở thư mục
-      </button>
+
+    <!-- Providers List -->
+    <div class="setting-group">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <label class="setting-label">Khoá Vision AI</label>
+        <span class="setting-sub">Ghi 1 chiều</span>
+      </div>
+      <div id="providers-list-container" style="display: flex; flex-direction: column; gap: 6px; margin-top: 4px;">
+        <div style="color: var(--muted); font-size: 11px;">Đang tải cấu hình nhà cung cấp...</div>
+      </div>
+    </div>
+
+    <!-- Storage & Cleanup -->
+    <div class="setting-group">
+      <label class="setting-label">Thư mục lưu & Bộ nhớ</label>
+      <div class="setting-sub" style="font-family: monospace;">data/output/</div>
+      <div style="display: flex; gap: 6px; margin-top: 4px;">
+        <button id="btn-open-folder-settings" class="btn-secondary" style="font-size: 11px;">
+          Mở thư mục
+        </button>
+        <button id="btn-clean-data" class="btn-secondary" style="font-size: 11px; color: #fca5a5;">
+          Dọn dữ liệu
+        </button>
+      </div>
     </div>
   </div>
 
-  <!-- 5. Collapsible Log ("Chi tiết") -->
-  <details id="details-logs">
-    <summary>
-      <span>Chi tiết</span>
-      <button id="btn-copy-log" class="btn-icon" style="padding: 1px 4px; font-size: 10px;">Sao chép nhật ký</button>
-    </summary>
-    <div id="log-box" class="log-box">
-      <div class="log-line log-info">[Khởi động] Sẵn sàng.</div>
+  <!-- 7. Bottom Navigation Bar -->
+  <div class="tab-bar-container">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="soande">Soạn đề</button>
+      <button class="tab-btn" data-tab="dasoan">Đã soạn</button>
+      <button class="tab-btn" data-tab="caidat">Cài đặt</button>
     </div>
-  </details>
-
-  <!-- 6. Collapsible Advanced ("Nâng cao") -->
-  <details id="details-advanced">
-    <summary>
-      <span>Nâng cao</span>
-    </summary>
-    <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px;">
-      <label style="font-size: 11px; color: var(--muted);">Token thủ công (tuỳ chọn)</label>
-      <input type="password" id="input-ingest-token" class="thread-url-input" placeholder="(Mặc định để trống)" />
-    </div>
-  </details>
+    <a id="link-open-dashboard" class="dashboard-link" href="http://127.0.0.1:8000" target="_blank">
+      Mở bảng điều khiển đầy đủ (Dashboard)
+    </a>
+  </div>
 
   <script src="sidepanel.js"></script>
 </body>

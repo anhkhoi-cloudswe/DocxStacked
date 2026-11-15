@@ -164,7 +164,13 @@ def test_keyword_validation():
     assert not is_valid_keyword("capitalist costs smaller than selling price", is_vietnamese_exam=True)
     assert not is_valid_keyword("formation of surplus value and costs", is_vietnamese_exam=True)
     assert not is_valid_keyword("Primitive accumulation", is_vietnamese_exam=True)
+    assert not is_valid_keyword("Primitive accumulation", is_vietnamese_exam=True, option_image_text="A. Tích luỹ nguyên thuỷ của tư bản")
+
+    # Match with option text in image
+    assert is_valid_keyword("Tích luỹ nguyên thuỷ", is_vietnamese_exam=True, option_image_text="A. Tích luỹ nguyên thuỷ của chủ nghĩa tư bản")
     assert is_valid_keyword("Tích luỹ nguyên thuỷ", is_vietnamese_exam=True)
+    assert is_valid_keyword("CNXH", is_vietnamese_exam=True, option_image_text="A. Quá độ lên CNXH bỏ qua TBCN")
+    assert is_valid_keyword("GDP", is_vietnamese_exam=True, option_image_text="B. Tăng trưởng chỉ số GDP hàng năm")
 
     # Valid Vietnamese keywords accepted
     assert is_valid_keyword("Đại hội đảng XII", is_vietnamese_exam=True)
