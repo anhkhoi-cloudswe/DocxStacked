@@ -3,21 +3,19 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DocxStacked Side Panel</title>
+  <title>DocxStacked</title>
   <style>
     :root {
-      --bg-primary: #0f172a;
-      --bg-surface: #1e293b;
-      --bg-card: #334155;
-      --border-color: #475569;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-      --accent-primary: #6366f1;
-      --accent-hover: #4f46e5;
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
       --success: #10b981;
-      --warning: #f59e0b;
       --danger: #ef4444;
-      --radius: 8px;
+      --radius: 6px;
     }
 
     * {
@@ -28,218 +26,332 @@
     }
 
     body {
-      background-color: var(--bg-primary);
-      color: var(--text-main);
-      padding: 16px;
+      background-color: var(--bg);
+      color: var(--text);
+      padding: 12px;
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1.4;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 8px;
     }
 
+    /* 1. Top Header */
     .header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid var(--border-color);
-      padding-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
     }
 
-    .header-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 15px;
+    .brand-title {
+      font-size: 14px;
       font-weight: 700;
-      color: #fff;
+      color: var(--text);
+      letter-spacing: -0.01em;
+      white-space: nowrap;
     }
 
-    .header-title svg {
-      color: var(--accent-primary);
-    }
-
-    .badge-status {
+    .status-chip {
       display: inline-flex;
       align-items: center;
-      gap: 5px;
-      padding: 3px 8px;
+      gap: 4px;
+      padding: 2px 8px;
       border-radius: 9999px;
       font-size: 11px;
       font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    .badge-online {
-      background: rgba(16, 185, 129, 0.15);
+    .chip-online {
+      background: rgba(16, 185, 129, 0.12);
       color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      border: 1px solid rgba(16, 185, 129, 0.25);
     }
 
-    .badge-offline {
-      background: rgba(239, 68, 68, 0.15);
+    .chip-offline {
+      background: rgba(239, 68, 68, 0.12);
       color: #f87171;
-      border: 1px solid rgba(239, 68, 68, 0.3);
+      border: 1px solid rgba(239, 68, 68, 0.25);
     }
 
+    /* Cards */
     .card {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-color);
+      background: var(--surface);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 12px;
+      padding: 8px 12px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 6px;
     }
 
-    .card-title {
-      font-size: 12px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
+    /* 2. Exam Card */
+    .exam-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 8px;
     }
 
-    .auth-banner {
-      display: flex;
+    .exam-title-text {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .btn-icon {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 11px;
+      cursor: pointer;
+      display: inline-flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 8px 10px;
-      border-radius: 6px;
-      background: rgba(51, 65, 85, 0.6);
-      font-size: 12px;
+      gap: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
-    .thread-box input {
+    .btn-icon:hover {
+      background: #334155;
+      color: #fff;
+    }
+
+    .thread-url-input {
       width: 100%;
-      padding: 8px 10px;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
       color: #fff;
       font-size: 12px;
       outline: none;
     }
 
-    .thread-box input:focus {
-      border-color: var(--accent-primary);
+    .thread-url-input:focus {
+      border-color: var(--primary);
     }
 
-    .btn-row {
+    /* Reopen Exam Banner */
+    .reopen-banner {
+      display: none;
+      background: rgba(99, 102, 241, 0.1);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      border-radius: 4px;
+      padding: 8px;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+    }
+
+    .reopen-title {
+      font-weight: 600;
+      color: #a5b4fc;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .reopen-actions {
       display: flex;
-      gap: 8px;
+      gap: 6px;
+      align-items: center;
     }
 
-    .btn {
-      flex: 1;
+    .reopen-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--muted);
+      cursor: pointer;
+      margin-top: 2px;
+    }
+
+    /* 3. Primary Button */
+    .btn-main {
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      padding: 8px 12px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      border: none;
-      cursor: pointer;
-      transition: all 0.15s ease;
+      transition: background 0.15s ease;
+      white-space: nowrap;
     }
 
-    .btn-primary {
-      background: var(--accent-primary);
+    .btn-start {
+      background: var(--primary);
       color: #fff;
     }
 
-    .btn-primary:hover:not(:disabled) {
-      background: var(--accent-hover);
+    .btn-start:hover:not(:disabled) {
+      background: var(--primary-hover);
     }
 
-    .btn-secondary {
-      background: var(--bg-card);
-      color: var(--text-main);
-      border: 1px solid var(--border-color);
-    }
-
-    .btn-secondary:hover:not(:disabled) {
-      background: #475569;
-    }
-
-    .btn-danger {
+    .btn-stop {
       background: var(--danger);
       color: #fff;
     }
 
-    .btn-danger:hover:not(:disabled) {
+    .btn-stop:hover:not(:disabled) {
       background: #dc2626;
     }
 
-    .btn:disabled {
+    .btn-main:disabled {
       opacity: 0.5;
       cursor: not-allowed;
     }
 
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      text-align: center;
-    }
-
-    .stat-box {
-      background: var(--bg-primary);
-      padding: 8px;
-      border-radius: 6px;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-    }
-
-    .stat-val {
-      font-size: 16px;
-      font-weight: 700;
-      color: #fff;
-    }
-
-    .stat-lbl {
-      font-size: 10px;
-      color: var(--text-muted);
-      margin-top: 2px;
-    }
-
+    /* 4. Progress Bar & Compact Subtitle */
     .progress-bar-bg {
       width: 100%;
-      height: 8px;
-      background: var(--bg-primary);
-      border-radius: 4px;
+      height: 6px;
+      background: var(--bg);
+      border-radius: 3px;
       overflow: hidden;
-      margin-top: 4px;
     }
 
     .progress-bar-fill {
       height: 100%;
       width: 0%;
-      background: linear-gradient(90deg, #6366f1, #10b981);
+      background: var(--primary);
       transition: width 0.2s ease;
     }
 
+    .progress-subtitle {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    /* Compact Stats Line */
+    .stats-line {
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 5. Result Card */
+    .result-card {
+      display: none;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .result-title {
+      color: #34d399;
+      font-weight: 600;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .result-btn-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-secondary {
+      flex: 1;
+      padding: 6px 10px;
+      background: #334155;
+      color: #fff;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn-secondary:hover {
+      background: #475569;
+    }
+
+    .btn-download {
+      background: var(--success);
+      border-color: var(--success);
+      color: #fff;
+    }
+
+    .btn-download:hover {
+      background: #059669;
+    }
+
+    /* 6. Accordion Details (Log & Advanced) */
+    details {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      outline: none;
+      user-select: none;
+    }
+
     .log-box {
+      margin-top: 6px;
       background: #020617;
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 8px;
-      height: 130px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      height: 120px;
       overflow-y: auto;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 11px;
+      font-size: 12px;
       color: #cbd5e1;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 2px;
     }
 
     .log-line {
-      word-break: break-all;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      font-variant-numeric: tabular-nums;
     }
 
     .log-info { color: #93c5fd; }
@@ -247,161 +359,129 @@
     .log-warn { color: #fde047; }
     .log-error { color: #fca5a5; }
 
-    .result-card {
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.4);
-      padding: 12px;
-      border-radius: var(--radius);
+    /* Notice Banner */
+    .notice-box {
       display: none;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .result-title {
-      color: #34d399;
-      font-weight: 700;
-      font-size: 13px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
+      padding: 6px 10px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      line-height: 1.4;
+      background: rgba(239, 68, 68, 0.15);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.3);
     }
   </style>
 </head>
 <body>
 
-  <!-- Header -->
+  <!-- 1. Header: Short Title & Status Chip -->
   <div class="header">
-    <div class="header-title">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-      </svg>
-      <span>DocxStacked MV3</span>
-    </div>
-    <div id="backend-status" class="badge-status badge-offline">
-      ● Backend Offline
-    </div>
+    <span class="brand-title">DocxStacked</span>
+    <span id="backend-status" class="status-chip chip-offline">Backend Offline</span>
   </div>
 
   <!-- Notification Banner -->
-  <div id="ui-notice-box" style="display: none; padding: 10px 12px; border-radius: var(--radius); font-size: 12px; font-weight: 500; line-height: 1.4;"></div>
+  <div id="ui-notice-box" class="notice-box"></div>
 
-  <!-- Auth Status -->
+  <!-- 2. Exam Card: Truncated Title & Read from Tab Icon Button -->
   <div class="card">
-    <div class="card-title">
-      <span>Trạng thái FuOverflow</span>
-      <button id="btn-refresh-auth" class="btn btn-secondary" style="flex:0; padding: 2px 6px; font-size: 10px;">Làm mới</button>
-    </div>
-    <div class="auth-banner" id="auth-banner">
-      <span id="auth-text">Đang kiểm tra đăng nhập...</span>
-      <span id="auth-badge" class="badge-status badge-offline">Chưa xác định</span>
-    </div>
-  </div>
-
-  <!-- Advanced Ingest Token Configuration (Optional) -->
-  <details class="card" style="font-size: 11px;">
-    <summary style="cursor: pointer; color: var(--text-muted); font-weight: 600;">
-      Tuỳ chọn nâng cao (Token thủ công)
-    </summary>
-    <div class="thread-box" style="margin-top: 8px;">
-      <input type="password" id="input-ingest-token" placeholder="(Mặc định không cần: Extension ID đã được xác thực an toàn)" />
-    </div>
-  </details>
-
-  <!-- Thread Selector -->
-  <div class="card">
-    <div class="card-title">
-      <span>Đề thi cần soạn</span>
-      <button id="btn-sync-tab" class="btn btn-secondary" style="flex:0; padding: 2px 6px; font-size: 10px;">Đọc từ Tab</button>
-    </div>
-    <div class="thread-box">
-      <input type="text" id="input-thread-url" placeholder="https://fuoverflow.com/threads/..." />
-    </div>
-    <div id="thread-title-display" style="font-size: 12px; color: var(--text-muted); font-weight: 500;">
-      Chưa chọn đề thi nào
-    </div>
-  </div>
-
-  <!-- Action Controls -->
-  <div class="card">
-    <div class="btn-row">
-      <button id="btn-start" class="btn btn-primary">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polygon points="5 3 19 12 5 21 5 3"></polygon>
-        </svg>
-        <span>Bắt đầu soạn đề</span>
-      </button>
-      <button id="btn-stop" class="btn btn-danger" disabled>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="6" y="6" width="12" height="12"></rect>
-        </svg>
-        <span>Dừng</span>
+    <div class="exam-header">
+      <span id="thread-title-display" class="exam-title-text" title="Chưa chọn đề thi nào">
+        Chưa chọn đề thi nào
+      </span>
+      <button id="btn-sync-tab" class="btn-icon" title="Đọc từ tab hiện tại">
+        Đọc từ tab
       </button>
     </div>
+    <input type="text" id="input-thread-url" class="thread-url-input" placeholder="https://fuoverflow.com/threads/..." />
 
-    <!-- Progress & Counters -->
-    <div>
-      <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted);">
-        <span id="progress-status">Sẵn sàng</span>
-        <span id="progress-percent">0%</span>
+    <!-- Reopen Card for already compiled exam -->
+    <div id="reopen-card" class="reopen-banner">
+      <div id="reopen-text" class="reopen-title">Đã soạn lúc --:-- (0 câu)</div>
+      <div class="reopen-actions">
+        <a id="btn-reopen-download" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
+          Tải file
+        </a>
+        <button id="btn-reopen-update" class="btn-secondary" style="flex: 1;">
+          Cập nhật bình luận
+        </button>
       </div>
+      <label class="reopen-checkbox-label">
+        <input type="checkbox" id="check-redownload-images" />
+        <span>Tải lại cả ảnh</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- 3. Action Controls: Single Primary Button & Progress Bar -->
+  <div class="card">
+    <button id="btn-main-action" class="btn-main btn-start">
+      Bắt đầu soạn
+    </button>
+
+    <!-- Progress & Compact Subtitle -->
+    <div style="display: flex; flex-direction: column; gap: 4px;">
       <div class="progress-bar-bg">
         <div id="progress-bar" class="progress-bar-fill"></div>
       </div>
+      <div class="progress-subtitle">
+        <span id="progress-status">Sẵn sàng</span>
+        <span id="progress-percent">0%</span>
+      </div>
     </div>
 
-    <div class="stats-grid">
-      <div class="stat-box">
-        <div id="stat-questions" class="stat-val">0</div>
-        <div class="stat-lbl">Số câu</div>
-      </div>
-      <div class="stat-box">
-        <div id="stat-comments" class="stat-val" style="color: #60a5fa;">0</div>
-        <div class="stat-lbl">Bình luận</div>
-      </div>
-      <div class="stat-box">
-        <div id="stat-pages" class="stat-val" style="color: #c084fc;">0</div>
-        <div class="stat-lbl">Trang media</div>
-      </div>
-      <div class="stat-box">
-        <div id="stat-403" class="stat-val" style="color: #34d399;">0</div>
-        <div class="stat-lbl">Lỗi 403</div>
-      </div>
+    <!-- Compact Stats Line -->
+    <div id="stats-summary-line" class="stats-line">
+      0/0 câu · 0 bình luận
     </div>
-    <div id="offline-recovery-row" style="display: none; margin-top: 10px; gap: 8px;">
-      <button id="btn-retry-ingest" class="btn btn-primary" style="flex: 2;">
-        <span>🔄 Gửi lại dữ liệu (không cần cào lại)</span>
+
+    <!-- Offline recovery / retry row -->
+    <div id="offline-recovery-row" style="display: none; gap: 6px;">
+      <button id="btn-retry-ingest" class="btn-secondary" style="flex: 2; font-size: 11px;">
+        Gửi lại dữ liệu
       </button>
-      <button id="btn-clear-idb" class="btn btn-secondary" style="flex: 1; color: #fca5a5;">
-        <span>Xoá dữ liệu</span>
+      <button id="btn-clear-idb" class="btn-secondary" style="flex: 1; font-size: 11px; color: #fca5a5;">
+        Xoá
       </button>
     </div>
   </div>
 
-  <!-- Real-time Log Box -->
-  <div class="card" style="flex: 1;">
-    <div class="card-title">
-      <span>Nhật ký tiến trình (Side Panel Loop)</span>
-      <span style="font-size: 10px; color: #64748b;">1 req / 2.0s</span>
-    </div>
-    <div id="log-box" class="log-box">
-      <div class="log-line log-info">[Khởi động] Side panel sẵn sàng.</div>
-    </div>
-  </div>
-
-  <!-- Result Banner -->
+  <!-- 4. Result Card -->
   <div id="result-card" class="result-card">
-    <div class="result-title">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-        <polyline points="22 4 12 14.01 9 11.01"></polyline>
-      </svg>
-      <span>Xuất file Word thành công!</span>
+    <div id="result-filename" class="result-title">
+      Xuất file Word thành công!
     </div>
-    <div id="result-filename" style="font-size: 12px; font-weight: 600; color: #fff;"></div>
-    <a id="result-download-btn" class="btn btn-primary" href="#" target="_blank" style="text-decoration: none;">
-      Tải file Word (.docx)
-    </a>
+    <div class="result-btn-row">
+      <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank">
+        Tải Word
+      </a>
+      <button id="btn-open-folder" class="btn-secondary">
+        Mở thư mục
+      </button>
+    </div>
   </div>
+
+  <!-- 5. Collapsible Log ("Chi tiết") -->
+  <details id="details-logs">
+    <summary>
+      <span>Chi tiết</span>
+      <button id="btn-copy-log" class="btn-icon" style="padding: 1px 4px; font-size: 10px;">Sao chép nhật ký</button>
+    </summary>
+    <div id="log-box" class="log-box">
+      <div class="log-line log-info">[Khởi động] Sẵn sàng.</div>
+    </div>
+  </details>
+
+  <!-- 6. Collapsible Advanced ("Nâng cao") -->
+  <details id="details-advanced">
+    <summary>
+      <span>Nâng cao</span>
+    </summary>
+    <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px;">
+      <label style="font-size: 11px; color: var(--muted);">Token thủ công (tuỳ chọn)</label>
+      <input type="password" id="input-ingest-token" class="thread-url-input" placeholder="(Mặc định để trống)" />
+    </div>
+  </details>
 
   <script src="sidepanel.js"></script>
 </body>

@@ -431,6 +431,8 @@ async def test_provider_connection_endpoint(
             "message": f"Kết nối thành công! Model hỗ trợ đọc ảnh (vision) tốt (độ trễ {elapsed_ms}ms).",
         }
     except ProviderAuthError:
+        from backend.app.modules.settings.service import record_invalid_key_provider
+        record_invalid_key_provider(provider.name)
         return {
             "success": False,
             "provider": provider.name,

@@ -21,25 +21,80 @@ export const App: React.FC = () => {
   const [loginTrigger, setLoginTrigger] = useState<number>(0);
 
   // Authentication gate state
-  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [authDetail, setAuthDetail] = useState<string>('Đang kiểm tra trạng thái đăng nhập...');
+  type AuthGateState = 'checking' | 'backend_offline' | 'extension_missing' | 'not_logged_in' | 'logged_in';
+  const [gateState, setGateState] = useState<AuthGateState>('checking');
 
   const checkAuthStatus = useCallback(async () => {
+    // 1. Check if backend is reachable
+    let authRes: Response | null = null;
+    let authData: any = null;
     try {
-      const res = await fetch('/api/auth/status');
-      if (res.ok) {
-        const data = await res.json();
-        setIsAuthenticated(Boolean(data.logged_in));
-        setAuthDetail(data.detail || '');
-      } else {
-        setIsAuthenticated(false);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      authRes = await fetch('/api/auth/status', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (authRes.ok) {
+        authData = await authRes.json();
       }
     } catch {
-      setIsAuthenticated(false);
-    } finally {
-      setIsAuthChecking(false);
+      setGateState('backend_offline');
+      return;
     }
+
+    if (!authRes || !authData) {
+      setGateState('backend_offline');
+      return;
+    }
+
+    // If backend reports logged_in, immediately unlock
+    if (authData.logged_in) {
+      setGateState('logged_in');
+      return;
+    }
+
+    // 2. Check if extension is installed on this browser
+    const PINNED_EXT_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
+    let extDetected = false;
+
+    // A. Check if running inside chrome-extension context or window has extension marker
+    if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.id) {
+      extDetected = true;
+    }
+
+    // B. Ping extension resources or check custom event/DOM indicator if present
+    if (!extDetected && (window as any).DocxStackedExtensionPresent) {
+      extDetected = true;
+    }
+
+    // C. Probe extension via chrome.runtime.sendMessage if available
+    if (!extDetected && typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
+      try {
+        await new Promise<void>((resolve) => {
+          (window as any).chrome.runtime.sendMessage(
+            PINNED_EXT_ID,
+            { type: 'PING' },
+            (response: any) => {
+              if (response && !((window as any).chrome.runtime.lastError)) {
+                extDetected = true;
+              }
+              resolve();
+            }
+          );
+          setTimeout(resolve, 350);
+        });
+      } catch {
+        // Ignored
+      }
+    }
+
+    // If extension is not detected on this browser, show extension_missing
+    if (!extDetected && !(window as any).__DOCXSTACKED_TEST_MODE__) {
+      setGateState('extension_missing');
+      return;
+    }
+
+    // 3. Extension is present but user not logged into FUOverflow
+    setGateState('not_logged_in');
   }, []);
 
   useEffect(() => {
@@ -273,12 +328,13 @@ export const App: React.FC = () => {
           if (target) navigateTo('progress', target);
         }}
         onOpenLogin={handleOpenLogin}
+        isBlocked={gateState !== 'logged_in'}
       />
 
       <main style={{ flex: 1, padding: 'var(--space-6) var(--space-4)' }}>
         <div style={{ maxWidth: '1080px', margin: '0 auto' }}>
-          {!isAuthChecking && !isAuthenticated ? (
-            /* Blocking Login Gate Modal / Card */
+          {gateState !== 'logged_in' ? (
+            /* Blocking Login Gate Modal / Card with 4 strict explicit states */
             <div
               style={{
                 backgroundColor: 'var(--bg-surface)',
@@ -297,53 +353,108 @@ export const App: React.FC = () => {
                   height: '56px',
                   margin: '0 auto var(--space-4)',
                   borderRadius: '50%',
-                  backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                  backgroundColor: gateState === 'backend_offline' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(99, 102, 241, 0.15)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: 'var(--primary, #6366f1)',
+                  color: gateState === 'backend_offline' ? '#EF4444' : 'var(--primary, #6366f1)',
                 }}
               >
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                </svg>
+                {gateState === 'checking' && (
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1.5s linear infinite' }}>
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+                  </svg>
+                )}
+                {gateState === 'backend_offline' && (
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="8" x2="12" y2="12"></line>
+                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                  </svg>
+                )}
+                {gateState === 'extension_missing' && (
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                  </svg>
+                )}
+                {gateState === 'not_logged_in' && (
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                  </svg>
+                )}
               </div>
 
-              <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
-                Yêu cầu đăng nhập FUOverflow
-              </h2>
-              <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
-                {authDetail || 'Vui lòng đăng nhập tài khoản FUOverflow để kích hoạt dashboard và sử dụng các tính năng.'}
-              </p>
+              {gateState === 'checking' && (
+                <>
+                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
+                    Đang kiểm tra
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                    Đang kết nối backend và kiểm tra trạng thái phiên làm việc...
+                  </p>
+                </>
+              )}
+
+              {gateState === 'backend_offline' && (
+                <>
+                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)', color: '#EF4444' }}>
+                    Không kết nối được backend
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                    Mở terminal và chạy: python run_dev.py
+                  </p>
+                </>
+              )}
+
+              {gateState === 'extension_missing' && (
+                <>
+                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
+                    Chưa thấy extension trên trình duyệt này
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                    Mở bằng trình duyệt đã cài extension DocxStacked để tiếp tục.
+                  </p>
+                </>
+              )}
+
+              {gateState === 'not_logged_in' && (
+                <>
+                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
+                    Chưa đăng nhập FUOverflow
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                    Vui lòng đăng nhập tài khoản FUOverflow để sử dụng hệ thống.
+                  </p>
+                </>
+              )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-                <a
-                  href="https://fuoverflow.com/login"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 'var(--space-2)',
-                    padding: 'var(--space-3) var(--space-6)',
-                    backgroundColor: 'var(--primary, #6366f1)',
-                    color: '#fff',
-                    borderRadius: 'var(--radius-md)',
-                    fontWeight: 600,
-                    fontSize: 'var(--text-sm)',
-                    textDecoration: 'none',
-                    transition: 'background-color 0.15s ease',
-                  }}
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                    <polyline points="15 3 21 3 21 9"></polyline>
-                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                  </svg>
-                  Mở fuoverflow.com để đăng nhập
-                </a>
+                {gateState === 'not_logged_in' && (
+                  <a
+                    href="https://fuoverflow.com/login"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 'var(--space-2)',
+                      padding: 'var(--space-3) var(--space-6)',
+                      backgroundColor: 'var(--primary, #6366f1)',
+                      color: '#fff',
+                      borderRadius: 'var(--radius-md)',
+                      fontWeight: 600,
+                      fontSize: 'var(--text-sm)',
+                      textDecoration: 'none',
+                      transition: 'background-color 0.15s ease',
+                    }}
+                  >
+                    Mở fuoverflow.com để đăng nhập
+                  </a>
+                )}
 
                 <button
                   type="button"
@@ -362,21 +473,8 @@ export const App: React.FC = () => {
                     cursor: 'pointer',
                   }}
                 >
-                  Kiểm tra lại trạng thái
+                  Kiểm tra lại
                 </button>
-              </div>
-
-              <div
-                style={{
-                  marginTop: 'var(--space-6)',
-                  padding: 'var(--space-3)',
-                  backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: 'var(--text-xs)',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                Hộp thoại sẽ tự động mở trang Dashboard ngay khi Extension hoặc trình duyệt xác nhận đã đăng nhập.
               </div>
             </div>
           ) : (

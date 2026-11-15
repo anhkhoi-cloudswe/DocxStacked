@@ -9,6 +9,7 @@ interface HeaderProps {
   activeJobId?: string | null;
   onOpenLogin?: () => void;
   currentScreen?: string;
+  isBlocked?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -19,6 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeJobId,
   onOpenLogin,
   currentScreen,
+  isBlocked = false,
 }) => {
   const [isDark, setIsDark] = useState<boolean>(() => {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -121,7 +123,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Navigation & Controls */}
         <nav className="header-nav" aria-label="Điều hướng chính">
-          {activeJobId && currentScreen !== 'progress' && onNavigateProgress && (
+          {!isBlocked && activeJobId && currentScreen !== 'progress' && onNavigateProgress && (
             <button
               type="button"
               onClick={onNavigateProgress}
@@ -149,7 +151,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {onNavigateDocuments && (
+          {!isBlocked && onNavigateDocuments && (
             <button
               type="button"
               onClick={onNavigateDocuments}
@@ -174,7 +176,7 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {onNavigateSettings && (
+          {!isBlocked && onNavigateSettings && (
             <button
               type="button"
               onClick={onNavigateSettings}
@@ -199,72 +201,74 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {authStatus?.logged_in ? (
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              <span
-                style={{
-                  fontSize: '11px',
-                  fontFamily: 'var(--font-mono)',
-                  color: 'var(--text-secondary)',
-                  padding: '4px 8px',
-                  backgroundColor: 'var(--bg-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border-subtle)',
-                  whiteSpace: 'nowrap',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                }}
-              >
-                <UserIcon size={13} /> {authStatus.username || 'Thành viên'}
-              </span>
+          {!isBlocked && (
+            authStatus?.logged_in ? (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    fontFamily: 'var(--font-mono)',
+                    color: 'var(--text-secondary)',
+                    padding: '4px 8px',
+                    backgroundColor: 'var(--bg-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-subtle)',
+                    whiteSpace: 'nowrap',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <UserIcon size={13} /> {authStatus.username || 'Thành viên'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  aria-label="Đăng xuất khỏi tài khoản FUOverflow"
+                  style={{
+                    background: 'none',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '5px 8px',
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 600,
+                    color: '#E53E3E',
+                    cursor: 'pointer',
+                    minHeight: '34px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                  title="Đăng xuất khỏi tài khoản FUOverflow"
+                >
+                  <LogoutIcon size={14} />
+                  <span>Thoát</span>
+                </button>
+              </div>
+            ) : (
               <button
                 type="button"
-                onClick={handleLogout}
-                aria-label="Đăng xuất khỏi tài khoản FUOverflow"
+                onClick={onOpenLogin}
                 style={{
-                  background: 'none',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '5px 8px',
                   fontSize: 'var(--text-xs)',
                   fontWeight: 600,
-                  color: '#E53E3E',
+                  color: 'var(--primary)',
+                  backgroundColor: 'var(--bg-surface)',
+                  padding: '5px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--primary)',
                   cursor: 'pointer',
-                  minHeight: '34px',
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '4px',
+                  minHeight: '34px',
                 }}
-                title="Đăng xuất khỏi tài khoản FUOverflow"
+                title="Đăng nhập tài khoản FUOverflow"
               >
-                <LogoutIcon size={14} />
-                <span>Thoát</span>
+                <UserIcon size={13} />
+                <span>Đăng nhập</span>
               </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={onOpenLogin}
-              style={{
-                fontSize: 'var(--text-xs)',
-                fontWeight: 600,
-                color: 'var(--primary)',
-                backgroundColor: 'var(--bg-surface)',
-                padding: '5px 10px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--primary)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '4px',
-                minHeight: '34px',
-              }}
-              title="Đăng nhập tài khoản FUOverflow"
-            >
-              <UserIcon size={13} />
-              <span>Đăng nhập</span>
-            </button>
+            )
           )}
 
           <button

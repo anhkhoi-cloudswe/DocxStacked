@@ -172,6 +172,68 @@ async def ping_ingest(
     return {"status": "ok", "message": "Token hợp lệ"}
 
 
+@router.get("/check-exam")
+async def check_exam_exists(
+    url: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
+    x_local_key: Optional[str] = Header(None, alias="X-Local-Key"),
+):
+    """
+    Check if an exam with the given thread URL has already been compiled in DocxStacked.
+    Returns:
+      - exists: bool
+      - exam_id: Optional[int]
+      - compiled_at: Optional[str] (e.g. "14:30 15/11/2026")
+      - compiled_time_short: Optional[str] (e.g. "14:30")
+      - question_count: int
+      - existing_media_ids: List[str]
+      - download_url: Optional[str]
+    """
+    token = x_ingest_token or x_local_key
+    _verify_ingest_access(request, token)
+
+    clean_url = url.split("?")[0].rstrip("/") + "/"
+    stmt = select(Exam).where(Exam.url == clean_url)
+    res = await db.execute(stmt)
+    exam = res.scalar_one_or_none()
+
+    if not exam:
+        # Also check without trailing slash
+        stmt2 = select(Exam).where(Exam.url == clean_url.rstrip("/"))
+        res2 = await db.execute(stmt2)
+        exam = res2.scalar_one_or_none()
+
+    if not exam:
+        return {"exists": False}
+
+    # Query questions to get count and existing media_ids
+    q_stmt = select(Question).where(Question.exam_id == exam.id).order_by(Question.index)
+    q_res = await db.execute(q_stmt)
+    questions = q_res.scalars().all()
+
+    existing_media_ids = [q.media_id for q in questions if q.media_id and q.local_image_path]
+
+    # Read sidecar meta if exists
+    meta_path = settings.DATA_DIR / "output"
+    compiled_dt = exam.updated_at or exam.created_at
+    compiled_formatted = compiled_dt.strftime("%H:%M %d/%m/%Y") if compiled_dt else ""
+    compiled_time_short = compiled_dt.strftime("%H:%M") if compiled_dt else ""
+
+    return {
+        "exists": True,
+        "exam_id": exam.id,
+        "subject_code": exam.subject_id,  # Subject id or code
+        "title": exam.title,
+        "compiled_at": compiled_formatted,
+        "compiled_time_short": compiled_time_short,
+        "question_count": len(questions),
+        "existing_media_ids": existing_media_ids,
+        "download_url": f"/api/exports/{exam.id}/download",
+    }
+
+
 async def _run_background_ai_refinement(
     exam_id: int,
     subject_code: str,

@@ -251,12 +251,15 @@ class AICheckService:
         return list(self._providers)
 
     def get_available_providers(self) -> List[VisionProvider]:
-        """Return configured providers that have non-empty API keys in environment and are not disabled."""
+        """Return configured providers that have non-empty API keys in environment and are not disabled or marked invalid."""
+        from backend.app.modules.settings.service import get_invalid_key_providers
+        invalid_keys = get_invalid_key_providers()
         return [
             p for p in self._providers
             if p.is_available()
             and p.name not in self._disabled_providers
             and f"{p.name}:{p.model}" not in self._disabled_providers
+            and p.name.strip().lower() not in invalid_keys
         ]
 
     def is_available(self) -> bool:
@@ -448,6 +451,11 @@ class AICheckService:
         except ProviderAuthError as e:
             logger.warning(f"Provider '{provider.name}' auth error (401/Invalid Key): {e}. Disabling provider.")
             self._disabled_providers.add(provider.name)
+            try:
+                from backend.app.modules.settings.service import record_invalid_key_provider
+                record_invalid_key_provider(provider.name)
+            except Exception as rec_err:
+                logger.warning(f"Could not record invalid provider to settings: {rec_err}")
             return None
         except (ProviderModelNotFoundError, ProviderVisionUnsupportedError) as e:
             logger.warning(f"Provider '{provider.name}' configuration error: {e}. Disabling provider.")
@@ -557,9 +565,14 @@ class AICheckService:
                 self._disabled_providers.add(provider.name)
                 continue
             except ProviderAuthError as e:
-                logger.warning(f"Provider '{provider.name}' auth failed (401/Invalid Key): {e}. Disabling provider for this session.")
+                logger.warning(f"Provider '{provider.name}' auth failed (401/Invalid Key): {e}. Disabling provider and persisting invalid status.")
                 self._disabled_providers.add(provider.name)
                 self._disabled_providers.add(f"{provider.name}:{provider.model}")
+                try:
+                    from backend.app.modules.settings.service import record_invalid_key_provider
+                    record_invalid_key_provider(provider.name)
+                except Exception as rec_err:
+                    logger.warning(f"Could not record invalid provider to settings: {rec_err}")
             except (ProviderModelNotFoundError, ProviderVisionUnsupportedError) as e:
                 logger.warning(f"Provider '{provider.name}' configuration error: {e}. Disabling provider for this session.")
                 self._disabled_providers.add(provider.name)

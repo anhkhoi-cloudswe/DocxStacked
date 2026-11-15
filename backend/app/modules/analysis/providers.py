@@ -128,7 +128,7 @@ class VisionProvider(ABC):
 
         attempts = self.max_retries + 1
         last_error = None
-        rate_limiter = self.rate_limiter or get_ai_rate_limiter()
+        rate_limiter = self.rate_limiter or get_ai_rate_limiter(provider_name=self.name)
         skip_throttle = self.backoff_seconds <= 0.05
 
         for attempt in range(1, attempts + 1):

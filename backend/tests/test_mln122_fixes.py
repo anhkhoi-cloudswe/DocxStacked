@@ -163,6 +163,8 @@ def test_keyword_validation():
     assert not is_valid_keyword("capitalist production costs blurred c and v", is_vietnamese_exam=True)
     assert not is_valid_keyword("capitalist costs smaller than selling price", is_vietnamese_exam=True)
     assert not is_valid_keyword("formation of surplus value and costs", is_vietnamese_exam=True)
+    assert not is_valid_keyword("Primitive accumulation", is_vietnamese_exam=True)
+    assert is_valid_keyword("Tích luỹ nguyên thuỷ", is_vietnamese_exam=True)
 
     # Valid Vietnamese keywords accepted
     assert is_valid_keyword("Đại hội đảng XII", is_vietnamese_exam=True)

@@ -302,14 +302,29 @@ class CheckpointManager:
 
 # Global singletons
 _default_ai_rate_limiter: Optional[AIRateLimiter] = None
+_provider_rate_limiters: Dict[str, AIRateLimiter] = {}
+_rate_limiter_lock = threading.Lock()
 _default_daily_quota_tracker: Optional[DailyQuotaTracker] = None
 
 
-def get_ai_rate_limiter(min_interval: float = 7.0) -> AIRateLimiter:
-    global _default_ai_rate_limiter
-    if _default_ai_rate_limiter is None:
-        _default_ai_rate_limiter = AIRateLimiter(min_interval_seconds=min_interval)
-    return _default_ai_rate_limiter
+def get_ai_rate_limiter(min_interval: float = 7.0, provider_name: Optional[str] = None) -> AIRateLimiter:
+    """
+    Returns an AIRateLimiter. If provider_name is specified, returns a rate limiter
+    dedicated to that specific provider, ensuring the 7s throttle only applies
+    between consecutive calls to the SAME provider and does NOT delay switching
+    to another provider.
+    """
+    global _default_ai_rate_limiter, _provider_rate_limiters
+    with _rate_limiter_lock:
+        if provider_name:
+            norm_name = provider_name.strip().lower()
+            if norm_name not in _provider_rate_limiters:
+                _provider_rate_limiters[norm_name] = AIRateLimiter(min_interval_seconds=min_interval)
+            return _provider_rate_limiters[norm_name]
+
+        if _default_ai_rate_limiter is None:
+            _default_ai_rate_limiter = AIRateLimiter(min_interval_seconds=min_interval)
+        return _default_ai_rate_limiter
 
 
 def get_daily_quota_tracker(default_limit: int = 1500) -> DailyQuotaTracker:

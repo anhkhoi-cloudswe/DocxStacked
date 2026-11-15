@@ -1031,7 +1031,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                       </span>
 
                       {/* Invalid key 401 badge */}
-                      {testState?.message?.includes('401') && (
+                      {(p.key_invalid || p.status === 'key_invalid' || testState?.message?.includes('401')) && (
                         <span
                           style={{
                             fontSize: '11px',
@@ -1045,7 +1045,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                             alignItems: 'center',
                             gap: '4px',
                           }}
-                          title="Khoá API trả về 401 Unauthorized"
+                          title="Khoá API trả về 401 Unauthorized - Đã tự động bỏ qua cho tới khi cập nhật khoá mới"
                         >
                           <WarningIcon size={12} />
                           <span>Khoá không hợp lệ</span>

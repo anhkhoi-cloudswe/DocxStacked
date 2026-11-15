@@ -150,14 +150,11 @@ def is_valid_keyword(kw: str, is_vietnamese_exam: bool = True) -> bool:
             re.search(r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]", lower)
         )
         if not has_vi_accents:
-            english_words = {
-                "capitalist", "production", "costs", "cost", "blurred", "surplus", "value",
-                "selling", "price", "actual", "smaller", "formation", "greater", "which",
-                "the", "of", "and", "in", "to", "for", "with", "on", "at", "by", "from",
-                "law", "economic", "fundamental", "absolute", "relative",
-            }
-            tokens = set(re.findall(r"\b[a-zA-Z]+\b", lower))
-            if tokens & english_words:
+            # In a Vietnamese exam, any keyword containing Latin words must have Vietnamese accents.
+            # Pure numbers/symbols (e.g. "1945", "10%") are allowed, but purely ASCII English words
+            # (e.g. "Primitive accumulation", "capitalist") are invalid for Vietnamese questions.
+            has_letters = bool(re.search(r"[a-zA-Z]", lower))
+            if has_letters:
                 return False
 
     return True

@@ -96,7 +96,8 @@ export interface AIProviderSetting {
   enabled?: boolean;
   has_api_key?: boolean;
   masked_key?: string | null;
-  status?: 'configured' | 'not_configured';
+  status?: 'configured' | 'not_configured' | 'key_invalid';
+  key_invalid?: boolean;
   key_source?: string | null;
   api_key?: string;
 }

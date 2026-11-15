@@ -1,9 +1,10 @@
 import copy
+import json
 import os
 from pathlib import Path
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from dotenv import dotenv_values, load_dotenv
 from sqlalchemy import select, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,49 @@ logger = get_logger(__name__)
 app_settings = get_settings()
 
 
+def get_invalid_key_providers_file() -> Path:
+    return app_settings.STORAGE_DIR / "cache" / "ai_invalid_providers.json"
+
+
+def get_invalid_key_providers() -> Set[str]:
+    """Retrieve set of provider names whose API key returned 401 Unauthorized."""
+    f = get_invalid_key_providers_file()
+    if f.exists():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return set(data)
+        except Exception as e:
+            logger.warning(f"Could not read invalid providers file: {e}")
+    return set()
+
+
+def record_invalid_key_provider(provider_name: str) -> None:
+    """Persist provider name as having an invalid API key (401)."""
+    f = get_invalid_key_providers_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        items = get_invalid_key_providers()
+        items.add(provider_name.strip().lower())
+        f.write_text(json.dumps(list(items), indent=2), encoding="utf-8")
+        logger.info(f"Recorded invalid API key for provider '{provider_name}'.")
+    except Exception as e:
+        logger.warning(f"Could not persist invalid provider: {e}")
+
+
+def clear_invalid_key_provider(provider_name: str) -> None:
+    """Remove provider from invalid key set after user updates API key."""
+    f = get_invalid_key_providers_file()
+    if f.exists():
+        try:
+            items = get_invalid_key_providers()
+            norm = provider_name.strip().lower()
+            if norm in items:
+                items.remove(norm)
+                f.write_text(json.dumps(list(items), indent=2), encoding="utf-8")
+                logger.info(f"Cleared invalid API key status for provider '{provider_name}'.")
+        except Exception as e:
+            logger.warning(f"Could not update invalid providers file: {e}")
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge override dictionary into base dictionary."""
     result = copy.deepcopy(base)
@@ -238,7 +282,9 @@ def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
     root_vals = dotenv_values(root_env) if root_env.exists() else {}
 
     if "ai" in safe_data and "providers" in safe_data["ai"]:
+        invalid_set = get_invalid_key_providers()
         for p in safe_data["ai"]["providers"]:
+            p_name = (p.get("name") or "").strip().lower()
             env_var = p.get("api_key_env", "")
             # Check if key is configured in root .env or system env
             val_env = root_vals.get(env_var)
@@ -261,7 +307,9 @@ def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
             p["has_api_key"] = has_key
             p["masked_key"] = masked_key
             p["key_length"] = key_length
-            p["status"] = "configured" if has_key else "not_configured"
+            is_key_invalid = p_name in invalid_set
+            p["key_invalid"] = is_key_invalid
+            p["status"] = "key_invalid" if is_key_invalid else ("configured" if has_key else "not_configured")
             p["key_source"] = key_source
             if "enabled" not in p:
                 p["enabled"] = False
@@ -285,8 +333,10 @@ async def update_settings(db: AsyncSession, new_settings: Dict[str, Any]) -> Dic
             if env_var:
                 if api_key == "__DELETE__":
                     delete_api_key_from_env(env_var)
+                    clear_invalid_key_provider(p.get("name", ""))
                 elif api_key and isinstance(api_key, str) and len(api_key.strip()) > 3:
                     save_api_key_to_env(env_var, api_key.strip())
+                    clear_invalid_key_provider(p.get("name", ""))
 
     # Save to database
     sections = ["export", "ai", "voting", "crawl"]
