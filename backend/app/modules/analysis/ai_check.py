@@ -252,7 +252,12 @@ class AICheckService:
 
     def get_available_providers(self) -> List[VisionProvider]:
         """Return configured providers that have non-empty API keys in environment and are not disabled."""
-        return [p for p in self._providers if p.is_available() and p.name not in self._disabled_providers]
+        return [
+            p for p in self._providers
+            if p.is_available()
+            and p.name not in self._disabled_providers
+            and f"{p.name}:{p.model}" not in self._disabled_providers
+        ]
 
     def is_available(self) -> bool:
         """Return True if at least one provider has an active API key."""
@@ -549,10 +554,12 @@ class AICheckService:
             except DailyQuotaExhaustedError as e:
                 logger.warning(f"AI daily quota exhausted for {provider.name}:{provider.model} ({e}). Falling back to next provider...")
                 self._disabled_providers.add(f"{provider.name}:{provider.model}")
+                self._disabled_providers.add(provider.name)
                 continue
             except ProviderAuthError as e:
                 logger.warning(f"Provider '{provider.name}' auth failed (401/Invalid Key): {e}. Disabling provider for this session.")
                 self._disabled_providers.add(provider.name)
+                self._disabled_providers.add(f"{provider.name}:{provider.model}")
             except (ProviderModelNotFoundError, ProviderVisionUnsupportedError) as e:
                 logger.warning(f"Provider '{provider.name}' configuration error: {e}. Disabling provider for this session.")
                 self._disabled_providers.add(provider.name)

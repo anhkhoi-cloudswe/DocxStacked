@@ -559,7 +559,7 @@ class JobOrchestrator:
                         ai_votes = []
                         ai_options = {}
                         img_path = getattr(q, "cropped_image_path", None) or getattr(q, "local_image_path", None)
-                        if need_ai and img_path:
+                        if need_ai and img_path and ai_service.is_available():
                             local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
                             if local_img.exists():
                                 analyses = ai_service.analyze_question_ensemble(local_img, job_id=job_id)
@@ -581,6 +581,8 @@ class JobOrchestrator:
                         )
 
                         breakdown = dict(voting_res.vote_breakdown)
+                        if need_ai and not ai_votes and not ai_service.is_available():
+                            breakdown["ai_pending"] = True
                         if ai_options:
                             breakdown["_options"] = ai_options
                         if ai_votes:

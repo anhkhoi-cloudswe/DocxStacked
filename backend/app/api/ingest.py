@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -172,10 +172,139 @@ async def ping_ingest(
     return {"status": "ok", "message": "Token hợp lệ"}
 
 
+async def _run_background_ai_refinement(
+    exam_id: int,
+    subject_code: str,
+    active_cfg: Dict[str, Any],
+    opt_cfg: Dict[str, Any],
+    cropped_dir: Path,
+):
+    """
+    Run AI refinement asynchronously in background:
+    - Queries AI for uncertain questions without blocking the HTTP ingest response.
+    - Updates answers in database.
+    - Re-exports Word docx with AI enhancements.
+    """
+    from backend.app.db.session import async_session_factory
+    from backend.app.db.models import Exam, Question, Answer
+
+    ai_service = get_ai_check_service()
+    if not ai_service.is_available():
+        return
+
+    ai_weight = float(active_cfg.get("voting", {}).get("ai_weight", 1.0))
+    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "H")
+    ai_mode = active_cfg.get("ai", {}).get("mode", "only_uncertain")
+
+    try:
+        async with async_session_factory() as db:
+            e_res = await db.execute(select(Exam).where(Exam.id == exam_id))
+            exam = e_res.scalar_one_or_none()
+            if not exam:
+                return
+
+            q_res = await db.execute(select(Question).where(Question.exam_id == exam_id).order_by(Question.index))
+            db_questions = q_res.scalars().all()
+
+            updated_any = False
+            answers_map: Dict[int, Answer] = {}
+
+            for q_obj in db_questions:
+                await db.refresh(q_obj, ["comments", "answer"])
+                need_ai = False
+                has_missing_options = "missing_options" in (q_obj.crop_warnings or [])
+                if not has_missing_options and ai_service.is_available():
+                    if ai_mode == "all":
+                        need_ai = True
+                    elif ai_mode == "off":
+                        need_ai = False
+                    else:
+                        if not q_obj.answer or q_obj.answer.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or q_obj.answer.confidence < 0.80:
+                            need_ai = True
+
+                ai_votes = []
+                ai_options = {}
+                img_path = getattr(q_obj, "cropped_image_path", None) or getattr(q_obj, "local_image_path", None)
+                if need_ai and img_path and ai_service.is_available():
+                    local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
+                    if local_img.exists():
+                        analyses = ai_service.analyze_question_ensemble(local_img)
+                        for a in analyses:
+                            ai_votes.append({
+                                "provider": a.provider or "ai",
+                                "answers": a.answers,
+                                "confidence": a.confidence,
+                            })
+                            if a.options:
+                                ai_options.update(a.options)
+
+                voting_res = tally_votes(
+                    q_obj.comments,
+                    ai_votes=ai_votes if ai_votes else None,
+                    ai_weight=ai_weight,
+                    max_option_letter=max_opt_letter,
+                )
+
+                breakdown = dict(voting_res.vote_breakdown)
+                if ai_options:
+                    breakdown["_options"] = ai_options
+                if ai_votes:
+                    breakdown["_ai_votes"] = ai_votes
+                    updated_any = True
+                elif need_ai and not ai_service.is_available():
+                    breakdown["ai_pending"] = True
+
+                if not q_obj.answer:
+                    ans = Answer(
+                        question_id=q_obj.id,
+                        answer_set=voting_res.answer_set,
+                        status=voting_res.status,
+                        confidence=voting_res.confidence,
+                        valid_comments_count=voting_res.voters_count,
+                        vote_breakdown=breakdown,
+                    )
+                    db.add(ans)
+                    q_obj.answer = ans
+                else:
+                    q_obj.answer.answer_set = voting_res.answer_set
+                    q_obj.answer.status = voting_res.status
+                    q_obj.answer.confidence = voting_res.confidence
+                    q_obj.answer.valid_comments_count = voting_res.voters_count
+                    q_obj.answer.vote_breakdown = breakdown
+
+                answers_map[q_obj.id] = q_obj.answer
+
+            await db.commit()
+
+            if updated_any:
+                ans_format = opt_cfg.get("answer_format", active_cfg.get("export", {}).get("answer_format", "letter_keyword"))
+                multi_choice_fmt = opt_cfg.get("multi_choice_format", active_cfg.get("export", {}).get("multi_choice_format", "comma"))
+                highlight_check_needed = active_cfg.get("export", {}).get("highlight_low_confidence", True)
+                add_divider = active_cfg.get("export", {}).get("show_separator_line", True)
+                add_question_number = active_cfg.get("export", {}).get("show_question_number", True)
+
+                build_exam_docx(
+                    subject_code=subject_code,
+                    exam=exam,
+                    questions=db_questions,
+                    cropped_dir=cropped_dir,
+                    answers_map=answers_map,
+                    answer_format=ans_format,
+                    multi_choice_format=multi_choice_fmt,
+                    highlight_check_needed=highlight_check_needed,
+                    add_divider=add_divider,
+                    add_question_number=add_question_number,
+                )
+                logger.info(f"Background AI refinement completed and updated Word document for exam {exam_id}.")
+    except Exception as bg_err:
+        logger.warning(f"Background AI refinement encountered error: {bg_err}")
+
+
 @router.post("")
 async def ingest_exam(
     request: Request,
     payload: IngestExamRequest,
+    background_tasks: BackgroundTasks,
     x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
     x_local_key: Optional[str] = Header(None, alias="X-Local-Key"),
     content_length: Optional[int] = Header(None, alias="Content-Length"),
@@ -401,11 +530,11 @@ async def ingest_exam(
         q_obj.choice_hint_width_px = crop_res.choice_hint_width_px
     await db.commit()
 
-    # 7. Tally Community Votes & Optional AI Check (Aligned with orchestrator)
+    # 7. Tally Community Votes immediately (Fast response for user)
+    # AI refinement is scheduled in background to keep response time fast
     active_cfg = await get_active_settings(db)
     opt_cfg = payload.options or {}
     ai_enabled = opt_cfg.get("ai_enabled", active_cfg.get("ai", {}).get("enabled", True))
-    ai_mode = active_cfg.get("ai", {}).get("mode", "only_uncertain")
     ai_weight = float(active_cfg.get("voting", {}).get("ai_weight", 1.0))
     max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "H")
     ai_service = get_ai_check_service()
@@ -414,51 +543,15 @@ async def ingest_exam(
     for q_obj in db_questions:
         await db.refresh(q_obj, ["comments", "answer"])
 
-        prelim_res = tally_votes(
-            q_obj.comments,
-            ai_weight=ai_weight,
-            max_option_letter=max_opt_letter,
-        )
-
-        need_ai = False
-        has_missing_options = "missing_options" in (q_obj.crop_warnings or [])
-        if ai_enabled and ai_service.is_available() and not has_missing_options:
-            if ai_mode == "all":
-                need_ai = True
-            elif ai_mode == "off":
-                need_ai = False
-            else:
-                if prelim_res.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or prelim_res.confidence < 0.80:
-                    need_ai = True
-
-        ai_votes = []
-        ai_options = {}
-        img_path = getattr(q_obj, "cropped_image_path", None) or getattr(q_obj, "local_image_path", None)
-        if need_ai and img_path:
-            local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
-            if local_img.exists():
-                analyses = ai_service.analyze_question_ensemble(local_img)
-                for a in analyses:
-                    ai_votes.append({
-                        "provider": a.provider or "ai",
-                        "answers": a.answers,
-                        "confidence": a.confidence,
-                    })
-                    if a.options:
-                        ai_options.update(a.options)
-
         voting_res = tally_votes(
             q_obj.comments,
-            ai_votes=ai_votes if ai_votes else None,
             ai_weight=ai_weight,
             max_option_letter=max_opt_letter,
         )
 
         breakdown = dict(voting_res.vote_breakdown)
-        if ai_options:
-            breakdown["_options"] = ai_options
-        if ai_votes:
-            breakdown["_ai_votes"] = ai_votes
+        if ai_enabled and (voting_res.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or voting_res.confidence < 0.80):
+            breakdown["ai_pending"] = True
 
         if not q_obj.answer:
             ans = Answer(
@@ -481,6 +574,17 @@ async def ingest_exam(
         answers_map[q_obj.id] = q_obj.answer
 
     await db.commit()
+
+    # Schedule background AI refinement if AI is enabled and service is available
+    if ai_enabled and ai_service.is_available():
+        background_tasks.add_task(
+            _run_background_ai_refinement,
+            exam_id=exam.id,
+            subject_code=code,
+            active_cfg=active_cfg,
+            opt_cfg=opt_cfg,
+            cropped_dir=cropped_dir,
+        )
 
     # 8. Word Document Generation (Aligned with orchestrator)
     ans_format = opt_cfg.get("answer_format", active_cfg.get("export", {}).get("answer_format", "letter_keyword"))

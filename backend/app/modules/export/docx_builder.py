@@ -452,7 +452,12 @@ def build_exam_docx(
           * No data / unanalyzed: '?'
       - If conflict, weak, or no_data: appends ' (cần kiểm tra lại)' in small 11pt grey.
     """
-    logger.info(f"Building Word document for {subject_code} - {exam.title} ({len(questions)} questions)...")
+    exam_title_clean = exam.title.strip()
+    if exam_title_clean.upper().startswith(f"{subject_code.upper()} -"):
+        display_title = exam_title_clean
+    else:
+        display_title = f"{subject_code} - {exam_title_clean}"
+    logger.info(f"Building Word document for {display_title} ({len(questions)} questions)...")
 
     if output_dir is None:
         output_dir = settings.STORAGE_DIR / "output" / subject_code

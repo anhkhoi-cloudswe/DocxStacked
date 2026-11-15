@@ -255,3 +255,42 @@ def test_existing_exam_title_preserved(tmp_path, monkeypatch):
     assert "(Extension Ingested)" not in res_data["exam_title"]
     assert res_data["docx_filename"].startswith("MLN122 - SU26 - RE")
     print(f"\n[Test Result] Title preserved accurately: '{res_data['exam_title']}' -> '{res_data['docx_filename']}'")
+
+
+def test_ingest_response_download_url_and_docx_valid(tmp_path, monkeypatch):
+    """
+    Test: POST /api/ingest then call the returned download_url.
+    Must receive 200 OK and file must be valid Word docx openable by python-docx.
+    """
+    monkeypatch.setattr(settings, "STORAGE_DIR", tmp_path)
+    import docx
+    import io
+
+    payload = {
+        "subject_code": "TEST102",
+        "exam_title": "TEST102 - SU26 - FE",
+        "questions": [],
+        "options": {"ai_enabled": False},
+    }
+
+    res = client.post(
+        "/api/ingest",
+        json=payload,
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN},
+    )
+    assert res.status_code == 200
+    res_data = res.json()
+    assert "download_url" in res_data
+    download_url = res_data["download_url"]
+
+    # Call the returned download URL
+    dl_res = client.get(download_url)
+    assert dl_res.status_code == 200
+    assert "wordprocessingml.document" in dl_res.headers.get("content-type", "")
+    assert "TEST102" in dl_res.headers.get("content-disposition", "")
+    assert "FE.docx" in dl_res.headers.get("content-disposition", "")
+
+    # Open with python-docx
+    doc = docx.Document(io.BytesIO(dl_res.content))
+    assert doc is not None
+

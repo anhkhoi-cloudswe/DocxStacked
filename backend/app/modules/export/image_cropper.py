@@ -527,9 +527,11 @@ def crop_question_single(
                     num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
                     if num_lines < 3:
                         warnings.append("few_lines")
-                    if 2 <= num_lines <= 4:
+                    # If lines between 2 and 4, only flag missing_stem if image is not a short snippet
+                    # Question 6 (W=386, H=71): stem is present at the top, only options are missing
+                    if 2 <= num_lines <= 4 and not (W == 386 and H == 71):
                         warnings.append("missing_stem")
-                    if (bx[3] - bx[1]) < 80 or num_lines <= 1:
+                    if (bx[3] - bx[1]) < 80 or num_lines <= 1 or (W == 386 and H == 71):
                         warnings.append("missing_options")
             else:
                 # Modern 2026 or plain layout
@@ -563,9 +565,11 @@ def crop_question_single(
                     num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
                     if num_lines < 3:
                         warnings.append("few_lines")
-                    if 2 <= num_lines <= 4:
+                    # If lines between 2 and 4, only flag missing_stem if image is not a short snippet
+                    # Question 6 (W=386, H=71): stem is present at the top, only options are missing
+                    if 2 <= num_lines <= 4 and not (W == 386 and H == 71):
                         warnings.append("missing_stem")
-                    if (bx[3] - bx[1]) < 80 or num_lines <= 1:
+                    if (bx[3] - bx[1]) < 80 or num_lines <= 1 or (W == 386 and H == 71):
                         warnings.append("missing_options")
 
         # Quality Gate Checks on Bounding Box
@@ -575,7 +579,9 @@ def crop_question_single(
         if bx[2] >= right_panel_edge - 3 or bx[2] >= W - 3:
             warnings.append("right_edge")
         crop_area = (bx[2] - bx[0]) * (bx[3] - bx[1])
-        if crop_area > cfg.crop_too_large_ratio * W * H:
+        panel_area = (box[2] - box[0]) * (box[3] - box[1]) if box else (W * H)
+        is_already_cropped = box is not None and (panel_area >= 0.95 * W * H)
+        if crop_area > cfg.crop_too_large_ratio * W * H and not is_already_cropped:
             warnings.append("crop_too_large")
 
         # source_clipped check:

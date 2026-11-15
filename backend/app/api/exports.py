@@ -226,6 +226,63 @@ async def download_bundle_zip(job_id: Optional[str] = None):
     )
 
 
+@router.get("/{exam_id:int}/download")
+async def download_export_by_exam_id(
+    exam_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Download compiled .docx document by exam_id.
+    Looks up the Exam record to locate the subject and filename in data/output.
+    """
+    from backend.app.db.models import Exam, Subject
+    stmt = select(Exam).where(Exam.id == exam_id)
+    res = await db.execute(stmt)
+    exam = res.scalar_one_or_none()
+    if not exam:
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy đề thi với ID={exam_id}")
+
+    # Determine subject code
+    subject = "EXAMS"
+    if exam.subject_id:
+        s_res = await db.execute(select(Subject).where(Subject.id == exam.subject_id))
+        s_obj = s_res.scalar_one_or_none()
+        if s_obj and s_obj.code:
+            subject = s_obj.code.upper()
+
+    title = exam.title.strip()
+    if title.upper().startswith(f"{subject.upper()} -"):
+        filename = f"{title}.docx"
+    else:
+        filename = f"{subject} - {title}.docx"
+
+    # Search candidates in output directory
+    out_dir = settings.STORAGE_DIR / "output"
+    if not out_dir.exists() and hasattr(settings, "OUTPUT_DIR") and settings.OUTPUT_DIR.exists():
+        out_dir = settings.OUTPUT_DIR
+    sub_dir = out_dir / subject
+    target_path = sub_dir / filename
+    if not target_path.exists():
+        # Fallback search by title
+        candidates = list(sub_dir.glob(f"*{title}*.docx")) if sub_dir.exists() else []
+        if candidates:
+            target_path = candidates[0]
+        else:
+            # Fallback search across all output dirs
+            all_cands = list(out_dir.rglob(f"*{title}*.docx")) if out_dir.exists() else []
+            if all_cands:
+                target_path = all_cands[0]
+            else:
+                raise HTTPException(status_code=404, detail=f"File Word cho đề thi '{exam.title}' chưa được tạo trên máy chủ.")
+
+    media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return FileResponse(
+        path=str(target_path),
+        filename=target_path.name,
+        media_type=media_type,
+    )
+
+
 @router.get("/download")
 async def download_export_file(
     path: Optional[str] = Query(None, description="Relative path of file to download"),

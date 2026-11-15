@@ -280,3 +280,62 @@ def test_ai_ensemble_mode_returns_two_providers(tmp_path: Path, monkeypatch):
     assert results[0].answers == ["B"]
     assert results[1].provider == "gemini"
     assert results[1].answers == ["B"]
+
+
+def test_anthropic_call_vision_api_no_temperature_type_error(monkeypatch, tmp_path):
+    """
+    Verify AnthropicProvider does not pass 'temperature' to messages.create,
+    which previously raised TypeError on anthropic SDK 2.8.0.
+    """
+    img_path = tmp_path / "test_q.png"
+    Image.new("RGB", (100, 100), color="white").save(img_path)
+
+    provider = AnthropicProvider(api_key="test-api-key")
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_block = MagicMock()
+    mock_block.text = '{"answers": ["A"], "type": "single", "confidence": 0.9, "options": {"A": "Yes"}}'
+    mock_response.content = [mock_block]
+
+    def mock_create(*args, **kwargs):
+        # Assert temperature is not in kwargs
+        assert "temperature" not in kwargs, f"temperature should not be passed to messages.create: {kwargs}"
+        assert kwargs["model"] == provider.model
+        assert kwargs["system"] == "sys"
+        return mock_response
+
+    mock_client.messages.create = mock_create
+    monkeypatch.setattr(provider, "_get_client", lambda: mock_client)
+
+    res_text = provider.call_vision_api(img_path, prompt="prompt", system_prompt="sys")
+    assert "answers" in res_text
+
+
+def test_provider_disabled_immediately_on_quota_or_auth_error(monkeypatch, tmp_path):
+    """
+    When quota exhausted (DailyQuotaExhaustedError) or 401 auth failed (ProviderAuthError),
+    provider must be immediately marked disabled and excluded from get_available_providers().
+    """
+    from backend.app.modules.analysis.providers import ProviderAuthError, DailyQuotaExhaustedError
+
+    svc = AICheckService()
+    p1 = AnthropicProvider(api_key="key1")
+    p2 = GeminiProvider(api_key="key2")
+    svc._providers = [p1, p2]
+    svc._disabled_providers = set()
+
+    img_path = tmp_path / "test_disable.png"
+    Image.new("RGB", (100, 100), color="white").save(img_path)
+
+    # 1. Auth error on p1
+    monkeypatch.setattr(p1, "call_with_retry", MagicMock(side_effect=ProviderAuthError("401 Invalid Key")))
+    monkeypatch.setattr(p2, "call_with_retry", MagicMock(return_value='{"answers": ["C"], "type": "single", "confidence": 0.9, "options": {}}'))
+
+    assert p1 in svc.get_available_providers()
+    svc.analyze_question_ensemble(img_path, force_refresh=True)
+
+    # p1 should now be disabled
+    assert p1.name in svc._disabled_providers
+    assert p1 not in svc.get_available_providers()
+

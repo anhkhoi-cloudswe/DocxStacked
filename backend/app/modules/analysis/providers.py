@@ -255,7 +255,6 @@ class AnthropicProvider(VisionProvider):
             response = client.messages.create(
                 model=self.model,
                 max_tokens=1024,
-                temperature=0.0,
                 system=system_prompt,
                 messages=[
                     {

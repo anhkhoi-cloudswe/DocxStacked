@@ -129,6 +129,27 @@ async def main():
         print(f"Status Code: {res_ingest['status']} | OK: {res_ingest['ok']}")
         print(f"Response: {res_ingest['data']}")
 
+        # Test Call 3b: Real Browser GET download returned from POST /api/ingest
+        download_url = res_ingest["data"]["download_url"]
+        res_dl = await page.evaluate("""async (dlUrl) => {
+            const resp = await fetch(`http://127.0.0.1:8000${dlUrl}`, {
+                method: 'GET'
+            });
+            const blob = await resp.blob();
+            return {
+                status: resp.status,
+                ok: resp.ok,
+                contentType: resp.headers.get('content-type'),
+                contentDisposition: resp.headers.get('content-disposition'),
+                size: blob.size
+            };
+        }""", download_url)
+        print(f"\n[REAL BROWSER RESULT: GET {download_url}]")
+        print(f"Status Code: {res_dl['status']} | OK: {res_dl['ok']}")
+        print(f"Content-Type: {res_dl['contentType']}")
+        print(f"Content-Disposition: {res_dl['contentDisposition']}")
+        print(f"Downloaded Size: {res_dl['size']} bytes")
+
         # Test Call 4: Real Browser GET WITHOUT Origin and WITHOUT X-DocxStacked-Ext (simulating malicious web fetch or stripped client)
         res_no_auth = await page.evaluate("""async () => {
             const resp = await fetch('http://127.0.0.1:8000/api/ingest/ping', {
