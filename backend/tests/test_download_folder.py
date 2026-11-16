@@ -48,7 +48,8 @@ async def test_download_folder_zip_structure(tmp_path):
         resp = await client.get("/api/exports/download-folder?subject=TEST_SUBJ")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/zip"
-        assert "TEST_SUBJ_FE.zip" in resp.headers["content-disposition"]
+        assert "TEST_SUBJ_FE" in resp.headers["content-disposition"]
+        assert resp.headers["content-disposition"].endswith('.zip"')
 
         # Verify zip contents and directory structure
         zf = zipfile.ZipFile(io.BytesIO(resp.content))

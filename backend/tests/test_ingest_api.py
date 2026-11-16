@@ -97,3 +97,15 @@ def test_ingest_payload_flow():
     assert data["questions_ingested"] == 1
     assert data["comments_ingested"] == 1
     assert "docx_path" in data
+
+    # Test check-exam timezone ISO format
+    check_resp = client.get(
+        f"/api/ingest/check-exam?url={payload['exam_url']}",
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN}
+    )
+    assert check_resp.status_code == 200
+    check_data = check_resp.json()
+    assert check_data["exists"] is True
+    assert check_data["compiled_at_iso"] is not None
+    assert check_data["compiled_at_iso"].endswith("Z")
+    assert "T" in check_data["compiled_at_iso"]

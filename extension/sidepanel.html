@@ -367,13 +367,40 @@
       display: none;
       flex-direction: column;
       gap: 8px;
+      padding-bottom: 64px; /* Ensure buttons are not covered by bottom bar at 320/400px */
     }
 
     .tab-panel.active {
       display: flex;
     }
 
-    /* Tab: Đã soạn (Documents List) */
+    /* Tab: Đã soạn (Documents List) & Multi-select */
+    .dasoan-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 8px;
+      background: var(--bg);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+
+    .subject-group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 8px;
+      background: #1e293b;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 11px;
+      color: #93c5fd;
+      margin-top: 4px;
+    }
+
     .doc-item {
       display: flex;
       flex-direction: column;
@@ -382,6 +409,56 @@
       border: 1px solid var(--border);
       border-radius: 4px;
       background: var(--bg);
+    }
+
+    .doc-item-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .badge-status {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 9999px;
+      font-size: 10px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-status-uncompiled {
+      background: rgba(148, 163, 184, 0.15);
+      color: #cbd5e1;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+    }
+    .badge-status-compiled {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .badge-status-running {
+      background: rgba(99, 102, 241, 0.15);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+    }
+    .badge-status-error {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .chonde-filter-btn {
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .chonde-filter-btn.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
     }
 
     .doc-item-title {
@@ -547,6 +624,9 @@
           <a id="btn-reopen-download" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
             Tải file
           </a>
+          <button id="btn-reopen-open-folder" class="btn-secondary" style="flex: 1;">
+            Mở thư mục
+          </button>
           <button id="btn-reopen-update" class="btn-secondary" style="flex: 1;">
             Cập nhật bình luận
           </button>
@@ -623,12 +703,115 @@
     </details>
   </div>
 
-  <!-- TAB 2: ĐÃ SOẠN (Documents List) -->
+  <!-- TAB 2: CHỌN ĐỀ (Multi-subject & Batch Ingest) -->
+  <div id="tab-panel-chonde" class="tab-panel">
+    <div class="card">
+      <div style="display: flex; gap: 6px;">
+        <select id="select-subject" class="thread-url-input" style="flex: 2; cursor: pointer;">
+          <option value="">-- Chọn môn học --</option>
+        </select>
+        <button id="btn-fetch-subject-exams" class="btn-icon" style="flex: 1;" title="Tải danh sách đề">
+          Lấy đề
+        </button>
+      </div>
+
+      <div style="display: flex; gap: 6px; align-items: center; margin-top: 2px;">
+        <input type="text" id="input-search-exams" class="thread-url-input" placeholder="Tìm kiếm đề thi..." style="flex: 2;" />
+        <div style="display: flex; gap: 4px;">
+          <button class="chonde-filter-btn active" data-type="ALL">Tất cả</button>
+          <button class="chonde-filter-btn" data-type="FE">FE/RE</button>
+          <button class="chonde-filter-btn" data-type="PE">PE</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Selection & Queue Actions Toolbar -->
+    <div class="card" style="padding: 6px 10px;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer;">
+          <input type="checkbox" id="check-select-all-chonde" />
+          <span>Chọn tất cả môn này</span>
+        </label>
+        <span id="badge-chonde-selected" style="font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;">
+          0 đã chọn
+        </span>
+      </div>
+
+      <div style="display: flex; gap: 6px; align-items: center; margin-top: 4px;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; color: var(--muted);">
+          <input type="checkbox" id="check-update-compiled" />
+          <span>Cập nhật cả đề đã soạn</span>
+        </label>
+      </div>
+
+      <button id="btn-start-queue" class="btn-main btn-start" style="margin-top: 6px; padding: 6px 10px; font-size: 12px;">
+        Soạn các đề đã chọn
+      </button>
+
+      <!-- Queue Controls (shown when running or paused) -->
+      <div id="queue-controls-row" style="display: none; gap: 4px; margin-top: 6px;">
+        <button id="btn-queue-pause" class="btn-secondary" style="font-size: 11px; flex: 1;">Dừng</button>
+        <button id="btn-queue-skip" class="btn-secondary" style="font-size: 11px; flex: 1;">Bỏ qua đề này</button>
+        <button id="btn-queue-retry" class="btn-secondary" style="font-size: 11px; flex: 1;">Thử lại lỗi</button>
+      </div>
+
+      <!-- Queue Progress Card -->
+      <div id="queue-progress-card" style="display: none; margin-top: 6px; padding: 6px 8px; background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 4px;">
+        <div id="queue-progress-title" style="font-size: 11px; font-weight: 600; color: #a5b4fc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          Đang soạn đề 1/1
+        </div>
+        <div class="progress-bar-bg" style="margin-top: 4px;">
+          <div id="queue-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
+        </div>
+        <div id="queue-progress-sub" style="font-size: 10px; color: var(--muted); margin-top: 2px;">
+          Câu 0/0
+        </div>
+      </div>
+
+      <!-- Queue Completed Banner -->
+      <div id="queue-completed-banner" style="display: none; margin-top: 6px; padding: 6px 8px; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 4px; justify-content: space-between; align-items: center;">
+        <span id="queue-completed-msg" style="font-size: 11px; font-weight: 600; color: #34d399;">Đã hoàn thành tất cả đề</span>
+        <button id="btn-queue-download-all" class="btn-secondary btn-download" style="font-size: 10px; padding: 2px 6px;">
+          Tải ZIP tất cả vừa soạn
+        </button>
+      </div>
+    </div>
+
+    <!-- Exam list container -->
+    <div id="chonde-list-container" style="display: flex; flex-direction: column; gap: 6px;">
+      <div style="text-align: center; color: var(--muted); font-size: 11px; padding: 16px;">
+        Vui lòng chọn môn học để xem danh sách đề.
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 3: ĐÃ SOẠN (Documents List) -->
   <div id="tab-panel-dasoan" class="tab-panel">
     <div class="card" style="padding: 8px 10px;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 12px; font-weight: 600;">Danh sách đề đã cào</span>
+        <span style="font-size: 12px; font-weight: 600;">Danh sách đề đã soạn</span>
         <button id="btn-refresh-docs" class="btn-icon">Làm mới</button>
+      </div>
+      <!-- Multi-select toolbar -->
+      <div class="dasoan-toolbar" style="margin-top: 4px;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer;">
+          <input type="checkbox" id="check-select-all-dasoan" />
+          <span>Chọn tất cả</span>
+        </label>
+        <span id="badge-dasoan-selected" style="font-size: 11px; color: var(--muted);">0 đã chọn</span>
+        <div style="display: flex; flex-direction: column; gap: 4px; width: 100%; margin-top: 4px;">
+          <div style="display: flex; gap: 4px; width: 100%;">
+            <button id="btn-download-selected-zip" class="btn-secondary btn-download" style="font-size: 11px; flex: 1; padding: 4px 6px; white-space: nowrap;">
+              Tải ZIP đã chọn
+            </button>
+            <button id="btn-download-subject-folder" class="btn-secondary" style="font-size: 11px; flex: 1; padding: 4px 6px; white-space: nowrap;">
+              Tải cả thư mục
+            </button>
+          </div>
+          <button id="btn-open-folder-dasoan" class="btn-secondary" style="font-size: 11px; width: 100%; padding: 4px 6px;">
+            Mở thư mục
+          </button>
+        </div>
       </div>
     </div>
     <div id="docs-list-container" style="display: flex; flex-direction: column; gap: 6px;">
@@ -638,8 +821,17 @@
     </div>
   </div>
 
-  <!-- TAB 3: CÀI ĐẶT (Settings) -->
+  <!-- TAB 4: CÀI ĐẶT (Settings) -->
   <div id="tab-panel-caidat" class="tab-panel">
+    <!-- Batch limit setting in Advanced -->
+    <div class="setting-group">
+      <label class="setting-label">Giới hạn an toàn hàng đợi</label>
+      <div style="display: flex; align-items: center; gap: 8px; margin-top: 2px;">
+        <input type="number" id="input-batch-limit" class="thread-url-input" style="width: 80px;" value="20" min="1" max="50" />
+        <span class="setting-sub">Tối đa 20 đề mỗi lượt</span>
+      </div>
+    </div>
+
     <!-- Format Setting -->
     <div class="setting-group">
       <label class="setting-label">Định dạng đa đáp án</label>
@@ -685,6 +877,7 @@
   <div class="tab-bar-container">
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="soande">Soạn đề</button>
+      <button class="tab-btn" data-tab="chonde">Chọn đề</button>
       <button class="tab-btn" data-tab="dasoan">Đã soạn</button>
       <button class="tab-btn" data-tab="caidat">Cài đặt</button>
     </div>

@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-SCREENSHOT_DIR = Path("docs/qa/screenshots")
+SCREENSHOT_DIR = Path("docs/qa/screenshots").resolve()
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 
 WIDTHS = [320, 400, 500]
@@ -150,16 +150,116 @@ def capture_real_extension_sidepanel():
             page.screenshot(path=str(p_tab_docs))
             print(f"Captured: {p_tab_docs}")
 
-            # 8. Tab Cài đặt: Real API call to /api/settings with all configured providers (Gemini, Groq, Anthropic, OpenAI)
+            # 8. Tab Cài đặt: Real API call to /api/settings with all configured providers
             page.evaluate("""() => {
                 switchTab('caidat');
             }""")
-            # Wait for provider rows to load from real backend
             page.wait_for_selector(".provider-row", timeout=5000)
             time.sleep(0.5)
             p_tab_settings = SCREENSHOT_DIR / f"sidepanel_{width}px_tab_caidat.png"
             page.screenshot(path=str(p_tab_settings))
             print(f"Captured: {p_tab_settings}")
+
+            # 9. Tab Chọn đề: Real UI with subject select & multi-exam selection
+            page.evaluate("""() => {
+                switchTab('chonde');
+                const sel = document.getElementById('select-subject');
+                sel.innerHTML = '<option value="MLN122">MLN122 - Triết học Mác - Lênin</option>';
+                sel.value = 'MLN122';
+                chondeState.selectedSubject = 'MLN122';
+                chondeState.exams = [
+                    { title: 'MLN122 - SU26 - RE', url: 'https://fuoverflow.com/threads/mln122-su26-re.7207/', exam_type: 'FE', term: 'SU26', question_count: 60, compiled: true, compiled_at: '12:27 15/11/2026' },
+                    { title: 'MLN122 - SU26 - FE - C1', url: 'https://fuoverflow.com/threads/mln122-su26-fe-c1.7097/', exam_type: 'FE', term: 'SU26', question_count: 60, compiled: false, compiled_at: null },
+                    { title: 'MLN122 - SU26 - FE - C2', url: 'https://fuoverflow.com/threads/mln122-su26-fe-c2.7098/', exam_type: 'FE', term: 'SU26', question_count: 60, compiled: false, compiled_at: null },
+                    { title: 'MLN122 - SP26 - C1FE', url: 'https://fuoverflow.com/threads/mln122-sp26-c1fe.6344/', exam_type: 'FE', term: 'SP26', question_count: 60, compiled: false, compiled_at: null },
+                    { title: 'MLN122 - SP26 - C2FE', url: 'https://fuoverflow.com/threads/mln122-sp26-c2fe.6343/', exam_type: 'FE', term: 'SP26', question_count: 60, compiled: false, compiled_at: null }
+                ];
+                chondeState.selectedUrls.clear();
+                chondeState.selectedUrls.add('https://fuoverflow.com/threads/mln122-su26-fe-c1.7097/');
+                chondeState.selectedUrls.add('https://fuoverflow.com/threads/mln122-su26-fe-c2.7098/');
+                renderChondeList();
+                updateChondeSelectionBadge();
+            }""")
+            time.sleep(0.5)
+            p_chonde = SCREENSHOT_DIR / f"sidepanel_{width}px_tab_chonde.png"
+            page.screenshot(path=str(p_chonde))
+            print(f"Captured: {p_chonde}")
+
+            # 10. Queue Running state (with 1 simulated error state & question progress)
+            page.evaluate("""() => {
+                switchTab('chonde');
+                document.getElementById('queue-controls-row').style.display = 'flex';
+                document.getElementById('queue-progress-card').style.display = 'block';
+                document.getElementById('queue-completed-banner').style.display = 'none';
+                chondeState.activeQueue = [
+                    { title: 'MLN122 - SU26 - FE - C1', url: 'https://fuoverflow.com/threads/mln122-su26-fe-c1.7097/', status: 'done', compiled: true },
+                    { title: 'MLN122 - SU26 - FE - C2', url: 'https://fuoverflow.com/threads/mln122-su26-fe-c2.7098/', status: 'error', compiled: false },
+                    { title: 'MLN122 - SP26 - C1FE', url: 'https://fuoverflow.com/threads/mln122-sp26-c1fe.6344/', status: 'running', compiled: false }
+                ];
+                chondeState.queueIndex = 2;
+                chondeState.isQueueRunning = true;
+                updateQueueProgressUI('MLN122 - SP26 - C1FE', 23, 60);
+                chondeState.exams[1].status = 'error';
+                renderChondeList();
+            }""")
+            time.sleep(0.5)
+            p_queue_run = SCREENSHOT_DIR / f"sidepanel_{width}px_queue_running.png"
+            page.screenshot(path=str(p_queue_run))
+            print(f"Captured: {p_queue_run}")
+
+            # 11. Queue Completed state
+            page.evaluate("""() => {
+                switchTab('chonde');
+                document.getElementById('queue-controls-row').style.display = 'none';
+                document.getElementById('queue-progress-card').style.display = 'none';
+                const banner = document.getElementById('queue-completed-banner');
+                banner.style.display = 'flex';
+                document.getElementById('queue-completed-msg').innerText = 'Xong 1 · Lỗi 1 · Bỏ qua 1';
+                chondeState.isQueueRunning = false;
+            }""")
+            time.sleep(0.5)
+            p_queue_comp = SCREENSHOT_DIR / f"sidepanel_{width}px_queue_completed.png"
+            page.screenshot(path=str(p_queue_comp))
+            print(f"Captured: {p_queue_comp}")
+
+            # Check horizontal scroll on Tab Đã soạn
+            page.evaluate("""() => {
+                switchTab('dasoan');
+            }""")
+            time.sleep(0.5)
+            scroll_check = page.evaluate("""() => {
+                const el = document.documentElement;
+                const body = document.body;
+                const maxScrollWidth = Math.max(el.scrollWidth, body.scrollWidth);
+                const clientWidth = el.clientWidth;
+                return {
+                    scrollWidth: maxScrollWidth,
+                    clientWidth: clientWidth,
+                    hasHorizontalScroll: maxScrollWidth > clientWidth
+                };
+            }""")
+            print(f"[{width}px Scroll Check Tab Đã Soạn] scrollWidth={scroll_check['scrollWidth']}, clientWidth={scroll_check['clientWidth']}, hasHorizontalScroll={scroll_check['hasHorizontalScroll']}")
+            assert not scroll_check['hasHorizontalScroll'], f"Horizontal scroll detected at {width}px: {scroll_check}"
+
+            # 12. Tab Đã soạn with multi-select active
+            page.evaluate("""() => {
+                switchTab('dasoan');
+            }""")
+            time.sleep(0.8)
+            page.evaluate("""() => {
+                const cbs = document.querySelectorAll('#tab-panel-dasoan .doc-checkbox');
+                if (cbs.length >= 2) {
+                    cbs[0].checked = true;
+                    cbs[1].checked = true;
+                    selectedDocs.add(cbs[0].dataset.filename);
+                    selectedDocs.add(cbs[1].dataset.filename);
+                    updateDasoanSelectionBadge();
+                }
+            }""")
+            time.sleep(0.4)
+            p_dasoan_multi = SCREENSHOT_DIR / f"sidepanel_{width}px_dasoan_multiselect.png"
+            page.screenshot(path=str(p_dasoan_multi))
+            print(f"Captured: {p_dasoan_multi}")
 
             page.close()
 

@@ -107,16 +107,30 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
         if not subj_dir.is_dir():
             continue
         subj_code = subj_dir.name.upper()
+        # Hide test subject folders
+        if "TEST" in subj_code or subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code):
+            continue
+
         for doc_file in subj_dir.glob("*.docx"):
-            # Check existence and non-zero accessibility
             if not doc_file.is_file():
                 continue
-            # Hide test files like "(Extension Ingested)"
-            if "(Extension Ingested)" in doc_file.name:
+            fn_u = doc_file.name.upper()
+            size_b = doc_file.stat().st_size
+
+            # Filter rules:
+            # 1. Hide 20 byte or < 50 byte files
+            if size_b < 50:
                 continue
+            # 2. Hide test files (TEST101..., "MLN122 - Test", (Extension Ingested))
+            if "TEST" in fn_u or "TEST" in subj_code or "(EXTENSION INGESTED)" in fn_u or fn_u.endswith("TEST.DOCX") or " - TEST" in fn_u:
+                continue
+            # 3. Hide files smaller than 50 KB
+            if size_b < 50 * 1024:
+                continue
+
             candidate_files.append((subj_code, doc_file, doc_file.stat().st_mtime))
 
-    # Sort newest first across all subjects
+    # Sort strictly newest first across all subjects by real file modification time (mtime)
     candidate_files.sort(key=lambda x: x[2], reverse=True)
 
     for subj_code, doc_file, mtime in candidate_files:
@@ -141,10 +155,9 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
             ex = exam_res.scalar_one_or_none()
             q_count = ex.question_count if ex else 60
 
-        created_str = meta.get("created_at")
-        if not created_str:
-            created_dt = datetime.fromtimestamp(mtime)
-            created_str = created_dt.strftime("%H:%M %d/%m/%Y")
+        # Always use real file modification time (mtime)
+        created_dt = datetime.fromtimestamp(mtime)
+        created_str = created_dt.strftime("%H:%M %d/%m/%Y")
 
         rel_path = f"data/output/{subj_code}/{fn}"
         download_url = f"/api/exports/download?file={rel_path}"

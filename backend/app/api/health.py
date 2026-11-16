@@ -18,11 +18,16 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     except Exception as e:
         db_status = f"unhealthy: {e}"
 
+    frontend_dist = settings.BASE_DIR / "frontend" / "dist"
+    has_dist = frontend_dist.exists() and (frontend_dist / "index.html").exists()
+
     return {
         "status": "ok",
         "app": "Gomde API",
         "environment": settings.ENVIRONMENT,
         "database": db_status,
         "browser_profile": settings.BROWSER_PROFILE_DIR.exists(),
+        "frontend_dist": has_dist,
+        "dashboard_url": "http://127.0.0.1:8000" if has_dist else "http://localhost:5173",
     }
 

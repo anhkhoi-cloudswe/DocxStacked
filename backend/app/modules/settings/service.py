@@ -312,7 +312,9 @@ def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
             p["key_invalid"] = is_key_invalid
             p["status"] = "key_invalid" if is_key_invalid else ("configured" if has_key else "not_configured")
             p["key_source"] = key_source
-            if "enabled" not in p:
+            if is_key_invalid:
+                p["enabled"] = False
+            elif "enabled" not in p:
                 p["enabled"] = False
 
     return safe_data
@@ -328,16 +330,23 @@ async def update_settings(db: AsyncSession, new_settings: Dict[str, Any]) -> Dic
 
     # Extract and persist API keys for providers
     if "ai" in clean_settings and "providers" in clean_settings["ai"]:
+        invalid_set = get_invalid_key_providers()
         for p in clean_settings["ai"]["providers"]:
+            p_name = p.get("name", "").strip().lower()
             api_key = p.pop("api_key", None)
             env_var = p.get("api_key_env")
             if env_var:
                 if api_key == "__DELETE__":
                     delete_api_key_from_env(env_var)
                     clear_invalid_key_provider(p.get("name", ""))
+                    invalid_set.discard(p_name)
+                    p["enabled"] = False
                 elif api_key and isinstance(api_key, str) and len(api_key.strip()) > 3:
                     save_api_key_to_env(env_var, api_key.strip())
                     clear_invalid_key_provider(p.get("name", ""))
+                    invalid_set.discard(p_name)
+            if p_name in invalid_set and p.get("enabled"):
+                p["enabled"] = False
 
     # Save to database
     sections = ["export", "ai", "voting", "crawl"]

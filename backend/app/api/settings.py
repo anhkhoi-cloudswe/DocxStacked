@@ -241,7 +241,7 @@ async def save_single_key_endpoint(
     Save or update API key for a single provider directly into .env and return updated masked settings.
     Logs key name and length without exposing the raw secret.
     """
-    from backend.app.modules.settings.service import save_api_key_to_env
+    from backend.app.modules.settings.service import save_api_key_to_env, clear_invalid_key_provider
     clean_key = payload.api_key.strip()
     if len(clean_key) <= 3:
         raise HTTPException(status_code=400, detail="Khoá API quá ngắn")
@@ -252,6 +252,33 @@ async def save_single_key_endpoint(
 
     env_var = payload.api_key_env or (target_p.get("api_key_env") if target_p else f"{provider_name.upper()}_API_KEY")
     save_api_key_to_env(env_var, clean_key)
+    clear_invalid_key_provider(provider_name)
+
+    active_updated = await get_active_settings(db)
+    return mask_settings_for_api(active_updated)
+
+
+@router.delete("/keys/{provider_name}")
+async def delete_single_key_endpoint(
+    provider_name: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Delete API key for a single provider from .env and update provider state.
+    """
+    from backend.app.modules.settings.service import delete_api_key_from_env, clear_invalid_key_provider
+    active = await get_active_settings(db)
+    providers = active.get("ai", {}).get("providers", [])
+    target_p = next((p for p in providers if p.get("name", "").lower() == provider_name.strip().lower()), None)
+
+    env_var = (target_p.get("api_key_env") if target_p else f"{provider_name.upper()}_API_KEY")
+    delete_api_key_from_env(env_var)
+    clear_invalid_key_provider(provider_name)
+
+    # Disable provider if key is deleted
+    if target_p:
+        target_p["enabled"] = False
+        await update_settings(db, active)
 
     active_updated = await get_active_settings(db)
     return mask_settings_for_api(active_updated)
@@ -422,13 +449,15 @@ async def test_provider_connection_endpoint(
         system_prompt = "Bạn là trợ lý thị giác máy tính chính xác."
         resp_text = await asyncio.to_thread(provider.call_vision_api, test_img, prompt, system_prompt)
         elapsed_ms = round((time.time() - start_time) * 1000)
+        from backend.app.modules.settings.service import clear_invalid_key_provider
+        clear_invalid_key_provider(provider.name)
 
         return {
             "success": True,
             "provider": provider.name,
             "model": provider.model,
             "latency_ms": elapsed_ms,
-            "message": f"Kết nối thành công! Model hỗ trợ đọc ảnh (vision) tốt (độ trễ {elapsed_ms}ms).",
+            "message": f"Hợp lệ! Kết nối thành công ({elapsed_ms}ms).",
         }
     except ProviderAuthError:
         from backend.app.modules.settings.service import record_invalid_key_provider

@@ -5,7 +5,7 @@ import re
 from typing import List, Optional, Tuple
 import zipfile
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,13 +52,68 @@ def parse_subject_and_category(
     return subject, category
 
 
+class _ChunkYieldingWriter:
+    """Non-buffering stream writer for zipfile with tell() support."""
+    def __init__(self):
+        self.chunks = []
+        self._pos = 0
+
+    def write(self, b):
+        if b:
+            self.chunks.append(b)
+            self._pos += len(b)
+        return len(b)
+
+    def tell(self):
+        return self._pos
+
+    def flush(self):
+        pass
+
+    def pop_chunks(self):
+        c = self.chunks
+        self.chunks = []
+        return c
+
+
+def stream_zip_files(files_with_arcnames: List[Tuple[Path, str]]):
+    """
+    Yields chunks of a zip archive on the fly using ZIP_STORED.
+    Docx and zip files are already compressed, avoiding double compression and keeping RAM minimal.
+    """
+    writer = _ChunkYieldingWriter()
+    with zipfile.ZipFile(writer, mode="w", compression=zipfile.ZIP_STORED) as zf:
+        for c in writer.pop_chunks():
+            yield c
+
+        for fpath, arcname in files_with_arcnames:
+            stat = fpath.stat()
+            zinfo = zipfile.ZipInfo(arcname)
+            zinfo.compress_type = zipfile.ZIP_STORED
+            zinfo.file_size = stat.st_size
+            zinfo.flag_bits = 0x08  # Bit 3: data descriptor for streaming
+
+            with open(fpath, "rb") as src:
+                with zf.open(zinfo, mode="w") as dest:
+                    while chunk := src.read(64 * 1024):
+                        dest.write(chunk)
+                        for c in writer.pop_chunks():
+                            yield c
+
+            for c in writer.pop_chunks():
+                yield c
+
+    for c in writer.pop_chunks():
+        yield c
+
+
 async def build_folder_zip_response(
     job_id: Optional[str] = None,
     subject: Optional[str] = None,
     exam_type: Optional[str] = None,
     paths: Optional[List[str]] = None,
     db: Optional[AsyncSession] = None,
-) -> Response:
+):
     output_dir = settings.OUTPUT_DIR
     target_paths: List[Path] = []
     fallback_sub = subject or "EXAMS"
@@ -102,31 +157,40 @@ async def build_folder_zip_response(
     if not target_paths:
         raise HTTPException(status_code=404, detail="Không tìm thấy file nào để nén tải về.")
 
-    # Build zip archive with folder structure
-    buf = BytesIO()
+    # Filter out test artifacts and tiny placeholder files
+    filtered_targets: List[Path] = []
+    for p in target_paths:
+        if p.stat().st_size < 50:
+            continue
+        p_u = p.name.upper()
+        if "TEST" in p_u or "(EXTENSION INGESTED)" in p_u or p_u.endswith("TEST.DOCX"):
+            continue
+        filtered_targets.append(p)
+
+    if not filtered_targets:
+        filtered_targets = target_paths
+
     folder_names: List[str] = []
+    files_with_arcnames: List[Tuple[Path, str]] = []
 
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in target_paths:
-            sub, cat = parse_subject_and_category(f.name, fallback_subject=fallback_sub, fallback_type=fallback_cat)
-            folder_name = f"{sub}_{cat}"
-            folder_names.append(folder_name)
-            arcname = f"{folder_name}/{f.name}"
-            zf.write(f, arcname=arcname)
-
-    buf.seek(0)
-    zip_bytes = buf.getvalue()
+    for f in filtered_targets:
+        sub, cat = parse_subject_and_category(f.name, fallback_subject=fallback_sub, fallback_type=fallback_cat)
+        folder_name = f"{sub}_{cat}"
+        folder_names.append(folder_name)
+        arcname = f"{folder_name}/{f.name}"
+        files_with_arcnames.append((f, arcname))
 
     unique_folders = sorted(list(set(folder_names)))
+    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     if len(unique_folders) == 1:
-        zip_filename = f"{unique_folders[0]}.zip"
+        zip_filename = f"{unique_folders[0]}_{date_str}.zip"
     elif 1 < len(unique_folders) <= 3:
-        zip_filename = f"{'_'.join(unique_folders)}.zip"
+        zip_filename = f"{'_'.join(unique_folders)}_{date_str}.zip"
     else:
-        zip_filename = f"DocxStacked_Folders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        zip_filename = f"DocxStacked_Folders_{date_str}.zip"
 
-    return Response(
-        content=zip_bytes,
+    return StreamingResponse(
+        stream_zip_files(files_with_arcnames),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )
@@ -194,33 +258,68 @@ async def download_folder_endpoint(
 
 
 @router.get("/bundle.zip")
-async def download_bundle_zip(job_id: Optional[str] = None):
+async def download_bundle_zip(
+    job_id: Optional[str] = None,
+    subject: Optional[str] = None,
+    files: Optional[str] = Query(None, description="Comma-separated filenames or paths to include in the bundle"),
+):
     """
-    Download a zip bundle containing all exported documents.
+    Download a zip bundle containing exported documents streamed in real-time with ZIP_STORED.
+    If files param is provided, bundles only those files.
+    If subject param is provided, bundles all files for that subject.
     If job_id is specified, bundles files for that job.
     """
     output_dir = settings.OUTPUT_DIR
     if not output_dir.exists():
         raise HTTPException(status_code=404, detail="No export files available to bundle")
 
-    # Collect files
-    target_files = [p for p in output_dir.rglob("*.docx") if p.is_file()]
-    if not target_files:
-        raise HTTPException(status_code=404, detail="No exported .docx files found to bundle")
+    target_files: List[Path] = []
 
-    # Create zip in memory
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in target_files:
-            rel_arcname = str(f.relative_to(output_dir)).replace("\\", "/")
-            zf.write(f, arcname=rel_arcname)
+    if files:
+        req_files = [f.strip() for f in files.split(",") if f.strip()]
+        for fn in req_files:
+            # find match in output_dir
+            clean_fn = fn.replace("\\", "/").split("/")[-1]
+            matches = list(output_dir.glob(f"*/{clean_fn}"))
+            if matches:
+                target_files.append(matches[0])
+            else:
+                p_cand = (settings.BASE_DIR / fn).resolve()
+                if p_cand.exists() and p_cand.is_file() and p_cand.is_relative_to(output_dir.resolve()):
+                    target_files.append(p_cand)
+    elif subject:
+        sub_dir = output_dir / subject
+        if sub_dir.exists():
+            target_files = [p for p in sub_dir.glob("*.docx") if p.is_file()] + [p for p in sub_dir.glob("*.zip") if p.is_file()]
+    else:
+        target_files = [p for p in output_dir.rglob("*.docx") if p.is_file()]
 
-    buf.seek(0)
-    zip_bytes = buf.getvalue()
-    bundle_filename = f"DocxStacked_Bundle_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    # Filter out test artifacts
+    valid_targets: List[Path] = []
+    for f in target_files:
+        if f.stat().st_size < 50:
+            continue
+        f_u = f.name.upper()
+        if "TEST" in f_u or "(EXTENSION INGESTED)" in f_u or f_u.endswith("TEST.DOCX"):
+            continue
+        valid_targets.append(f)
 
-    return Response(
-        content=zip_bytes,
+    if not valid_targets:
+        if target_files:
+            valid_targets = target_files
+        else:
+            raise HTTPException(status_code=404, detail="No exported files found to bundle")
+
+    files_with_arcnames: List[Tuple[Path, str]] = []
+    for f in valid_targets:
+        rel_arcname = str(f.relative_to(output_dir)).replace("\\", "/")
+        files_with_arcnames.append((f, rel_arcname))
+
+    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    bundle_filename = f"DocxStacked_Bundle_{subject or 'Selected'}_{date_str}.zip" if (subject or files) else f"DocxStacked_Bundle_{date_str}.zip"
+
+    return StreamingResponse(
+        stream_zip_files(files_with_arcnames),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{bundle_filename}"'},
     )

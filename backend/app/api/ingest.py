@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -218,15 +218,26 @@ async def check_exam_exists(
     # Read sidecar meta if exists
     meta_path = settings.DATA_DIR / "output"
     compiled_dt = exam.updated_at or exam.created_at
-    compiled_formatted = compiled_dt.strftime("%H:%M %d/%m/%Y") if compiled_dt else ""
-    compiled_time_short = compiled_dt.strftime("%H:%M") if compiled_dt else ""
+    if compiled_dt:
+        if compiled_dt.tzinfo is None:
+            compiled_utc = compiled_dt.replace(tzinfo=timezone.utc)
+        else:
+            compiled_utc = compiled_dt.astimezone(timezone.utc)
+        compiled_iso_utc = compiled_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        compiled_formatted = compiled_dt.strftime("%H:%M %d/%m/%Y")
+        compiled_time_short = compiled_dt.strftime("%H:%M")
+    else:
+        compiled_iso_utc = None
+        compiled_formatted = ""
+        compiled_time_short = ""
 
     return {
         "exists": True,
         "exam_id": exam.id,
         "subject_code": exam.subject_id,  # Subject id or code
         "title": exam.title,
-        "compiled_at": compiled_formatted,
+        "compiled_at": compiled_iso_utc or compiled_formatted,
+        "compiled_at_iso": compiled_iso_utc,
         "compiled_time_short": compiled_time_short,
         "question_count": len(questions),
         "existing_media_ids": existing_media_ids,

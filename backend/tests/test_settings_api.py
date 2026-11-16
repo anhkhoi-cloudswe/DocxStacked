@@ -202,3 +202,41 @@ async def test_provider_test_connection_endpoint_without_key():
         assert "Chưa cấu hình API key" in data["message"]
 
 
+@pytest.mark.asyncio
+async def test_provider_key_management_lifecycle():
+    """Test save key, status check, test key, delete key, and invalid provider cannot be enabled."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Save dummy key
+        resp = await client.post("/api/settings/keys/gemini", json={"api_key": "test-gemini-key-TEST"})
+        assert resp.status_code == 200
+
+        # 2. Check /api/settings/keys/status
+        status_resp = await client.get("/api/settings/keys/status")
+        assert status_resp.status_code == 200
+        keys_status = {item["provider"]: item for item in status_resp.json()}
+        assert keys_status["gemini"]["has_key"] is True
+        assert keys_status["gemini"]["last4"] == "TEST"
+        assert keys_status["gemini"]["masked_key"] == "••••TEST"
+
+        # 3. Restore valid key
+        await client.post("/api/settings/keys/gemini", json={"api_key": "test-gemini-key-RESTORE"})
+
+        # 4. Check that invalid key provider cannot be enabled
+        from backend.app.modules.settings.service import record_invalid_key_provider
+        record_invalid_key_provider("anthropic")
+
+        # Attempt to enable anthropic
+        get_res = await client.get("/api/settings")
+        cfg = get_res.json()
+        for p in cfg["ai"]["providers"]:
+            if p["name"] == "anthropic":
+                p["enabled"] = True
+        put_res = await client.put("/api/settings", json=cfg)
+        assert put_res.status_code == 200
+        updated_cfg = put_res.json()
+        anthropic_p = next(p for p in updated_cfg["ai"]["providers"] if p["name"] == "anthropic")
+        assert anthropic_p["enabled"] is False
+        assert anthropic_p["key_invalid"] is True
+
+

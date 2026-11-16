@@ -686,6 +686,17 @@ def crop_exam_images(
 
     # --- Pass 1: Initial Crop ---
     for q in questions:
+        if not q.local_image_path:
+            # Question has no local image (e.g. comment-only or text-only)
+            res = CropResult(
+                cropped_image=None,
+                box=(0, 0, 0, 0),
+                layout="unknown",
+                warnings=["no_image"],
+                success=False,
+            )
+            results.append(res)
+            continue
         raw_p = Path(q.local_image_path)
         full_raw = raw_p if raw_p.is_absolute() else (get_settings().BASE_DIR / raw_p)
         dst_cropped = cropped_dir / f"q{q.index:03d}.png"

@@ -52,7 +52,13 @@ AsyncSessionLocal = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
-async_session_factory = AsyncSessionLocal
+
+class _AsyncSessionFactoryProxy:
+    """Proxy object that always routes to the currently active AsyncSessionLocal."""
+    def __call__(self, *args, **kwargs):
+        return AsyncSessionLocal(*args, **kwargs)
+
+async_session_factory = _AsyncSessionFactoryProxy()
 
 # Sync Engine for worker or sync utility tasks
 sync_connect_args = {"timeout": 30} if "sqlite" in settings.SYNC_DATABASE_URL else {}
@@ -70,6 +76,47 @@ SyncSessionLocal = sessionmaker(
 )
 
 Base = declarative_base()
+
+
+def rebind_db_engines() -> None:
+    """Rebind engines and sessionmakers when DOCXSTACKED_DATA_DIR / settings change."""
+    global settings, async_engine, AsyncSessionLocal, async_session_factory, sync_engine, SyncSessionLocal
+    settings = get_settings()
+    if "sqlite" in settings.DATABASE_URL:
+        db_path_str = settings.DATABASE_URL.split("///")[-1]
+        db_p = Path(db_path_str)
+        if not db_p.is_absolute():
+            db_p = settings.BASE_DIR / db_p
+        db_p.parent.mkdir(parents=True, exist_ok=True)
+        check_and_migrate_legacy_db(db_p.parent, db_p)
+
+    c_args = {"timeout": 30} if "sqlite" in settings.DATABASE_URL else {}
+    async_engine = create_async_engine(
+        settings.DATABASE_URL,
+        echo=False,
+        future=True,
+        connect_args=c_args,
+    )
+    AsyncSessionLocal = async_sessionmaker(
+        bind=async_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
+
+    s_args = {"timeout": 30} if "sqlite" in settings.SYNC_DATABASE_URL else {}
+    sync_engine = create_engine(
+        settings.SYNC_DATABASE_URL,
+        echo=False,
+        future=True,
+        connect_args=s_args,
+    )
+    SyncSessionLocal = sessionmaker(
+        bind=sync_engine,
+        autocommit=False,
+        autoflush=False,
+    )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
