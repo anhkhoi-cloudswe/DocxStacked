@@ -222,6 +222,15 @@ async def test_provider_key_management_lifecycle():
         # 3. Restore valid key
         await client.post("/api/settings/keys/gemini", json={"api_key": "test-gemini-key-RESTORE"})
 
+        # 3b. Verify persistent status: valid status and timestamp are populated
+        status_resp2 = await client.get("/api/settings/keys/status")
+        assert status_resp2.status_code == 200
+        keys_status2 = {item["provider"]: item for item in status_resp2.json()}
+        assert keys_status2["gemini"]["has_key"] is True
+        assert keys_status2["gemini"]["valid"] is True
+        assert keys_status2["gemini"]["enabled"] is True
+        assert keys_status2["gemini"]["validation_time"] is not None
+
         # 4. Check that invalid key provider cannot be enabled
         from backend.app.modules.settings.service import record_invalid_key_provider
         record_invalid_key_provider("anthropic")

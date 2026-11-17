@@ -16,6 +16,10 @@ def anyio_backend():
 def isolate_test_data_dir():
     """Ensure all pytest suites write strictly to a temporary DOCXSTACKED_DATA_DIR, cleaned up after."""
     temp_dir = tempfile.mkdtemp(prefix="docxstacked_pytest_")
+    # Also initialize a dummy isolated .env inside temp_dir
+    temp_env = Path(temp_dir) / ".env"
+    temp_env.write_text("TEST_MODE=1\n", encoding="utf-8")
+
     old_env = os.environ.get("DOCXSTACKED_DATA_DIR")
     os.environ["DOCXSTACKED_DATA_DIR"] = temp_dir
     get_settings.cache_clear()

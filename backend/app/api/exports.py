@@ -290,9 +290,9 @@ async def download_bundle_zip(
     elif subject:
         sub_dir = output_dir / subject
         if sub_dir.exists():
-            target_files = [p for p in sub_dir.glob("*.docx") if p.is_file()] + [p for p in sub_dir.glob("*.zip") if p.is_file()]
+            target_files = [p for p in sub_dir.rglob("*") if p.is_file() and p.suffix.lower() in (".docx", ".zip", ".pdf", ".png", ".jpg", ".jpeg")]
     else:
-        target_files = [p for p in output_dir.rglob("*.docx") if p.is_file()]
+        target_files = [p for p in output_dir.rglob("*") if p.is_file() and p.suffix.lower() in (".docx", ".zip", ".pdf", ".png", ".jpg", ".jpeg")]
 
     # Filter out test artifacts
     valid_targets: List[Path] = []

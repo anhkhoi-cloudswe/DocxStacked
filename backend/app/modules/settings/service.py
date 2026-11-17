@@ -47,6 +47,37 @@ def record_invalid_key_provider(provider_name: str) -> None:
         logger.warning(f"Could not persist invalid provider: {e}")
 
 
+def get_key_validation_history_file() -> Path:
+    return app_settings.STORAGE_DIR / "cache" / "ai_keys_validation.json"
+
+
+def get_key_validation_history() -> Dict[str, Dict[str, Any]]:
+    f = get_key_validation_history_file()
+    if f.exists():
+        try:
+            return json.loads(f.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"Could not read key validation history file: {e}")
+    return {}
+
+
+def record_key_validation_result(provider_name: str, valid: bool, message: str = "") -> None:
+    f = get_key_validation_history_file()
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        data = get_key_validation_history()
+        now_dt = datetime.now()
+        data[provider_name.strip().lower()] = {
+            "valid": valid,
+            "message": message,
+            "timestamp": now_dt.isoformat(),
+            "time_formatted": now_dt.strftime("%H:%M"),
+        }
+        f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Could not save key validation history: {e}")
+
+
 def clear_invalid_key_provider(provider_name: str) -> None:
     """Remove provider from invalid key set after user updates API key."""
     f = get_invalid_key_providers_file()
@@ -228,13 +259,21 @@ def validate_settings(settings_data: Dict[str, Any]) -> None:
                 raise ValueError("Chiều rộng ảnh trong Word phải nằm trong khoảng 5.0cm đến 25.0cm")
 
 
+def get_env_file_path() -> Path:
+    custom_data = os.environ.get("DOCXSTACKED_DATA_DIR")
+    if custom_data:
+        p = Path(custom_data) / ".env"
+        return p
+    return app_settings.BASE_DIR / ".env"
+
+
 def save_api_key_to_env(env_var_name: str, key_value: str) -> None:
     """
-    Persist API key securely to the single root .env file.
+    Persist API key securely to the environment file.
     Logs key name and length without leaking raw secret.
     """
     clean_val = key_value.strip()
-    root_env = app_settings.BASE_DIR / ".env"
+    root_env = get_env_file_path()
 
     try:
         if not root_env.exists():
@@ -257,9 +296,9 @@ def save_api_key_to_env(env_var_name: str, key_value: str) -> None:
 
 def delete_api_key_from_env(env_var_name: str) -> None:
     """
-    Remove API key securely from the root .env file and in-memory os.environ.
+    Remove API key securely from the environment file and in-memory os.environ.
     """
-    root_env = app_settings.BASE_DIR / ".env"
+    root_env = get_env_file_path()
     try:
         if root_env.exists():
             content = root_env.read_text(encoding="utf-8")
@@ -279,7 +318,7 @@ def mask_settings_for_api(settings_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     safe_data = copy.deepcopy(settings_dict)
 
-    root_env = app_settings.BASE_DIR / ".env"
+    root_env = get_env_file_path()
     root_vals = dotenv_values(root_env) if root_env.exists() else {}
 
     if "ai" in safe_data and "providers" in safe_data["ai"]:

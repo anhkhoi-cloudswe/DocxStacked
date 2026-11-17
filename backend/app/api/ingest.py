@@ -231,10 +231,17 @@ async def check_exam_exists(
         compiled_formatted = ""
         compiled_time_short = ""
 
+    # Query subject code to return string rather than subject_id
+    subj_code = ""
+    if exam.subject_id:
+        s_obj = await db.get(Subject, exam.subject_id)
+        if s_obj:
+            subj_code = s_obj.code
+
     return {
         "exists": True,
         "exam_id": exam.id,
-        "subject_code": exam.subject_id,  # Subject id or code
+        "subject_code": subj_code or str(exam.subject_id),  # Real subject code e.g. MLN122
         "title": exam.title,
         "compiled_at": compiled_iso_utc or compiled_formatted,
         "compiled_at_iso": compiled_iso_utc,
@@ -708,3 +715,79 @@ async def ingest_exam(
         "docx_path": str(docx_path),
         "download_url": f"/api/exports/{exam.id}/download",
     }
+
+
+class PEChunkUploadRequest(BaseModel):
+    subject_code: str
+    exam_title: str
+    file_name: str
+    chunk_index: int
+    total_chunks: int
+    chunk_base64: str
+
+
+@router.post("/pe-upload-chunk")
+async def upload_pe_chunk(
+    payload: PEChunkUploadRequest,
+    request: Request,
+    x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
+    x_local_key: Optional[str] = Header(None, alias="X-Local-Key"),
+):
+    """
+    Upload large PE files in chunks (approx 8MB per chunk).
+    Reassembles into data/output/{SUBJECT}/{SUBJECT}_PE/{ExamTitle}/{file_name}.
+    """
+    token = x_ingest_token or x_local_key
+    _verify_ingest_access(request, token)
+
+    subj = payload.subject_code.upper().strip()
+    clean_title = re.sub(r'[\\/*?:"<>|]', '', payload.exam_title).strip()
+    safe_filename = Path(payload.file_name).name
+
+    target_dir = settings.OUTPUT_DIR / subj / f"{subj}_PE" / clean_title
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    temp_chunk_dir = settings.STORAGE_DIR / "cache" / "pe_chunks" / f"{subj}_{clean_title}_{safe_filename}"
+    temp_chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    chunk_file = temp_chunk_dir / f"chunk_{payload.chunk_index:05d}.bin"
+    raw_b64 = payload.chunk_base64
+    if "," in raw_b64:
+        raw_b64 = raw_b64.split(",", 1)[1]
+    # Handle padding if needed
+    missing_padding = len(raw_b64) % 4
+    if missing_padding:
+        raw_b64 += "=" * (4 - missing_padding)
+    chunk_bytes = base64.b64decode(raw_b64)
+    chunk_file.write_bytes(chunk_bytes)
+
+    # Check if all chunks have been received
+    received = list(temp_chunk_dir.glob("chunk_*.bin"))
+    if len(received) >= payload.total_chunks:
+        final_file = target_dir / safe_filename
+        with open(final_file, "wb") as outfile:
+            for idx in range(payload.total_chunks):
+                cf = temp_chunk_dir / f"chunk_{idx:05d}.bin"
+                if not cf.exists():
+                    raise HTTPException(status_code=400, detail=f"Missing chunk {idx}")
+                outfile.write(cf.read_bytes())
+
+        # Cleanup chunk dir
+        import shutil
+        shutil.rmtree(temp_chunk_dir, ignore_errors=True)
+
+        logger.info(f"PE file successfully reassembled: {final_file} ({final_file.stat().st_size} bytes)")
+        return {
+            "status": "completed",
+            "file_name": safe_filename,
+            "size_bytes": final_file.stat().st_size,
+            "saved_path": str(final_file.relative_to(settings.BASE_DIR)).replace("\\", "/"),
+        }
+
+    return {
+        "status": "chunk_received",
+        "chunk_index": payload.chunk_index,
+        "chunks_received": len(received),
+        "total_chunks": payload.total_chunks,
+    }
+

@@ -28,7 +28,7 @@
     body {
       background-color: var(--bg);
       color: var(--text);
-      padding: 12px;
+      padding: 10px;
       padding-bottom: 54px; /* Space for bottom tab bar */
       font-size: 13px;
       line-height: 1.4;
@@ -43,7 +43,7 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding-bottom: 8px;
+      padding-bottom: 6px;
       border-bottom: 1px solid var(--border);
     }
 
@@ -85,13 +85,23 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 8px 12px;
+      padding: 8px 10px;
       display: flex;
       flex-direction: column;
       gap: 6px;
     }
 
-    /* 2. Exam Card */
+    .card-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
     .exam-header {
       display: flex;
       align-items: center;
@@ -100,7 +110,7 @@
     }
 
     .exam-title-text {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
       color: var(--text);
       white-space: nowrap;
@@ -114,7 +124,7 @@
       border: 1px solid var(--border);
       color: var(--muted);
       border-radius: 4px;
-      padding: 4px 6px;
+      padding: 3px 6px;
       font-size: 11px;
       cursor: pointer;
       display: inline-flex;
@@ -134,7 +144,7 @@
       background: var(--bg);
       border: 1px solid var(--border);
       border-radius: 4px;
-      padding: 6px 8px;
+      padding: 5px 8px;
       color: #fff;
       font-size: 12px;
       outline: none;
@@ -144,49 +154,140 @@
       border-color: var(--primary);
     }
 
-    /* Reopen Exam Banner */
-    .reopen-banner {
-      display: none;
-      background: rgba(99, 102, 241, 0.1);
-      border: 1px solid rgba(99, 102, 241, 0.25);
-      border-radius: 4px;
-      padding: 8px;
-      flex-direction: column;
-      gap: 6px;
-      font-size: 12px;
+    /* Combobox Styles */
+    .combobox-container {
+      position: relative;
+      width: 100%;
     }
 
-    .reopen-title {
-      font-weight: 600;
+    .combobox-input-wrap {
+      display: flex;
+      align-items: center;
+      position: relative;
+      width: 100%;
+    }
+
+    .combobox-input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 26px 6px 8px;
+      color: #fff;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .combobox-input:focus {
+      border-color: var(--primary);
+    }
+
+    .combobox-clear-btn {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 4px;
+      display: none;
+    }
+
+    .combobox-clear-btn:hover {
+      color: #fff;
+    }
+
+    .combobox-dropdown {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      background: #0b1120;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      max-height: 220px;
+      overflow-y: auto;
+      z-index: 50;
+      display: none;
+    }
+
+    .combobox-item {
+      padding: 6px 8px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .combobox-item:last-child {
+      border-bottom: none;
+    }
+
+    .combobox-item.active, .combobox-item:hover {
+      background: #1e293b;
       color: #a5b4fc;
-      font-variant-numeric: tabular-nums;
+    }
+
+    .combobox-item-code {
+      font-weight: 700;
+      color: #93c5fd;
+      margin-right: 6px;
+    }
+
+    .combobox-item-name {
+      color: var(--muted);
+      font-size: 11px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      flex: 1;
+      text-align: right;
     }
 
-    .reopen-actions {
-      display: flex;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .reopen-checkbox-label {
-      display: flex;
-      align-items: center;
-      gap: 4px;
+    .combobox-empty {
+      padding: 8px;
       font-size: 11px;
       color: var(--muted);
-      cursor: pointer;
+      text-align: center;
+    }
+
+    .recent-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
       margin-top: 2px;
     }
 
-    /* 3. Primary Button */
+    .recent-chip {
+      background: rgba(99, 102, 241, 0.12);
+      border: 1px solid rgba(99, 102, 241, 0.25);
+      color: #a5b4fc;
+      border-radius: 9999px;
+      padding: 1px 7px;
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .recent-chip:hover {
+      background: rgba(99, 102, 241, 0.25);
+      color: #fff;
+    }
+
+    /* Primary Action Buttons */
     .btn-main {
       width: 100%;
-      padding: 9px 12px;
+      padding: 8px 12px;
       border-radius: var(--radius);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
       border: none;
       cursor: pointer;
@@ -221,7 +322,43 @@
       cursor: not-allowed;
     }
 
-    /* 4. Progress Bar & Compact Subtitle */
+    .btn-secondary {
+      padding: 5px 8px;
+      background: #334155;
+      color: #fff;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #475569;
+    }
+
+    .btn-secondary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-download {
+      background: var(--success);
+      border-color: var(--success);
+      color: #fff;
+    }
+
+    .btn-download:hover:not(:disabled) {
+      background: #059669;
+    }
+
+    /* Progress Bar */
     .progress-bar-bg {
       width: 100%;
       height: 6px;
@@ -237,7 +374,6 @@
       transition: width 0.15s ease;
     }
 
-    /* Compact Stats Line */
     .stats-line {
       font-size: 11px;
       color: var(--muted);
@@ -246,109 +382,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-
-    /* 5. Result Card */
-    .result-card {
-      display: none;
-      background: rgba(16, 185, 129, 0.08);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-      border-radius: var(--radius);
-      padding: 10px 12px;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .result-title {
-      color: #34d399;
-      font-weight: 600;
-      font-size: 12px;
-      white-space: nowrap;
-    }
-
-    .result-btn-row {
-      display: flex;
-      gap: 8px;
-    }
-
-    .btn-secondary {
-      flex: 1;
-      padding: 6px 10px;
-      background: #334155;
-      color: #fff;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      font-size: 12px;
-      font-weight: 600;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 4px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-
-    .btn-secondary:hover {
-      background: #475569;
-    }
-
-    .btn-download {
-      background: var(--success);
-      border-color: var(--success);
-      color: #fff;
-    }
-
-    .btn-download:hover {
-      background: #059669;
-    }
-
-    /* 6. Accordion Details (Log & Advanced) */
-    details {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 6px 10px;
-      font-size: 12px;
-    }
-
-    details summary {
-      cursor: pointer;
-      color: var(--muted);
-      font-weight: 600;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      outline: none;
-      user-select: none;
-    }
-
-    .log-box {
-      margin-top: 6px;
-      background: #020617;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 6px 8px;
-      height: 120px;
-      overflow-y: auto;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 12px;
-      color: #cbd5e1;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .log-line {
-      white-space: nowrap;
-      text-overflow: ellipsis;
-      overflow: hidden;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .log-info { color: #93c5fd; }
-    .log-success { color: #86efac; }
-    .log-warn { color: #fde047; }
-    .log-error { color: #fca5a5; }
 
     /* Notice Banner */
     .notice-box {
@@ -362,50 +395,40 @@
       border: 1px solid rgba(239, 68, 68, 0.3);
     }
 
+    /* Filter Chips */
+    .filter-chip-btn {
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .filter-chip-btn.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+
     /* Tab Panels */
     .tab-panel {
       display: none;
       flex-direction: column;
       gap: 8px;
-      padding-bottom: 64px; /* Ensure buttons are not covered by bottom bar at 320/400px */
+      padding-bottom: 50px;
     }
 
     .tab-panel.active {
       display: flex;
     }
 
-    /* Tab: Đã soạn (Documents List) & Multi-select */
-    .dasoan-toolbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      align-items: center;
-      justify-content: space-between;
-      padding: 6px 8px;
-      background: var(--bg);
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-    }
-
-    .subject-group-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 4px 8px;
-      background: #1e293b;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      font-weight: 700;
-      font-size: 11px;
-      color: #93c5fd;
-      margin-top: 4px;
-    }
-
+    /* Document Items */
     .doc-item {
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 8px 10px;
+      gap: 4px;
+      padding: 6px 8px;
       border: 1px solid var(--border);
       border-radius: 4px;
       background: var(--bg);
@@ -414,7 +437,24 @@
     .doc-item-row {
       display: flex;
       align-items: flex-start;
-      gap: 8px;
+      gap: 6px;
+    }
+
+    .doc-item-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .doc-item-meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      font-variant-numeric: tabular-nums;
     }
 
     .badge-status {
@@ -446,94 +486,69 @@
       border: 1px solid rgba(239, 68, 68, 0.3);
     }
 
-    .chonde-filter-btn {
-      padding: 3px 8px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: transparent;
-      color: var(--muted);
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .chonde-filter-btn.active {
-      background: var(--primary);
-      color: #fff;
-      border-color: var(--primary);
-    }
-
-    .doc-item-title {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .doc-item-meta {
-      font-size: 11px;
-      color: var(--muted);
-      display: flex;
-      justify-content: space-between;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .doc-item-actions {
-      display: flex;
-      gap: 6px;
-    }
-
-    /* Tab: Cài đặt (Settings) */
-    .setting-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 8px 10px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: var(--bg);
-    }
-
-    .setting-label {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text);
-    }
-
-    .setting-sub {
-      font-size: 11px;
-      color: var(--muted);
-    }
-
-    .provider-row {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      padding: 6px 8px;
-      border: 1px solid var(--border);
-      border-radius: 4px;
+    /* Sticky Bottom Action Bar in Soạn đề */
+    .sticky-action-bar {
+      position: sticky;
+      bottom: 46px; /* Just above tab bar */
       background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
+      z-index: 40;
     }
 
-    .provider-header {
+    /* Details Accordions */
+    details {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 600;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 4px;
+      outline: none;
+      user-select: none;
     }
 
-    .badge-invalid {
-      font-size: 10px;
-      padding: 1px 6px;
-      border-radius: 9999px;
-      background: rgba(239, 68, 68, 0.15);
-      color: #f87171;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      font-weight: 600;
+    .log-box {
+      margin-top: 6px;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      height: 110px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      color: #cbd5e1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .log-line {
       white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      font-variant-numeric: tabular-nums;
     }
+    .log-info { color: #93c5fd; }
+    .log-success { color: #86efac; }
+    .log-warn { color: #fde047; }
+    .log-error { color: #fca5a5; }
 
-    /* 7. Bottom Navigation Bar */
+    /* Bottom Navigation Bar - Exactly 3 tabs */
     .tab-bar-container {
       position: fixed;
       bottom: 0;
@@ -586,95 +601,176 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-
     .dashboard-link:hover {
       color: var(--primary);
+    }
+
+    /* Provider Row in Settings */
+    .provider-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+    }
+    .provider-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
     }
   </style>
 </head>
 <body>
 
-  <!-- Top Header: Short Title & Status Chip -->
+  <!-- Top Header: Title & Status Chip -->
   <div class="header">
     <span class="brand-title">DocxStacked</span>
     <span id="backend-status" class="status-chip chip-offline">Backend Offline</span>
   </div>
 
-  <!-- TAB 1: SOẠN ĐỀ (Active by default) -->
-  <div id="tab-panel-soande" class="tab-panel active">
-    <!-- Notification Banner (Only in Soạn đề tab) -->
-    <div id="ui-notice-box" class="notice-box"></div>
+  <!-- Notification Banner -->
+  <div id="ui-notice-box" class="notice-box"></div>
 
-    <!-- Exam Card: Truncated Title & Read from Tab Icon Button -->
-    <div class="card">
+  <!-- ======================================================== -->
+  <!-- TAB 1: SOẠN ĐỀ (Combined Open Exam + Other Subjects Queue) -->
+  <!-- ======================================================== -->
+  <div id="tab-panel-soande" class="tab-panel active">
+
+    <!-- KHỐI 1: ĐỀ ĐANG MỞ -->
+    <div class="card" id="card-open-exam">
+      <div class="card-title">
+        <span>Đề đang mở</span>
+        <span id="open-exam-badge" class="badge-status badge-status-uncompiled">Chưa soạn</span>
+      </div>
+
       <div class="exam-header">
-        <span id="thread-title-display" class="exam-title-text" title="Chưa chọn đề thi nào">
-          Chưa chọn đề thi nào
+        <span id="thread-title-display" class="exam-title-text" title="Chưa mở đề nào">
+          Chưa mở đề nào
         </span>
         <button id="btn-sync-tab" class="btn-icon" title="Đọc từ tab hiện tại">
-          Đọc từ tab
+          Đọc tab
         </button>
       </div>
+
       <input type="text" id="input-thread-url" class="thread-url-input" placeholder="https://fuoverflow.com/threads/..." />
 
-      <!-- Reopen Card for already compiled exam -->
-      <div id="reopen-card" class="reopen-banner">
-        <div id="reopen-text" class="reopen-title">Đã soạn lúc --:-- (0 câu)</div>
-        <div class="reopen-actions">
-          <a id="btn-reopen-download" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
-            Tải file
-          </a>
-          <button id="btn-reopen-open-folder" class="btn-secondary" style="flex: 1;">
-            Mở thư mục
-          </button>
-          <button id="btn-reopen-update" class="btn-secondary" style="flex: 1;">
-            Cập nhật bình luận
-          </button>
-        </div>
-        <label class="reopen-checkbox-label">
-          <input type="checkbox" id="check-redownload-images" />
-          <span>Tải lại cả ảnh</span>
-        </label>
+      <!-- Single Action Row for Open Exam -->
+      <div style="display: flex; gap: 6px; align-items: center; margin-top: 2px;">
+        <button id="btn-main-action" class="btn-main btn-start" style="flex: 2;">
+          Soạn đề này
+        </button>
+        <a id="btn-reopen-download" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1; display: none;">
+          Tải file
+        </a>
       </div>
     </div>
 
-    <!-- Action Controls: Single Primary Button & Progress Bar -->
-    <div class="card">
-      <button id="btn-main-action" class="btn-main btn-start">
-        Bắt đầu soạn
-      </button>
+    <!-- KHỐI 2: THÊM ĐỀ KHÁC (Combobox kiêm tìm kiếm môn học) -->
+    <div class="card" id="card-subject-picker">
+      <div class="card-title">
+        <span>Thêm đề khác</span>
+        <span id="selected-subject-label" style="color: #93c5fd; font-weight: normal; text-transform: none;"></span>
+      </div>
+
+      <!-- Combobox input with clear button & dropdown -->
+      <div class="combobox-container">
+        <div class="combobox-input-wrap">
+          <input type="text" id="input-subject-combobox" class="combobox-input" placeholder="Gõ mã hoặc tên môn (vd: mln, csd)..." autocomplete="off" />
+          <button id="btn-clear-combobox" class="combobox-clear-btn" title="Xoá">&times;</button>
+        </div>
+        <div id="subject-dropdown" class="combobox-dropdown"></div>
+      </div>
+
+      <!-- Recent 5 subjects chips -->
+      <div style="display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); margin-top: 2px;">
+        <span>Gần đây:</span>
+        <div id="recent-subjects-list" class="recent-chips">
+          <span style="color: var(--muted); font-size: 10px;">(chưa có)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- KHỐI 3: DANH SÁCH ĐỀ THI TRONG MÔN ĐÃ CHỌN (Hiện sau khi chọn môn) -->
+    <div id="card-exam-list" class="card" style="display: none;">
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <input type="text" id="input-search-exams" class="thread-url-input" placeholder="Lọc đề trong môn này..." style="flex: 2;" />
+        <div style="display: flex; gap: 2px;">
+          <button class="filter-chip-btn active" data-type="ALL">Tất cả</button>
+          <button class="filter-chip-btn" data-type="FE">FE-RE</button>
+          <button class="filter-chip-btn" data-type="PE">PE</button>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 2px 0;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer;">
+          <input type="checkbox" id="check-select-all-chonde" />
+          <span>Chọn tất cả</span>
+        </label>
+        <span id="badge-chonde-selected" style="font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;">
+          0 đã chọn
+        </span>
+      </div>
+
+      <!-- Exam list container with spinner state -->
+      <div id="chonde-list-container" style="display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto;">
+        <div style="text-align: center; color: var(--muted); font-size: 11px; padding: 12px;">
+          Chọn môn học để xem danh sách đề.
+        </div>
+      </div>
+    </div>
+
+    <!-- ĐỘNG CƠ HÀNG ĐỢI TIẾN TRÌNH CHUNG (Dùng chung cho cả 1 đề và nhiều đề) -->
+    <div id="queue-progress-card" class="card" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span id="queue-progress-title" style="font-size: 11px; font-weight: 600; color: #a5b4fc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 75%;">
+          Đang soạn...
+        </span>
+        <span id="queue-overall-ratio" style="font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums;">0/0</span>
+      </div>
 
       <!-- Progress Bar -->
-      <div class="progress-bar-bg">
+      <div class="progress-bar-bg" style="margin-top: 2px;">
         <div id="progress-bar" class="progress-bar-fill"></div>
       </div>
 
-      <!-- Single Progress Line (No duplication) -->
-      <div id="stats-summary-line" class="stats-line">
+      <div id="stats-summary-line" class="stats-line" style="margin-top: 2px;">
         0/0 câu · 0 bình luận
       </div>
 
-      <!-- Offline recovery / retry row -->
-      <div id="offline-recovery-row" style="display: none; gap: 6px;">
-        <button id="btn-retry-ingest" class="btn-secondary" style="flex: 2; font-size: 11px;">
-          Gửi lại dữ liệu
-        </button>
-        <button id="btn-clear-idb" class="btn-secondary" style="flex: 1; font-size: 11px; color: #fca5a5;">
-          Xoá
-        </button>
+      <!-- Queue Controls: Dừng / Bỏ qua / Thử lại -->
+      <div id="queue-controls-row" style="display: flex; gap: 4px; margin-top: 4px;">
+        <button id="btn-queue-pause" class="btn-secondary" style="flex: 1;">Dừng</button>
+        <button id="btn-queue-skip" class="btn-secondary" style="flex: 1;">Bỏ qua</button>
+        <button id="btn-queue-retry" class="btn-secondary" style="flex: 1;">Thử lại</button>
       </div>
     </div>
 
-    <!-- Result Card -->
-    <div id="result-card" class="result-card">
-      <div id="result-filename" class="result-title">
+    <!-- STICKY BOTTOM ACTION BAR (Dính đáy khi chọn môn & danh sách đề) -->
+    <div id="sticky-action-bar" class="sticky-action-bar" style="display: none;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; color: var(--muted);">
+          <input type="checkbox" id="check-update-compiled" />
+          <span>Cập nhật cả đề đã soạn</span>
+        </label>
+      </div>
+      <button id="btn-start-queue" class="btn-main btn-start" style="padding: 7px 10px;">
+        Soạn 0 đề đã chọn
+      </button>
+    </div>
+
+    <!-- RESULT BANNER -->
+    <div id="result-card" class="card" style="display: none; background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.3);">
+      <div id="result-filename" style="color: #34d399; font-weight: 600; font-size: 12px;">
         Xuất file Word thành công!
       </div>
-      <div class="result-btn-row">
-        <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank">
+      <div style="display: flex; gap: 6px; margin-top: 4px;">
+        <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
           Tải Word
         </a>
-        <button id="btn-open-folder" class="btn-secondary">
+        <button id="btn-open-folder" class="btn-secondary" style="flex: 1;">
           Mở thư mục
         </button>
       </div>
@@ -696,104 +792,31 @@
       <summary>
         <span>Nâng cao</span>
       </summary>
-      <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 4px;">
-        <label style="font-size: 11px; color: var(--muted);">Token thủ công (tuỳ chọn)</label>
-        <input type="password" id="input-ingest-token" class="thread-url-input" placeholder="(Mặc định để trống)" />
+      <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;">
+        <label class="reopen-checkbox-label" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer;">
+          <input type="checkbox" id="check-redownload-images" />
+          <span>Tải lại cả ảnh (khi cập nhật bình luận)</span>
+        </label>
+        <div style="display: flex; flex-direction: column; gap: 2px;">
+          <label style="font-size: 11px; color: var(--muted);">Token thủ công (tuỳ chọn)</label>
+          <input type="password" id="input-ingest-token" class="thread-url-input" placeholder="(Mặc định để trống)" />
+        </div>
       </div>
     </details>
   </div>
 
-  <!-- TAB 2: CHỌN ĐỀ (Multi-subject & Batch Ingest) -->
-  <div id="tab-panel-chonde" class="tab-panel">
-    <div class="card">
-      <div style="display: flex; gap: 6px;">
-        <select id="select-subject" class="thread-url-input" style="flex: 2; cursor: pointer;">
-          <option value="">-- Chọn môn học --</option>
-        </select>
-        <button id="btn-fetch-subject-exams" class="btn-icon" style="flex: 1;" title="Tải danh sách đề">
-          Lấy đề
-        </button>
-      </div>
-
-      <div style="display: flex; gap: 6px; align-items: center; margin-top: 2px;">
-        <input type="text" id="input-search-exams" class="thread-url-input" placeholder="Tìm kiếm đề thi..." style="flex: 2;" />
-        <div style="display: flex; gap: 4px;">
-          <button class="chonde-filter-btn active" data-type="ALL">Tất cả</button>
-          <button class="chonde-filter-btn" data-type="FE">FE/RE</button>
-          <button class="chonde-filter-btn" data-type="PE">PE</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Selection & Queue Actions Toolbar -->
-    <div class="card" style="padding: 6px 10px;">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer;">
-          <input type="checkbox" id="check-select-all-chonde" />
-          <span>Chọn tất cả môn này</span>
-        </label>
-        <span id="badge-chonde-selected" style="font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;">
-          0 đã chọn
-        </span>
-      </div>
-
-      <div style="display: flex; gap: 6px; align-items: center; margin-top: 4px;">
-        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; color: var(--muted);">
-          <input type="checkbox" id="check-update-compiled" />
-          <span>Cập nhật cả đề đã soạn</span>
-        </label>
-      </div>
-
-      <button id="btn-start-queue" class="btn-main btn-start" style="margin-top: 6px; padding: 6px 10px; font-size: 12px;">
-        Soạn các đề đã chọn
-      </button>
-
-      <!-- Queue Controls (shown when running or paused) -->
-      <div id="queue-controls-row" style="display: none; gap: 4px; margin-top: 6px;">
-        <button id="btn-queue-pause" class="btn-secondary" style="font-size: 11px; flex: 1;">Dừng</button>
-        <button id="btn-queue-skip" class="btn-secondary" style="font-size: 11px; flex: 1;">Bỏ qua đề này</button>
-        <button id="btn-queue-retry" class="btn-secondary" style="font-size: 11px; flex: 1;">Thử lại lỗi</button>
-      </div>
-
-      <!-- Queue Progress Card -->
-      <div id="queue-progress-card" style="display: none; margin-top: 6px; padding: 6px 8px; background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); border-radius: 4px;">
-        <div id="queue-progress-title" style="font-size: 11px; font-weight: 600; color: #a5b4fc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-          Đang soạn đề 1/1
-        </div>
-        <div class="progress-bar-bg" style="margin-top: 4px;">
-          <div id="queue-progress-bar" class="progress-bar-fill" style="width: 0%;"></div>
-        </div>
-        <div id="queue-progress-sub" style="font-size: 10px; color: var(--muted); margin-top: 2px;">
-          Câu 0/0
-        </div>
-      </div>
-
-      <!-- Queue Completed Banner -->
-      <div id="queue-completed-banner" style="display: none; margin-top: 6px; padding: 6px 8px; background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 4px; justify-content: space-between; align-items: center;">
-        <span id="queue-completed-msg" style="font-size: 11px; font-weight: 600; color: #34d399;">Đã hoàn thành tất cả đề</span>
-        <button id="btn-queue-download-all" class="btn-secondary btn-download" style="font-size: 10px; padding: 2px 6px;">
-          Tải ZIP tất cả vừa soạn
-        </button>
-      </div>
-    </div>
-
-    <!-- Exam list container -->
-    <div id="chonde-list-container" style="display: flex; flex-direction: column; gap: 6px;">
-      <div style="text-align: center; color: var(--muted); font-size: 11px; padding: 16px;">
-        Vui lòng chọn môn học để xem danh sách đề.
-      </div>
-    </div>
-  </div>
-
-  <!-- TAB 3: ĐÃ SOẠN (Documents List) -->
+  <!-- ======================================================== -->
+  <!-- TAB 2: ĐÃ SOẠN (Documents List) -->
+  <!-- ======================================================== -->
   <div id="tab-panel-dasoan" class="tab-panel">
     <div class="card" style="padding: 8px 10px;">
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <span style="font-size: 12px; font-weight: 600;">Danh sách đề đã soạn</span>
         <button id="btn-refresh-docs" class="btn-icon">Làm mới</button>
       </div>
+
       <!-- Multi-select toolbar -->
-      <div class="dasoan-toolbar" style="margin-top: 4px;">
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between; padding: 6px 8px; background: var(--bg); border-radius: var(--radius); border: 1px solid var(--border); margin-top: 4px;">
         <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer;">
           <input type="checkbox" id="check-select-all-dasoan" />
           <span>Chọn tất cả</span>
@@ -814,6 +837,7 @@
         </div>
       </div>
     </div>
+
     <div id="docs-list-container" style="display: flex; flex-direction: column; gap: 6px;">
       <div style="text-align: center; color: var(--muted); font-size: 12px; padding: 16px;">
         Đang tải danh sách tài liệu...
@@ -821,20 +845,22 @@
     </div>
   </div>
 
-  <!-- TAB 4: CÀI ĐẶT (Settings) -->
+  <!-- ======================================================== -->
+  <!-- TAB 3: CÀI ĐẶT (Settings) -->
+  <!-- ======================================================== -->
   <div id="tab-panel-caidat" class="tab-panel">
-    <!-- Batch limit setting in Advanced -->
-    <div class="setting-group">
-      <label class="setting-label">Giới hạn an toàn hàng đợi</label>
+    <!-- Batch limit setting -->
+    <div class="card">
+      <span class="card-title">Giới hạn an toàn hàng đợi</span>
       <div style="display: flex; align-items: center; gap: 8px; margin-top: 2px;">
         <input type="number" id="input-batch-limit" class="thread-url-input" style="width: 80px;" value="20" min="1" max="50" />
-        <span class="setting-sub">Tối đa 20 đề mỗi lượt</span>
+        <span style="font-size: 11px; color: var(--muted);">Tối đa 20 đề mỗi lượt</span>
       </div>
     </div>
 
     <!-- Format Setting -->
-    <div class="setting-group">
-      <label class="setting-label">Định dạng đa đáp án</label>
+    <div class="card">
+      <span class="card-title">Định dạng đa đáp án</span>
       <div style="display: flex; gap: 12px; font-size: 12px; margin-top: 2px;">
         <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
           <input type="radio" name="multi_format" id="opt-multi-comma" value="comma" checked />
@@ -848,10 +874,10 @@
     </div>
 
     <!-- Providers List -->
-    <div class="setting-group">
+    <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <label class="setting-label">Khoá Vision AI</label>
-        <span class="setting-sub">Ghi 1 chiều</span>
+        <span class="card-title">Khoá Vision AI</span>
+        <span style="font-size: 11px; color: var(--muted);">Ghi 1 chiều</span>
       </div>
       <div id="providers-list-container" style="display: flex; flex-direction: column; gap: 6px; margin-top: 4px;">
         <div style="color: var(--muted); font-size: 11px;">Đang tải cấu hình nhà cung cấp...</div>
@@ -859,9 +885,9 @@
     </div>
 
     <!-- Storage & Cleanup -->
-    <div class="setting-group">
-      <label class="setting-label">Thư mục lưu & Bộ nhớ</label>
-      <div class="setting-sub" style="font-family: monospace;">data/output/</div>
+    <div class="card">
+      <span class="card-title">Thư mục lưu & Bộ nhớ</span>
+      <div style="font-family: monospace; font-size: 11px; color: var(--muted);">data/output/</div>
       <div style="display: flex; gap: 6px; margin-top: 4px;">
         <button id="btn-open-folder-settings" class="btn-secondary" style="font-size: 11px;">
           Mở thư mục
@@ -873,11 +899,12 @@
     </div>
   </div>
 
-  <!-- 7. Bottom Navigation Bar -->
+  <!-- ======================================================== -->
+  <!-- BOTTOM TAB BAR - EXACTLY 3 TABS -->
+  <!-- ======================================================== -->
   <div class="tab-bar-container">
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="soande">Soạn đề</button>
-      <button class="tab-btn" data-tab="chonde">Chọn đề</button>
       <button class="tab-btn" data-tab="dasoan">Đã soạn</button>
       <button class="tab-btn" data-tab="caidat">Cài đặt</button>
     </div>

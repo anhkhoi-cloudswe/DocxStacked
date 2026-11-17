@@ -184,6 +184,10 @@ class KeyStatusItem(BaseModel):
     key_length: int
     last4: Optional[str] = None
     masked_key: Optional[str] = None
+    enabled: bool = False
+    valid: Optional[bool] = None
+    validation_time: Optional[str] = None
+    validation_message: Optional[str] = None
 
 
 class SaveKeyRequest(BaseModel):
@@ -198,15 +202,20 @@ async def get_keys_status_endpoint(db: AsyncSession = Depends(get_db)):
     Never exposes raw API keys.
     """
     from dotenv import dotenv_values
-    root_env = settings.BASE_DIR / ".env"
+    from backend.app.modules.settings.service import get_env_file_path, get_key_validation_history, get_invalid_key_providers
+    root_env = get_env_file_path()
     root_vals = dotenv_values(root_env) if root_env.exists() else {}
 
     active = await get_active_settings(db)
     providers = active.get("ai", {}).get("providers", [])
 
+    val_history = get_key_validation_history()
+    invalid_set = get_invalid_key_providers()
+
     items: List[KeyStatusItem] = []
     for p in providers:
         p_name = p.get("name", "")
+        p_norm = p_name.strip().lower()
         env_var = p.get("api_key_env", f"{p_name.upper()}_API_KEY")
         val_env = root_vals.get(env_var)
         import os
@@ -218,6 +227,12 @@ async def get_keys_status_endpoint(db: AsyncSession = Depends(get_db)):
         last4 = effective_val[-4:] if length >= 4 else (effective_val if length > 0 else None)
         masked_key = f"••••{last4}" if last4 else None
 
+        is_invalid = p_norm in invalid_set
+        v_hist = val_history.get(p_norm, {})
+        valid_status = False if is_invalid else (v_hist.get("valid") if v_hist else (True if has_key else None))
+        val_time = v_hist.get("time_formatted") if v_hist else None
+        val_msg = v_hist.get("message") if v_hist else ("Hợp lệ" if (has_key and not is_invalid) else None)
+
         items.append(
             KeyStatusItem(
                 provider=p_name,
@@ -226,6 +241,10 @@ async def get_keys_status_endpoint(db: AsyncSession = Depends(get_db)):
                 key_length=length,
                 last4=last4,
                 masked_key=masked_key,
+                enabled=p.get("enabled", False),
+                valid=valid_status,
+                validation_time=val_time,
+                validation_message=val_msg,
             )
         )
     return items
@@ -240,8 +259,9 @@ async def save_single_key_endpoint(
     """
     Save or update API key for a single provider directly into .env and return updated masked settings.
     Logs key name and length without exposing the raw secret.
+    Automatically enables the provider upon saving a valid key.
     """
-    from backend.app.modules.settings.service import save_api_key_to_env, clear_invalid_key_provider
+    from backend.app.modules.settings.service import save_api_key_to_env, clear_invalid_key_provider, record_key_validation_result
     clean_key = payload.api_key.strip()
     if len(clean_key) <= 3:
         raise HTTPException(status_code=400, detail="Khoá API quá ngắn")
@@ -253,6 +273,12 @@ async def save_single_key_endpoint(
     env_var = payload.api_key_env or (target_p.get("api_key_env") if target_p else f"{provider_name.upper()}_API_KEY")
     save_api_key_to_env(env_var, clean_key)
     clear_invalid_key_provider(provider_name)
+    record_key_validation_result(provider_name, valid=True, message="Đã lưu và hợp lệ")
+
+    # Auto-enable provider if valid key is saved
+    if target_p:
+        target_p["enabled"] = True
+        await update_settings(db, active)
 
     active_updated = await get_active_settings(db)
     return mask_settings_for_api(active_updated)
@@ -449,8 +475,14 @@ async def test_provider_connection_endpoint(
         system_prompt = "Bạn là trợ lý thị giác máy tính chính xác."
         resp_text = await asyncio.to_thread(provider.call_vision_api, test_img, prompt, system_prompt)
         elapsed_ms = round((time.time() - start_time) * 1000)
-        from backend.app.modules.settings.service import clear_invalid_key_provider
+        from backend.app.modules.settings.service import clear_invalid_key_provider, record_key_validation_result
         clear_invalid_key_provider(provider.name)
+        record_key_validation_result(provider.name, valid=True, message=f"Hợp lệ ({elapsed_ms}ms)")
+
+        # Auto-enable provider if verified valid
+        if target_cfg and not target_cfg.get("enabled"):
+            target_cfg["enabled"] = True
+            await update_settings(db, active)
 
         return {
             "success": True,
@@ -460,8 +492,9 @@ async def test_provider_connection_endpoint(
             "message": f"Hợp lệ! Kết nối thành công ({elapsed_ms}ms).",
         }
     except ProviderAuthError:
-        from backend.app.modules.settings.service import record_invalid_key_provider
+        from backend.app.modules.settings.service import record_invalid_key_provider, record_key_validation_result
         record_invalid_key_provider(provider.name)
+        record_key_validation_result(provider.name, valid=False, message="Lỗi xác thực (401)")
         return {
             "success": False,
             "provider": provider.name,

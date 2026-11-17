@@ -128,12 +128,47 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
             if size_b < 50 * 1024:
                 continue
 
-            candidate_files.append((subj_code, doc_file, doc_file.stat().st_mtime))
+            candidate_files.append((subj_code, doc_file, doc_file.stat().st_mtime, "FE", subj_dir.name))
+
+        # Also scan {subj}_PE directory for PE exam folders
+        pe_dir = subj_dir / f"{subj_code}_PE"
+        if pe_dir.exists() and pe_dir.is_dir():
+            for pe_exam_dir in pe_dir.iterdir():
+                if pe_exam_dir.is_dir():
+                    pe_files = [f for f in pe_exam_dir.iterdir() if f.is_file()]
+                    if pe_files:
+                        tot_size = sum(f.stat().st_size for f in pe_files)
+                        latest_m = max(f.stat().st_mtime for f in pe_files)
+                        candidate_files.append((subj_code, pe_exam_dir, latest_m, "PE", pe_exam_dir.name))
 
     # Sort strictly newest first across all subjects by real file modification time (mtime)
     candidate_files.sort(key=lambda x: x[2], reverse=True)
 
-    for subj_code, doc_file, mtime in candidate_files:
+    for subj_code, target_item, mtime, item_type, title_name in candidate_files:
+        if item_type == "PE":
+            pe_files = [f for f in target_item.iterdir() if f.is_file()]
+            tot_size = sum(f.stat().st_size for f in pe_files)
+            created_dt = datetime.fromtimestamp(mtime)
+            created_str = created_dt.strftime("%H:%M %d/%m/%Y")
+            rel_folder = f"data/output/{subj_code}/{subj_code}_PE/{title_name}"
+            # PE download bundles files or downloads folder
+            download_url = f"/api/exports/bundle.zip?subject={subj_code}&files={','.join(str(f.relative_to(settings.BASE_DIR)).replace('\\\\', '/') for f in pe_files)}"
+            documents.append(
+                DocumentItem(
+                    filename=f"{title_name} ({len(pe_files)} files)",
+                    subject_code=subj_code,
+                    exam_title=f"{title_name} [PE]",
+                    questions_count=len(pe_files),
+                    size_bytes=tot_size,
+                    size_formatted=_format_size(tot_size),
+                    download_url=download_url,
+                    created_at=created_str,
+                    is_cached=True,
+                )
+            )
+            continue
+
+        doc_file = target_item
         fn = doc_file.name
         size_b = doc_file.stat().st_size
         meta = file_metadata_map.get(fn, {})
