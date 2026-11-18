@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.core.config import get_settings
 from backend.app.db.models import Exam, ExamStatus, ExamType, Subject
 from backend.app.db.session import get_db
 from backend.app.api.ingest import clean_exam_title, extract_thread_id
@@ -60,6 +61,12 @@ class ExamOut(BaseModel):
     term: Optional[str] = None
     post_date: Optional[datetime] = None
     question_count: int = 0
+    compiled: bool = False
+    has_file: bool = False
+    missing_file: bool = False
+    download_url: Optional[str] = None
+    compiled_at: Optional[str] = None
+    compiled_at_iso: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -258,13 +265,42 @@ async def parse_forum_html(
             yr_short = yr_str[-2:] if len(yr_str) == 4 else yr_str
             term = f"{season}{yr_short}"
 
-        # Status check
+        # Status check: strictly verify docx file exists on disk
         compiled = False
+        has_file = False
+        missing_file = False
         compiled_at = None
         compiled_at_iso = None
+        download_url = None
         db_ex = (db_exams_by_tid.get(tid) if tid else None) or db_exams_by_url.get(norm_url)
-        if db_ex and (db_ex.status == ExamStatus.CRAWLED or (db_ex.question_count and db_ex.question_count > 0)):
-            compiled = True
+        if db_ex:
+            from backend.app.modules.export.docx_builder import format_exam_docx_filename
+            docx_name = format_exam_docx_filename(subject_code, db_ex)
+            docx_path = get_settings().BASE_DIR / "data" / "output" / subject_code / docx_name
+            subj_dir = get_settings().BASE_DIR / "data" / "output" / subject_code
+            clean_ex_name = re.sub(r"[^a-zA-Z0-9]", "", docx_name.replace(".docx", "")).lower()
+            file_found = False
+            if docx_path.exists() and docx_path.stat().st_size > 1000:
+                file_found = True
+            elif subj_dir.exists():
+                for p in subj_dir.glob("*.docx"):
+                    clean_p = re.sub(r"[^a-zA-Z0-9]", "", p.stem).lower()
+                    if clean_ex_name == clean_p and p.stat().st_size > 1000:
+                        file_found = True
+                        break
+
+            if file_found and db_ex.status == ExamStatus.CRAWLED:
+                compiled = True
+                has_file = True
+                download_url = f"/api/exports/{db_ex.id}/download"
+            elif db_ex.status == ExamStatus.CRAWLED and not file_found:
+                missing_file = True
+                compiled = False
+                has_file = False
+            else:
+                compiled = False
+                has_file = False
+
             dt = db_ex.updated_at or db_ex.created_at
             if dt:
                 if dt.tzinfo is None:
@@ -287,6 +323,9 @@ async def parse_forum_html(
             "post_date": post_date_str,
             "question_count": q_count,
             "compiled": compiled,
+            "has_file": has_file,
+            "missing_file": missing_file,
+            "download_url": download_url,
             "compiled_at": compiled_at,
             "compiled_at_iso": compiled_at_iso,
             "subject_code": subject_code,
@@ -335,4 +374,66 @@ async def list_subject_exams(
         reverse=True,
     )
 
-    return [ExamOut.from_orm(e) for e in sorted_exams]
+    from backend.app.modules.export.docx_builder import format_exam_docx_filename
+    out_dir = get_settings().BASE_DIR / "data" / "output" / clean_code
+    exam_outs = []
+    for e in sorted_exams:
+        docx_name = format_exam_docx_filename(clean_code, e)
+        docx_path = out_dir / docx_name
+        clean_ex_name = re.sub(r"[^a-zA-Z0-9]", "", docx_name.replace(".docx", "")).lower()
+        file_found = False
+        if docx_path.exists() and docx_path.stat().st_size > 1000:
+            file_found = True
+        elif out_dir.exists():
+            for p in out_dir.glob("*.docx"):
+                clean_p = re.sub(r"[^a-zA-Z0-9]", "", p.stem).lower()
+                if clean_ex_name == clean_p and p.stat().st_size > 1000:
+                    file_found = True
+                    break
+
+        compiled = False
+        has_file = False
+        missing_file = False
+        download_url = None
+        compiled_at_iso = None
+
+        if file_found and e.status == ExamStatus.CRAWLED:
+            compiled = True
+            has_file = True
+            download_url = f"/api/exports/{e.id}/download"
+        elif e.status == ExamStatus.CRAWLED and not file_found:
+            missing_file = True
+            compiled = False
+            has_file = False
+        else:
+            compiled = False
+            has_file = False
+
+        dt = e.updated_at or e.created_at
+        if dt:
+            if dt.tzinfo is None:
+                dt_utc = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt_utc = dt.astimezone(timezone.utc)
+            compiled_at_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        exam_outs.append(
+            ExamOut(
+                id=e.id,
+                subject_id=e.subject_id,
+                title=clean_exam_title(e.title),
+                url=e.url,
+                exam_type=e.exam_type.value if hasattr(e.exam_type, "value") else str(e.exam_type),
+                term=e.term,
+                post_date=e.post_date,
+                question_count=e.question_count,
+                compiled=compiled,
+                has_file=has_file,
+                missing_file=missing_file,
+                download_url=download_url,
+                compiled_at=compiled_at_iso,
+                compiled_at_iso=compiled_at_iso,
+            )
+        )
+
+    return exam_outs

@@ -79,17 +79,43 @@ async function runOffscreenQueue() {
             const mHtml = await mRes.text();
             const mDoc = new DOMParser().parseFromString(mHtml, "text/html");
             // Basic comment parser
-            const cBlocks = mDoc.querySelectorAll(".message--comment");
+            const cBlocks = mDoc.querySelectorAll(".message--comment, .message--mediaComment, .js-comment");
             cBlocks.forEach((cb, cIdx) => {
-              const body = cb.querySelector(".message-body");
-              if (body) {
-                comments.push({
-                  comment_id: `c_${cIdx + 1}`,
-                  raw_text: body.innerText.trim(),
-                  upvotes: 0,
-                  author_hash: `user_${cIdx}`,
-                });
+              const bodyEl = cb.querySelector(".message-body .bbWrapper, .comment-content, .message-content");
+              if (!bodyEl) return;
+              
+              // Clone to avoid modifying DOM and strip quote blocks
+              const clone = bodyEl.cloneNode(true);
+              clone.querySelectorAll("blockquote, .bbCodeBlock--quote").forEach(q => q.remove());
+              const rawText = clone.innerText.trim();
+              if (!rawText) return;
+
+              const authorEl = cb.querySelector(".message-name, .comment-user, .username, .comment-author");
+              const authorName = authorEl ? authorEl.innerText.trim() : `user_${cIdx}`;
+
+              let upvotes = 0;
+              const rxBar = cb.querySelector(".reactionsBar");
+              if (rxBar) {
+                const nums = rxBar.innerText.match(/\d+/);
+                if (nums) upvotes = parseInt(nums[0], 10);
               }
+              // Check user reaction score if negative
+              const scoreEl = cb.querySelector(".message-userExtras, .pairs--justified, .message-userDetails");
+              if (scoreEl) {
+                const mNeg = scoreEl.innerText.match(/(?:-\d+)/);
+                if (mNeg) upvotes = parseInt(mNeg[0], 10);
+              }
+
+              const timeEl = cb.querySelector("time");
+              const postedAt = timeEl ? (timeEl.getAttribute("datetime") || timeEl.innerText.trim()) : null;
+
+              comments.push({
+                comment_id: `c_${cIdx + 1}`,
+                raw_text: rawText,
+                author_name: authorName,
+                upvotes: upvotes,
+                posted_at: postedAt,
+              });
             });
 
             const imgEl = mDoc.querySelector("img.js-mediaImage, .media-container img");

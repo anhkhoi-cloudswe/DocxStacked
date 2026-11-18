@@ -286,11 +286,38 @@ async def check_exam_exists(
         if s_obj:
             subj_code = s_obj.code
 
+    # Verify docx file on disk
+    file_exists = False
+    if exam.status == ExamStatus.CRAWLED and subj_code:
+        from backend.app.modules.export.docx_builder import format_exam_docx_filename
+        docx_name = format_exam_docx_filename(subj_code, exam)
+        docx_path = settings.DATA_DIR / "output" / subj_code / docx_name
+        subj_dir = settings.DATA_DIR / "output" / subj_code
+        if docx_path.exists() and docx_path.stat().st_size > 1000:
+            file_exists = True
+        elif subj_dir.exists():
+            for p in subj_dir.glob("*.docx"):
+                if exam.term and exam.term in p.name:
+                    file_exists = True
+                    break
+
+    if not file_exists or exam.status != ExamStatus.CRAWLED:
+        return {
+            "exists": False,
+            "has_file": False,
+            "exam_id": exam.id,
+            "subject_code": subj_code or str(exam.subject_id),
+            "title": clean_exam_title(exam.title),
+            "question_count": len(questions),
+            "missing_file": (exam.status == ExamStatus.CRAWLED and not file_exists),
+        }
+
     return {
         "exists": True,
+        "has_file": True,
         "exam_id": exam.id,
         "subject_code": subj_code or str(exam.subject_id),  # Real subject code e.g. MLN122
-        "title": exam.title,
+        "title": clean_exam_title(exam.title),
         "compiled_at": compiled_iso_utc or compiled_formatted,
         "compiled_at_iso": compiled_iso_utc,
         "compiled_time_short": compiled_time_short,
@@ -321,7 +348,7 @@ async def _run_background_ai_refinement(
         return
 
     ai_weight = float(active_cfg.get("voting", {}).get("ai_weight", 1.0))
-    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "H")
+    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "D")
     ai_mode = active_cfg.get("ai", {}).get("mode", "only_uncertain")
 
     try:
@@ -619,6 +646,27 @@ async def ingest_exam(
             if not raw_text:
                 continue
 
+            # Clean XenForo DOM header from raw_text if present
+            lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+            if lines:
+                time_idx = -1
+                for i_ln, ln in enumerate(lines):
+                    if re.search(r"(?:lúc\s+\d{1,2}:\d{2}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)", ln, re.IGNORECASE):
+                        time_idx = i_ln
+                        break
+                if time_idx != -1:
+                    # Check if there is negative score in header before time_idx
+                    for prev_ln in lines[:time_idx]:
+                        m_neg = re.fullmatch(r"(-\d+)", prev_ln)
+                        if m_neg and (c_data.upvotes is None or c_data.upvotes == 0):
+                            c_data.upvotes = int(m_neg.group(1))
+                    if time_idx + 1 < len(lines):
+                        raw_text = " ".join(lines[time_idx + 1:]).strip()
+                    else:
+                        raw_text = ""
+            if not raw_text:
+                continue
+
             if c_data.author_hash:
                 author = c_data.author_hash
             elif c_data.author_name and c_data.author_name.strip() and c_data.author_name.strip().lower() != "unknown":
@@ -680,7 +728,7 @@ async def ingest_exam(
     opt_cfg = payload.options or {}
     ai_enabled = opt_cfg.get("ai_enabled", active_cfg.get("ai", {}).get("enabled", True))
     ai_weight = float(active_cfg.get("voting", {}).get("ai_weight", 1.0))
-    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "H")
+    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "D")
     ai_service = get_ai_check_service()
 
     answers_map: Dict[int, Answer] = {}

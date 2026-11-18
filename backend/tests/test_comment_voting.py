@@ -149,3 +149,42 @@ def test_ai_supports_single_community_voter_makes_confident():
     assert res_with_ai.answer_set == ["A"]
 
 
+def test_negative_reaction_score_downweighted():
+    """Comments with negative reactions (e.g. -3) are downweighted to 0.25."""
+    c_good1 = Comment(id=1, question_id=1, comment_id="c1", author_hash="user1", raw_text="D", upvotes=0)
+    c_good2 = Comment(id=2, question_id=1, comment_id="c2", author_hash="user2", raw_text="D", upvotes=0)
+    c_troll = Comment(id=3, question_id=1, comment_id="c3", author_hash="user3", raw_text="C", upvotes=-3)
+
+    result = tally_votes([c_good1, c_good2, c_troll])
+    assert result.answer_set == ["D"]
+    assert result.status == AnswerStatus.CONFIDENT
+    # Check that troll weight is 0.25
+    troll_contrib = next(cb for cb in result.contributions if cb.author_hash == "user3")
+    assert troll_contrib.weight == 0.25
+    good_contrib = next(cb for cb in result.contributions if cb.author_hash == "user1")
+    assert good_contrib.weight == 1.0
+
+
+def test_reject_invalid_letter_h_default_abcd():
+    """Answer letter is strictly bounded to choice alphabet [A-D]; 'H' is discarded."""
+    c1 = Comment(id=1, question_id=1, comment_id="c1", author_hash="user1", raw_text="d", upvotes=0)
+    c2 = Comment(id=2, question_id=1, comment_id="c2", author_hash="user2", raw_text="H", upvotes=0)
+
+    result = tally_votes([c1, c2])
+    assert result.answer_set == ["D"]
+    assert "H" not in result.vote_breakdown
+
+
+def test_b5_q25_keyword_match_content_comment():
+    """B5 Q25: 'ModelStateDictionary lưu trạng...' (no letter) + 'B. ModelStateDictionary.'
+    → keyword match makes first comment vote for B → 2 independent voters → CONFIDENT."""
+    c1 = Comment(id=1, question_id=25, comment_id="1279307", author_hash="5170bf",
+                 raw_text="ModelStateDictionary lưu trạng thái binding và các lỗi validation của model.", upvotes=0)
+    c2 = Comment(id=2, question_id=25, comment_id="1280464", author_hash="850d93",
+                 raw_text="B. ModelStateDictionary.", upvotes=0)
+    result = tally_votes([c1, c2])
+    assert result.answer_set == ["B"]
+    assert result.status == AnswerStatus.CONFIDENT
+    assert result.voters_count == 2
+
+

@@ -196,3 +196,38 @@ def test_webp_raw_fallback_conversion_to_png(tmp_path: Path):
     converted_pngs = list(cropped_dir.glob("*.png"))
     assert len(converted_pngs) >= 1
 
+
+def test_docx_quality_gate_rejects_corrupted_answer(tmp_path: Path):
+    """Quality gate rejects answers containing newlines, timestamps, or >120 chars."""
+    exam = Exam(
+        id=102,
+        subject_id=1,
+        title="PRN232 - SU26 - B5 - FE",
+        term="SU26",
+        url="https://fuoverflow.com/threads/7423/",
+    )
+    img_p = tmp_path / "q1.png"
+    Image.new("RGB", (200, 100), "white").save(img_p)
+
+    q = Question(
+        id=2,
+        exam_id=102,
+        index=1,
+        file_name="q01.png",
+        local_image_path=str(img_p),
+    )
+    # Corrupted answer with newline and timestamp
+    q.answer = Answer(
+        question_id=2,
+        answer_set=["C \n ccc \n -3 \n Thứ sáu lúc 20:15"],
+        status=AnswerStatus.CONFIDENT,
+    )
+
+    with pytest.raises(ValueError, match="Quality gate error"):
+        build_exam_docx(
+            subject_code="PRN232",
+            exam=exam,
+            questions=[q],
+            output_dir=tmp_path / "out",
+        )
+

@@ -1,10 +1,13 @@
 import math
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 from pydantic import BaseModel
 
 from backend.app.db.models import AnswerStatus, Comment
 from backend.app.modules.analysis.parser import (
     infer_multi_choice_n_from_comments,
+    normalize_no_diacritics,
+    normalize_vietnamese_text,
     parse_choice_hint,
     parse_comment_text,
 )
@@ -42,7 +45,7 @@ def tally_votes(
     ai_votes: Optional[List[Dict[str, Any]]] = None,
     ai_disagreement_policy: str = "flag",
     multi_choice_n: Optional[int] = None,
-    max_option_letter: str = "H",
+    max_option_letter: str = "D",
     choice_hint_text: Optional[str] = None,
 ) -> VotingResult:
     """
@@ -104,6 +107,7 @@ def tally_votes(
 
     seen_authors: Set[str] = set()
     contributions: List[VoterContribution] = []
+    ambiguous_contributions: List[Tuple[str, str]] = []  # (author_hash, raw_text) for skipped ambiguous
 
     for c in sorted_comments:
         author = c.author_hash or "anonymous"
@@ -119,6 +123,7 @@ def tally_votes(
 
         # Skip ambiguous non-answers unless it's an agreement
         if parsed.is_ambiguous and not parsed.is_agreement:
+            ambiguous_contributions.append((author, c.raw_text))
             continue
 
         if parsed.is_agreement:
@@ -131,9 +136,12 @@ def tally_votes(
                 is_multi_choice=is_multi_choice,
             ) if parent_c else None
             if parent_parsed and parent_parsed.answers:
-                parent_upvotes = max(0, parent_c.upvotes or 0)
-                parent_weight = 1.0 + math.log2(1.0 + parent_upvotes)
-                agree_weight = round(parent_weight * 0.5, 3)
+                parent_upvotes = parent_c.upvotes or 0
+                if parent_upvotes < 0:
+                    agree_weight = 0.125
+                else:
+                    parent_weight = 1.0 + math.log2(1.0 + max(0, parent_upvotes))
+                    agree_weight = round(parent_weight * 0.5, 3)
                 seen_authors.add(author)
                 contributions.append(
                     VoterContribution(
@@ -149,20 +157,81 @@ def tally_votes(
                 )
         elif parsed.answers:
             # Direct answer
-            upvote_val = max(0, c.upvotes or 0)
-            weight = round(1.0 + math.log2(1.0 + upvote_val), 3)
+            raw_upvotes = c.upvotes or 0
+            if raw_upvotes == 0 and c.raw_text:
+                m_neg = re.search(r"\n\s*(-\d+)\s*\n", c.raw_text)
+                if m_neg:
+                    raw_upvotes = int(m_neg.group(1))
+
+            if raw_upvotes < 0:
+                weight = 0.25
+            else:
+                upvote_val = max(0, raw_upvotes)
+                weight = round(1.0 + math.log2(1.0 + upvote_val), 3)
+
             seen_authors.add(author)
             contributions.append(
                 VoterContribution(
                     author_hash=author,
                     comment_id=c.comment_id,
                     answers=parsed.answers,
-                    upvotes=c.upvotes or 0,
+                    upvotes=raw_upvotes,
                     weight=weight,
                     raw_text=c.raw_text,
                     is_agreement=False,
                 )
             )
+
+    # 2b. Cross-comment keyword match for content-only (ambiguous) comments
+    # If comment A = "Letter. Content" and comment B has no letter but content overlaps >= 50%,
+    # count B as voting for the same Letter.
+    if ambiguous_contributions:
+        letter_content_index: List[Tuple[str, str]] = []  # (letter, normalized_content)
+        for vc in contributions:
+            if not vc.is_agreement and vc.answers and len(vc.answers) == 1:
+                letter = vc.answers[0]
+                m = re.match(r'^[A-Da-d][.:]\s+(.+)', vc.raw_text.strip())
+                if m:
+                    content_norm = normalize_no_diacritics(m.group(1).strip())
+                    if content_norm:
+                        letter_content_index.append((letter, content_norm))
+
+        if letter_content_index:
+            for amb_author, amb_raw_text in ambiguous_contributions:
+                if amb_author in seen_authors:
+                    continue
+                amb_cleaned = normalize_vietnamese_text(amb_raw_text)
+                if not amb_cleaned:
+                    continue
+                amb_norm = normalize_no_diacritics(amb_cleaned)
+                amb_words = set(w for w in re.split(r'\W+', amb_norm) if len(w) >= 3)
+                if not amb_words:
+                    continue
+
+                best_letter = None
+                best_overlap = 0.0
+                for letter, content_norm in letter_content_index:
+                    content_words = set(w for w in re.split(r'\W+', content_norm) if len(w) >= 3)
+                    if not content_words:
+                        continue
+                    intersection = amb_words & content_words
+                    overlap = len(intersection) / max(1, min(len(amb_words), len(content_words)))
+                    if content_norm in amb_norm or overlap >= 0.5:
+                        if overlap > best_overlap or (best_letter is None and content_norm in amb_norm):
+                            best_overlap = overlap
+                            best_letter = letter
+
+                if best_letter:
+                    seen_authors.add(amb_author)
+                    contributions.append(VoterContribution(
+                        author_hash=amb_author,
+                        comment_id=None,
+                        answers=[best_letter],
+                        upvotes=0,
+                        weight=1.0,
+                        raw_text=amb_raw_text,
+                        is_agreement=False,
+                    ))
 
     # 3. Add AI contribution(s) if present
     if ai_votes:
@@ -316,8 +385,10 @@ def tally_votes(
             opt2_voters = len(voters_per_option.get(opt2, set()))
 
             # Rule A: If top 2 options have equal number of independent voters -> CONFLICT
+            # (Ignore tie if opt2 has negligible/downweighted weight <= 35% of top option)
             if opt1_voters == opt2_voters:
-                conflict = True
+                if sorted_options[1][1] > 0.35 * sorted_options[0][1]:
+                    conflict = True
             else:
                 # Rule B: Margin between weights < 15%
                 top1_w = sorted_options[0][1]
@@ -343,6 +414,40 @@ def tally_votes(
                     if ai_disagreement_policy == "conflict":
                         conflict = True
                     break
+
+    # Rule: Negative-weight votes should not suppress real conflicts.
+    # If removing negative-weight contributions would change the winner or cause a conflict, re-flag.
+    neg_weight_contributions = [vc for vc in contributions if vc.upvotes < 0 and not vc.author_hash.startswith("ai_")]
+    if neg_weight_contributions and not conflict:
+        pos_contributions = [vc for vc in contributions if vc.upvotes >= 0 or vc.author_hash.startswith("ai_")]
+        if pos_contributions:
+            pos_weights: Dict[str, float] = {}
+            pos_voters: Dict[str, Set[str]] = {}
+            for vc in pos_contributions:
+                for letter in vc.answers:
+                    opt = letter.upper()
+                    pos_weights[opt] = pos_weights.get(opt, 0.0) + vc.weight
+                    if opt not in pos_voters:
+                        pos_voters[opt] = set()
+                    pos_voters[opt].add(vc.author_hash)
+            if len(pos_weights) >= 2:
+                pos_sorted = sorted(pos_weights.items(), key=lambda x: (-x[1], x[0]))
+                pos_winner = pos_sorted[0][0]
+                if pos_winner != answer_set[0]:
+                    conflict = True
+                else:
+                    pos_opt1 = pos_sorted[0]
+                    pos_opt2 = pos_sorted[1]
+                    pos_v1 = len(pos_voters.get(pos_opt1[0], set()))
+                    pos_v2 = len(pos_voters.get(pos_opt2[0], set()))
+                    pos_total = sum(v for _, v in pos_sorted)
+                    if pos_v1 == pos_v2:
+                        if pos_opt2[1] > 0.35 * pos_opt1[1]:
+                            conflict = True
+                    else:
+                        pos_margin = (pos_opt1[1] - pos_opt2[1]) / max(pos_total, 1.0)
+                        if pos_margin < 0.15:
+                            conflict = True
 
     winner = answer_set[0]
     winner_independent_voters = len(voters_per_option.get(winner, set()))

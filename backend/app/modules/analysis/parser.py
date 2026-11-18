@@ -1,7 +1,14 @@
 from collections import Counter
 import re
+import unicodedata
 from typing import Any, List, Optional, Set, Tuple
 from pydantic import BaseModel
+
+
+def normalize_no_diacritics(text: str) -> str:
+    """Remove Vietnamese diacritics for fuzzy matching."""
+    text = unicodedata.normalize('NFD', text.lower())
+    return ''.join(c for c in text if unicodedata.category(c) != 'Mn')
 
 
 class ParsedComment(BaseModel):
@@ -71,7 +78,7 @@ def parse_choice_hint(text: str) -> Tuple[bool, Optional[int]]:
     return False, None
 
 
-def infer_multi_choice_n_from_comments(comments: List[Any], max_option_letter: str = "H") -> Optional[int]:
+def infer_multi_choice_n_from_comments(comments: List[Any], max_option_letter: str = "D") -> Optional[int]:
     """
     Infer the expected number of answers N for a multiple choice question
     from the most frequent length (mode) among pure-letter comments (e.g. 'ABC', 'abc', 'A, B, C').
@@ -109,14 +116,27 @@ def infer_multi_choice_n_from_comments(comments: List[Any], max_option_letter: s
 
 
 def normalize_vietnamese_text(text: str) -> str:
-    """Normalize Vietnamese text for matching (lowercase, clean whitespace)."""
+    """Normalize Vietnamese text for matching (lowercase, clean whitespace, strip XenForo DOM headers)."""
     text = text.strip()
+    # Strip XenForo user card / timestamp header if embedded in raw comment text
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if lines:
+        time_idx = -1
+        for i, ln in enumerate(lines):
+            if re.search(r"(?:lúc\s+\d{1,2}:\d{2}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)", ln, re.IGNORECASE):
+                time_idx = i
+                break
+        if time_idx != -1:
+            if time_idx + 1 < len(lines):
+                text = " ".join(lines[time_idx + 1:])
+            else:
+                return ""
     return re.sub(r"\s+", " ", text)
 
 
 def parse_comment_text(
     raw_text: str,
-    max_option_letter: str = "H",
+    max_option_letter: str = "D",
     multi_choice_n: Optional[int] = None,
     is_multi_choice: bool = False,
 ) -> ParsedComment:

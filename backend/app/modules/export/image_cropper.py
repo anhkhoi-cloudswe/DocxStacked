@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "2.6.0-red-bar-left-panel"
+CROP_ALGORITHM_VERSION = "2.9.0-kizspy-keep-choice-hint"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -397,21 +397,38 @@ def crop_question_single(
             is_left_panel = False
             sidebar_edge = 166
             if bar[0] >= int(0.25 * W) and dark_r_cnt < 100:
-                for x_scan in range(120, min(220, bar[0])):
-                    if a[:, x_scan].mean() > 250:
-                        sidebar_edge = x_scan
-                        break
-                mid_q_area = a[:, sidebar_edge + 4 : bar[0]]
+                # Check whether question text starts from near left edge (x ~ 15) or if there is a dark sidebar
+                left_stem_sample = a[90:min(600, H), 15:150]
+                dark_left_cnt = int(
+                    ((left_stem_sample.mean(2) < cfg.dark_threshold) &
+                     ((left_stem_sample.max(2) - left_stem_sample.min(2)) < cfg.color_diff_threshold)).sum()
+                )
+                mid_q_area = a[90:min(695, H), 150 : bar[0]]
                 dark_mid_cnt = int(
                     ((mid_q_area.mean(2) < cfg.dark_threshold) &
                      ((mid_q_area.max(2) - mid_q_area.min(2)) < cfg.color_diff_threshold)).sum()
                 )
-                if dark_mid_cnt >= 500:
+                if (dark_left_cnt + dark_mid_cnt) >= 300:
                     is_left_panel = True
+                    # If dark_left_cnt >= 20 and background is white, question text starts from x=15
+                    if dark_left_cnt >= 20 and left_stem_sample.mean() > 235:
+                        sidebar_edge = 15
+                    else:
+                        sidebar_edge = 166
+                        for x_scan in range(120, min(220, bar[0])):
+                            if a[:, x_scan].mean() > 250:
+                                sidebar_edge = x_scan
+                                break
 
             if is_left_panel:
                 layout = "red_bar_left_panel"
-                box = (sidebar_edge + 4, 0, bar[0], H)
+                # Keep choice hint line '(Choose N answer[s])' (at y: 55..85), discard only 'Kizspy | Question: N' (y < 50)
+                y_top = 50 if sidebar_edge <= 20 else 0
+                y_bottom = min(H, 695) if sidebar_edge <= 20 else H
+                box = (sidebar_edge, y_top, bar[0] - 2, y_bottom)
+                # Choice hint is already in the main crop, clear separate hint image to avoid duplication
+                choice_hint_im = None
+                choice_hint_w = None
                 m = text_mask(
                     a,
                     box,
@@ -445,7 +462,7 @@ def crop_question_single(
                 is_split_2col = False
                 box_l = None
                 if bar[0] >= int(0.25 * W):
-                    left_q_area = a[95:min(700, H), 10:bar[0]]
+                    left_q_area = a[50:min(700, H), 10:bar[0]]
                     dark_l = (left_q_area.mean(2) < cfg.dark_threshold) & (
                         (left_q_area.max(2) - left_q_area.min(2)) < cfg.color_diff_threshold
                     )
@@ -455,9 +472,9 @@ def crop_question_single(
                             is_split_2col = True
                             box_l = (
                                 int(10 + xs_l.min()),
-                                int(95 + ys_l.min()),
+                                int(50 + ys_l.min()),
                                 int(10 + xs_l.max() + 1),
-                                int(95 + ys_l.max() + 1),
+                                int(50 + ys_l.max() + 1),
                             )
 
                 # In 2024 software layouts (narrow left bar, x0 < 350), detect horizontal divider line below progress bar
@@ -652,7 +669,7 @@ def crop_question_single(
             # Inner application container cuts leading labels A./B./C. at x ~ 832.
             # This is an exam-level left edge clipping (handled by top document note, no per-question note).
             is_fa24_left_clipped = False
-            if bar[0] >= 500 and "no_text" not in warnings and box:
+            if layout != "red_bar_left_panel" and bar[0] >= 500 and "no_text" not in warnings and box:
                 p_box = a[box[1]:box[3], box[0]:box[2]].astype(int)
                 m_strict = (p_box.mean(2) < 140) & ((p_box.max(2) - p_box.min(2)) < 60)
                 row_sums_m = m_strict.sum(axis=1)
@@ -803,9 +820,9 @@ def crop_exam_images(
     # --- Pass 3: Warning Rate Evaluation ---
     total = len(results)
     if dominant_layout in ["red_bar_left_panel", "red_bar+white_panel", "modern_2026", "top_left_white_panel"]:
-        critical_warnings = {"no_text", "crop_too_large"}
+        critical_warnings = {"no_text", "crop_too_large", "source_clipped", "missing_options"}
     else:
-        critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options"}
+        critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options", "source_clipped"}
     critical_flagged = [r for r in results if any(w in critical_warnings for w in r.warnings)]
     warning_rate = (len(critical_flagged) / total) if total > 0 else 0.0
     fallback_to_raw = warning_rate > cfg.warning_rate_threshold

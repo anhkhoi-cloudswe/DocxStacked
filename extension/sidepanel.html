@@ -495,7 +495,8 @@
       border-radius: var(--radius);
       padding: 6px 10px;
       display: flex;
-      flex-direction: column;
+      flex-direction: row;
+      align-items: center;
       gap: 6px;
       box-shadow: 0 -4px 12px rgba(0,0,0,0.3);
       z-index: 40;
@@ -764,14 +765,11 @@
 
     <!-- STICKY BOTTOM ACTION BAR (Dính đáy khi chọn môn & danh sách đề) -->
     <div id="sticky-action-bar" class="sticky-action-bar" style="display: none;">
-      <div style="display: flex; justify-content: space-between; align-items: center;">
-        <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; color: var(--muted);">
-          <input type="checkbox" id="check-update-compiled" />
-          <span>Cập nhật cả đề đã soạn</span>
-        </label>
-      </div>
-      <button id="btn-start-queue" class="btn-main btn-start" style="padding: 7px 10px;">
+      <button id="btn-start-queue" class="btn-main btn-start" style="flex: 1; padding: 7px 10px; font-size: 11px;">
         Soạn 0 đề đã chọn
+      </button>
+      <button id="btn-download-zip" class="btn-secondary btn-download" style="display: none; padding: 7px 12px; font-size: 11px; white-space: nowrap;">
+        Tải ZIP
       </button>
     </div>
 

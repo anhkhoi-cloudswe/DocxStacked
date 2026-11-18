@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -8,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-from backend.app.db.models import Exam, Job, JobStatus, Question, User
+from backend.app.db.models import Exam, Job, JobStatus, Question, Subject, User
 from backend.app.db.session import get_db
 
 logger = get_logger(__name__)
@@ -182,13 +183,42 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
 
         q_count = meta.get("questions_count", 0)
 
-        # If question count not in metadata, inspect exams in DB
+        # Load sidecar metadata if present
+        meta_file = doc_file.parent / f"{doc_file.name}.meta.json"
+        if meta_file.exists():
+            try:
+                with open(meta_file, "r", encoding="utf-8") as mf:
+                    sidecar_meta = json.load(mf)
+                    if sidecar_meta.get("questions_count"):
+                        q_count = sidecar_meta["questions_count"]
+                    if sidecar_meta.get("exam_title"):
+                        exam_title = sidecar_meta["exam_title"]
+            except Exception:
+                pass
+
+        # If question count not in metadata, query matching exam in DB or count in docx
         if q_count == 0:
+            clean_fn = re.sub(r"[^a-zA-Z0-9]", "", fn.replace(".docx", "")).lower()
             exam_res = await db.execute(
-                select(Exam).where(Exam.title.ilike(f"%{subj_code}%")).limit(1)
+                select(Exam).where(Exam.subject_id.in_(
+                    select(Subject.id).where(Subject.code == subj_code)
+                ))
             )
-            ex = exam_res.scalar_one_or_none()
-            q_count = ex.question_count if ex else 60
+            for ex in exam_res.scalars().all():
+                clean_t = re.sub(r"[^a-zA-Z0-9]", "", ex.title).lower()
+                if clean_t and (clean_t in clean_fn or clean_fn in clean_t):
+                    if ex.question_count and ex.question_count > 0:
+                        q_count = ex.question_count
+                        break
+            if q_count == 0:
+                try:
+                    from docx import Document
+                    doc = Document(str(doc_file))
+                    q_count = sum(1 for p in doc.paragraphs if p.text.strip().startswith("Câu "))
+                except Exception:
+                    pass
+        if q_count == 0:
+            q_count = 50
 
         # Always use real file modification time (mtime)
         created_dt = datetime.fromtimestamp(mtime)
@@ -202,7 +232,7 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
                 filename=fn,
                 subject_code=subj_code,
                 exam_title=exam_title,
-                questions_count=q_count or 60,
+                questions_count=q_count,
                 size_bytes=size_b,
                 size_formatted=_format_size(size_b),
                 download_url=download_url,

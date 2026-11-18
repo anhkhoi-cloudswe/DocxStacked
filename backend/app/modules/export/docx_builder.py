@@ -25,20 +25,23 @@ def format_exam_docx_filename(subject_code: str, exam: Exam) -> str:
     """
     Format filename matching the original exam title or structured '{MaMon} - {Kỳ} - {Type}.docx'.
     Preserves exact designations like 'RE' (Retake) vs 'FE', e.g. 'PRM392 - SP26 - RE.docx'.
+    Strips notification counts, badges like 'Đề Thi FE', and redundant subject codes.
     """
     code = subject_code.upper().strip()
     raw_title = (exam.title or "").strip()
 
     if raw_title:
+        from backend.app.api.ingest import clean_exam_title
+        cleaned = clean_exam_title(raw_title)
         # Clean characters not allowed in Windows filenames: \ / : * ? " < > |
-        cleaned = re.sub(r'[\\/*?:"<>|]', "", raw_title).strip()
+        cleaned = re.sub(r'[\\/*?:"<>|]', "", cleaned).strip()
         # Remove trailing .docx if present in title
         if cleaned.lower().endswith(".docx"):
             cleaned = cleaned[:-5].strip()
 
-        # Eliminate repetitive duplicate subject prefix like 'CSD202_CSD202' or 'CSD202 - CSD202'
-        dup_pattern = rf"^{re.escape(code)}[_\-\s]+{re.escape(code)}[_\-\s]+"
-        cleaned = re.sub(dup_pattern, f"{code} - ", cleaned, flags=re.IGNORECASE)
+        # Eliminate repetitive duplicate subject prefix like 'PRN232 - Đề Thi FE - PRN232' or 'CSD202 - CSD202'
+        cleaned = re.sub(rf"^{re.escape(code)}[\s\-_]+(?:\[?(?:Đề\s*Thi\s*FE|Đề\s*Thi\s*PE)\]?[\s\-_]+)?{re.escape(code)}[\s\-_]+", f"{code} - ", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"^{re.escape(code)}[\s\-_]+{re.escape(code)}[\s\-_]+", f"{code} - ", cleaned, flags=re.IGNORECASE)
 
         # Ensure the filename starts with subject code if missing
         if not cleaned.upper().startswith(code):
@@ -65,7 +68,20 @@ def cluster_text_answers(comments: List[Any], similarity_threshold: float = 0.85
         return None
 
     def _clean(t: str) -> str:
-        s = re.sub(r"^[A-D]\s*[\.\:\-\)]\s*", "", t.strip(), flags=re.I)
+        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+        if lines:
+            time_idx = -1
+            for i_ln, ln in enumerate(lines):
+                if re.search(r"(?:lúc\s+\d{1,2}:\d{2}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)", ln, re.IGNORECASE):
+                    time_idx = i_ln
+                    break
+            if time_idx != -1:
+                if time_idx + 1 < len(lines):
+                    t = " ".join(lines[time_idx + 1:])
+                else:
+                    t = ""
+        s = re.sub(r"\s+", " ", t).strip()
+        s = re.sub(r"^[A-D]\s*[\.\:\-\)]\s*", "", s, flags=re.I)
         s = re.sub(r"^(?:đáp án là|chắc là|quy luật kinh tế)\s*", "", s, flags=re.I)
         s = re.sub(r"[\.\,\;\:\!\?]+$", "", s).strip()
         return s
@@ -217,6 +233,22 @@ def _render_question_to_doc(
         run_num.bold = True
         run_num.font.size = Pt(13)
         run_num.font.color.rgb = RGBColor(0x11, 0x18, 0x27)
+
+    # A0. Insert choice hint image (from left panel) if available
+    hint_img_path = cropped_dir / f"q{q.index:03d}_hint.png"
+    if hint_img_path.exists() and hint_img_path.stat().st_size > 100:
+        hint_paragraph = doc.add_paragraph()
+        hint_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        hint_paragraph.paragraph_format.space_before = Pt(0)
+        hint_paragraph.paragraph_format.space_after = Pt(2)
+        hint_paragraph.paragraph_format.keep_with_next = True
+        try:
+            hint_img = Image.open(hint_img_path)
+            hint_w_px = hint_img.width
+            hint_width_cm = min(8.0, (hint_w_px / 120.0) * 2.54)
+            hint_paragraph.add_run().add_picture(str(hint_img_path), width=Cm(hint_width_cm))
+        except Exception:
+            pass  # If hint image fails, skip silently
 
     # A. Cropped Image Paragraph
     img_paragraph = doc.add_paragraph()
@@ -396,13 +428,24 @@ def _render_question_to_doc(
     # Detect if options are missing either from crop warnings or if comments are predominantly text descriptions
     has_missing_options = "missing_options" in raw_warnings
     q_comms = getattr(q, "comments", []) or []
-    if not has_missing_options and q_comms and len(q_comms) >= 1:
+    if not has_missing_options and ("few_lines" in raw_warnings or "crop_too_small" in raw_warnings or "missing_stem" in raw_warnings) and q_comms and len(q_comms) >= 1:
         # Check if majority of comments are textual descriptive phrases rather than isolated letters
         from backend.app.modules.analysis.parser import parse_comment_text
         phrase_cnt = 0
         letter_cnt = 0
         for c_item in q_comms:
             txt = getattr(c_item, "raw_text", "") or ""
+            lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+            time_idx = -1
+            for i_ln, ln in enumerate(lines):
+                if re.search(r"(?:lúc\s+\d{1,2}:\d{2}|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)", ln, re.IGNORECASE):
+                    time_idx = i_ln
+                    break
+            if time_idx != -1:
+                txt = " ".join(lines[time_idx + 1:]).strip()
+            if not txt:
+                continue
+
             parsed = parse_comment_text(txt)
             if parsed and parsed.answers and any(a in ["A", "B", "C", "D"] for a in parsed.answers):
                 # If comment has letter but also substantial descriptive text (e.g. 'B. Tuyệt đối của chủ nghĩa tư bản')
@@ -423,6 +466,14 @@ def _render_question_to_doc(
             ans_text = f"{text_answer} (ảnh nguồn thiếu phương án)"
         else:
             ans_text = f"{ans_text} (ảnh nguồn thiếu phương án)"
+
+    # Quality gate on answer string: no newlines/tabs, no timestamp, max 120 chars
+    if any(c in ans_text for c in ['\n', '\r', '\t']):
+        raise ValueError(f"Quality gate error: answer contains newline/tab: {repr(ans_text)}")
+    if re.search(r"lúc\s+\d{1,2}:\d{2}", ans_text, re.IGNORECASE):
+        raise ValueError(f"Quality gate error: answer contains timestamp string: {repr(ans_text)}")
+    if len(ans_text) > 120:
+        raise ValueError(f"Quality gate error: answer length exceeds 120 chars ({len(ans_text)} chars): {repr(ans_text[:50])}...")
 
     # Answer letter run
     run_ans = ans_paragraph.add_run(ans_text)

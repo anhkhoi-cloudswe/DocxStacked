@@ -107,8 +107,8 @@ const elChondeListContainer = document.getElementById("chonde-list-container");
 
 // Sticky Bottom Action Bar
 const elStickyActionBar = document.getElementById("sticky-action-bar");
-const elCheckUpdateCompiled = document.getElementById("check-update-compiled");
 const elBtnStartQueue = document.getElementById("btn-start-queue");
+const elBtnDownloadZip = document.getElementById("btn-download-zip");
 
 // Unified Queue & Progress Elements
 const elQueueProgressCard = document.getElementById("queue-progress-card");
@@ -628,26 +628,37 @@ function renderExamList() {
     } else if (ex.status === "skipped") {
       badgeClass = "badge-status-uncompiled";
       badgeText = "Bỏ qua";
-    } else if (ex.status === "done" || ex.compiled) {
+    } else if (ex.missing_file) {
+      badgeClass = "badge-status-error";
+      badgeText = "Chưa có file";
+    } else if (ex.status === "done" || (ex.compiled && ex.has_file !== false)) {
       badgeClass = "badge-status-compiled";
       const timeStr = formatLocalTime(ex.compiled_at_iso || ex.compiled_at);
-      badgeText = `Đã soạn (${timeStr})`;
+      badgeText = timeStr ? `Đã soạn (${timeStr})` : "Đã soạn";
     }
 
     const isChecked = chondeState.selectedUrls.has(ex.url);
     const cleanTitle = cleanExamTitle(ex.title);
+    const isCompiled = (ex.status === "done" || (ex.compiled && ex.has_file !== false));
 
     item.innerHTML = `
-      <div class="doc-item-row">
-        <input type="checkbox" class="chonde-checkbox" data-url="${ex.url}" ${isChecked ? "checked" : ""} style="margin-top: 2px; cursor: pointer;" />
+      <div class="doc-item-row" style="align-items: flex-start;">
+        <input type="checkbox" class="chonde-checkbox" data-url="${ex.url}" ${isChecked ? "checked" : ""} style="margin-top: 3px; cursor: pointer;" />
         <div style="flex: 1; min-width: 0;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
             <span class="doc-item-title" title="${cleanTitle}">${cleanTitle}</span>
-            <span class="badge-status ${badgeClass}">${badgeText}</span>
+            <span class="badge-status ${badgeClass}" style="flex-shrink: 0;">${badgeText}</span>
           </div>
-          <div class="doc-item-meta" style="margin-top: 2px;">
-            <span>${ex.exam_type} · ${ex.question_count || 0} câu</span>
-            <span>${ex.term || ""}</span>
+          <div class="doc-item-meta" style="margin-top: 4px; display: flex; justify-content: space-between; align-items: center;">
+            <span>${ex.exam_type} · ${ex.question_count || 0} câu${ex.term ? ' · ' + ex.term : ''}</span>
+            <div style="display: flex; gap: 4px; align-items: center;">
+              ${isCompiled ? `
+                <button type="button" class="btn-item-download" data-url="${ex.url}" style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; border-radius: 4px; padding: 2px 7px; font-size: 10px; cursor: pointer; white-space: nowrap;">Tải file</button>
+                <button type="button" class="btn-item-update" data-url="${ex.url}" style="background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.4); color: #a5b4fc; border-radius: 4px; padding: 2px 7px; font-size: 10px; cursor: pointer; white-space: nowrap;">Cập nhật</button>
+              ` : (ex.missing_file ? `
+                <button type="button" class="btn-item-retry" data-url="${ex.url}" style="background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); color: #fbbf24; border-radius: 4px; padding: 2px 7px; font-size: 10px; cursor: pointer; white-space: nowrap;">Soạn lại</button>
+              ` : '')}
+            </div>
           </div>
           ${ex.status === "error" ? `
             <div style="font-size: 10px; color: #fca5a5; margin-top: 3px; display: flex; justify-content: space-between; align-items: center; background: rgba(239, 68, 68, 0.1); padding: 3px 6px; border-radius: 4px;">
@@ -673,6 +684,37 @@ function renderExamList() {
       renderExamList();
     });
 
+    const dlBtn = item.querySelector(".btn-item-download");
+    if (dlBtn) {
+      dlBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (ex.download_url) {
+          window.open(`${BACKEND_URL}${ex.download_url}`, "_blank");
+        } else if (ex.id) {
+          window.open(`${BACKEND_URL}/api/exports/${ex.id}/download`, "_blank");
+        } else {
+          const subj = ex.subject_code || chondeState.selectedSubject || "PRN232";
+          window.open(`${BACKEND_URL}/api/exports/download?file=data/output/${subj}/${cleanTitle}.docx`, "_blank");
+        }
+      });
+    }
+
+    const updateBtn = item.querySelector(".btn-item-update");
+    if (updateBtn) {
+      updateBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        startUnifiedQueue([ex]);
+      });
+    }
+
+    const retryMissingBtn = item.querySelector(".btn-item-retry");
+    if (retryMissingBtn) {
+      retryMissingBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        startUnifiedQueue([ex]);
+      });
+    }
+
     const retryBtn = item.querySelector(".btn-retry-single");
     if (retryBtn) {
       retryBtn.addEventListener("click", (e) => {
@@ -686,12 +728,46 @@ function renderExamList() {
 }
 
 function updateChondeSelectionBadge() {
-  const count = chondeState.selectedUrls.size;
+  const filtered = getFilteredExams();
+  const selectedExams = filtered.filter(ex => chondeState.selectedUrls.has(ex.url));
+  const count = selectedExams.length;
+
   if (elBadgeChondeSelected) {
     elBadgeChondeSelected.innerText = `${count} đã chọn`;
   }
+
+  const uncompiledExams = selectedExams.filter(ex => (!ex.compiled || ex.missing_file));
+  const compiledExams = selectedExams.filter(ex => (ex.compiled && !ex.missing_file));
+
+  const uCount = uncompiledExams.length;
+  const cCount = compiledExams.length;
+
   if (elBtnStartQueue) {
-    elBtnStartQueue.innerText = `Soạn ${count} đề đã chọn`;
+    if (count === 0) {
+      elBtnStartQueue.innerText = "Soạn 0 đề đã chọn";
+      elBtnStartQueue.disabled = true;
+    } else if (cCount === 0 && uCount > 0) {
+      // Chỉ có đề chưa soạn
+      elBtnStartQueue.innerText = `Soạn ${uCount} đề`;
+      elBtnStartQueue.disabled = false;
+    } else if (uCount === 0 && cCount > 0) {
+      // Chỉ có đề đã soạn
+      elBtnStartQueue.innerText = `Cập nhật ${cCount} đề`;
+      elBtnStartQueue.disabled = false;
+    } else {
+      // Trộn cả chưa soạn và đã soạn
+      elBtnStartQueue.innerText = `Soạn ${uCount} · Cập nhật ${cCount}`;
+      elBtnStartQueue.disabled = false;
+    }
+  }
+
+  if (elBtnDownloadZip) {
+    if (cCount > 0) {
+      elBtnDownloadZip.style.display = "inline-flex";
+      elBtnDownloadZip.innerText = "Tải ZIP";
+    } else {
+      elBtnDownloadZip.style.display = "none";
+    }
   }
 }
 
@@ -1034,7 +1110,7 @@ if (elBtnMainAction) {
   });
 }
 
-// Queue button "Soạn N đề đã chọn"
+// Queue button "Soạn N đề" / "Cập nhật N đề" / "Soạn X · Cập nhật Y"
 if (elBtnStartQueue) {
   elBtnStartQueue.addEventListener("click", () => {
     if (chondeState.selectedUrls.size === 0) {
@@ -1043,16 +1119,11 @@ if (elBtnStartQueue) {
     }
 
     const limit = parseInt(elInputBatchLimit ? elInputBatchLimit.value : "20", 10) || 20;
-    const selectedExams = chondeState.exams.filter(ex => chondeState.selectedUrls.has(ex.url));
-    const updateCompiled = elCheckUpdateCompiled ? elCheckUpdateCompiled.checked : false;
-
-    const queueItems = selectedExams.filter(ex => {
-      if (!updateCompiled && ex.compiled) return false;
-      return true;
-    });
+    const filtered = getFilteredExams();
+    const queueItems = filtered.filter(ex => chondeState.selectedUrls.has(ex.url));
 
     if (queueItems.length === 0) {
-      log("Tất cả đề đã chọn đều đã soạn. Hãy tích 'Cập nhật cả đề đã soạn' nếu muốn làm lại!", "warn");
+      log("Không tìm thấy đề nào được chọn!", "warn");
       return;
     }
 
@@ -1062,6 +1133,16 @@ if (elBtnStartQueue) {
     }
 
     startUnifiedQueue(queueItems);
+  });
+}
+
+// Download ZIP button for compiled exams
+if (elBtnDownloadZip) {
+  elBtnDownloadZip.addEventListener("click", () => {
+    const subj = chondeState.selectedSubject || "PRN232";
+    const zipUrl = `${BACKEND_URL}/api/exports/bundle.zip?subject=${encodeURIComponent(subj)}`;
+    window.open(zipUrl, "_blank");
+    log(`Đang tải file ZIP cho các đề môn ${subj}...`, "info");
   });
 }
 

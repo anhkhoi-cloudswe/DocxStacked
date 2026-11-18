@@ -343,8 +343,38 @@ def test_red_bar_left_panel_layout(tmp_path: Path):
     assert res.layout == "red_bar_left_panel"
     assert res.warnings == []
     assert res.success is True
-    assert 450 <= res.cropped_image.width <= 520
-    assert 120 <= res.cropped_image.height <= 180
+    assert 600 <= res.cropped_image.width <= 660
+    assert 120 <= res.cropped_image.height <= 200
+    assert out_cropped.exists()
+    # Verify line '(Choose 1 answer)' is kept inside the cropped image (top region has text)
+    # while 'Kizspy | Question: 1' (y < 50) was discarded
+    arr = np.array(res.cropped_image)
+    top_patch = arr[:40, :]
+    dark_in_top = ((top_patch.mean(2) < 140) & ((top_patch.max(2) - top_patch.min(2)) < 60)).sum()
+    assert dark_in_top > 100, f"Expected '(Choose 1 answer)' in top region of crop, got dark_cnt={dark_in_top}"
+
+
+def test_red_bar_left_panel_q08_short_choices(tmp_path: Path):
+    """
+    Verify PRN232 SU25 Q8 with short choices (A-D ending at x <= 91):
+    - Previously cropped to 14px height with missing choices A-D.
+    - Fixed cropper correctly includes options A-D, height >= 120px, width >= 550px.
+    - Zero warning flags (no few_lines or missing_options).
+    """
+    fixture_path = FIXTURES_DIR / "2025_prn232_su25_fe_q08.webp"
+    assert fixture_path.exists(), f"Fixture missing: {fixture_path}"
+
+    out_cropped = tmp_path / "q08_cropped.png"
+    res = crop_question_single(
+        input_path=fixture_path,
+        output_path=out_cropped,
+    )
+
+    assert res.layout == "red_bar_left_panel"
+    assert res.warnings == []
+    assert res.success is True
+    assert res.cropped_image.height >= 120, f"Q08 choices cut off! height={res.cropped_image.height}"
+    assert res.cropped_image.width >= 550, f"Q08 width too small: {res.cropped_image.width}"
     assert out_cropped.exists()
 
 
