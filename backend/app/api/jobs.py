@@ -118,7 +118,7 @@ async def create_job(payload: JobCreateRequest):
         if not auth_check.logged_in:
             raise HTTPException(
                 status_code=401,
-                detail=f"Cần đăng nhập FUOverflow trước khi tạo tiến trình: {auth_check.detail}",
+                detail=f"Máy chủ chưa có phiên đăng nhập FUOverflow độc lập (Playwright). Vui lòng dùng Extension để soạn trực tiếp từ trình duyệt hoặc đăng nhập trong Cài đặt ({auth_check.detail}).",
             )
 
     e_type = ExamType.PE if payload.exam_type.upper() == "PE" else ExamType.FE

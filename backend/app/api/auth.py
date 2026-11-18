@@ -42,6 +42,7 @@ class ExtensionHeartbeatRequest(BaseModel):
 class AuthStatusResponse(BaseModel):
     logged_in: bool
     status_code: str = "not_logged_in"  # "logged_in", "not_logged_in", "profile_locked", "network_error"
+    auth_source: Optional[str] = "server"
     detail: str = "Chưa đăng nhập FUOverflow"
     username: Optional[str] = None
     expires_at: Optional[str] = None
@@ -209,6 +210,7 @@ async def get_auth_status():
             return AuthStatusResponse(
                 logged_in=True,
                 status_code="logged_in",
+                auth_source="extension",
                 detail="Đã đăng nhập FUOverflow (xác thực từ Extension).",
                 username=_latest_extension_heartbeat.get("username") or "Extension User",
             )

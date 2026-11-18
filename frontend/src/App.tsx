@@ -87,6 +87,7 @@ export const App: React.FC = () => {
   // Authentication gate state
   type AuthGateState = 'checking' | 'backend_offline' | 'extension_missing' | 'not_logged_in' | 'logged_in';
   const [gateState, setGateState] = useState<AuthGateState>('checking');
+  const [authSource, setAuthSource] = useState<'server' | 'extension'>('server');
 
   const checkAuthStatus = useCallback(async () => {
     // 1. Check if backend is reachable
@@ -112,6 +113,7 @@ export const App: React.FC = () => {
 
     // If backend reports logged_in, immediately unlock
     if (authData.logged_in) {
+      if (authData.auth_source) setAuthSource(authData.auth_source);
       setGateState('logged_in');
       return;
     }
@@ -336,13 +338,13 @@ export const App: React.FC = () => {
     }
 
     // Option 2: Fallback to backend Playwright runner
-    if (gateState !== 'logged_in') {
+    if (authSource === 'extension' || gateState !== 'logged_in') {
       setIsLoading(false);
       await alertModal({
         title: 'Dùng Extension để soạn đề',
         message:
-          'Không phát hiện Extension DocxStacked và máy chủ chưa đăng nhập FUOverflow.\n\n' +
-          'Vui lòng mở Side Panel của Extension để cào đề trực tiếp từ trình duyệt, hoặc đăng nhập FUOverflow trong tab Cài đặt.',
+          'Trình duyệt đang xác thực phiên qua Extension. Máy chủ chưa có phiên đăng nhập FUOverflow độc lập (Playwright).\n\n' +
+          'Vui lòng mở Side Panel của Extension để soạn đề trực tiếp từ trình duyệt, hoặc đăng nhập FUOverflow trong tab Cài đặt để chạy cào nền trên máy chủ.',
         type: 'info',
       });
       return;

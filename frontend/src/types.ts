@@ -27,6 +27,7 @@ export interface ExamItem {
 export interface AuthStatus {
   logged_in: boolean;
   status_code?: 'logged_in' | 'not_logged_in' | 'profile_locked' | 'network_error';
+  auth_source?: 'server' | 'extension';
   detail?: string;
   username?: string | null;
   expires_at?: string | null;
