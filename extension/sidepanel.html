@@ -434,6 +434,62 @@
       background: var(--bg);
     }
 
+    /* Subject Group in Đã Soạn */
+    .dasoan-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 4px;
+    }
+
+    .dasoan-group-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-weight: 600;
+      font-size: 11px;
+      color: #93c5fd;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s ease;
+    }
+
+    .dasoan-group-header:hover {
+      background: #273549;
+    }
+
+    .dasoan-arrow {
+      display: inline-block;
+      width: 0;
+      height: 0;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      border-left: 5px solid var(--muted);
+      margin-right: 6px;
+      transition: transform 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .dasoan-arrow.expanded {
+      transform: rotate(90deg);
+      border-left-color: #93c5fd;
+    }
+
+    .dasoan-group-docs {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+      padding-left: 6px;
+    }
+
+    .dasoan-group-docs.expanded {
+      display: flex;
+    }
+
     .doc-item-row {
       display: flex;
       align-items: flex-start;
@@ -830,6 +886,11 @@
       <div style="display: flex; justify-content: space-between; align-items: center;">
         <span style="font-size: 12px; font-weight: 600;">Danh sách đề đã soạn</span>
         <button id="btn-refresh-docs" class="btn-icon">Làm mới</button>
+      </div>
+
+      <!-- Search subject input -->
+      <div style="margin-top: 6px;">
+        <input type="text" id="input-search-dasoan" class="thread-url-input" placeholder="Tìm kiếm môn (mã hoặc tên môn)..." autocomplete="off" />
       </div>
 
       <!-- Multi-select toolbar -->

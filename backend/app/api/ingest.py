@@ -361,37 +361,75 @@ async def _run_background_ai_refinement(
             q_res = await db.execute(select(Question).where(Question.exam_id == exam_id).order_by(Question.index))
             db_questions = q_res.scalars().all()
 
-            updated_any = False
-            answers_map: Dict[int, Answer] = {}
-
+            # 1. Collect candidate questions needing AI assistance
+            q_candidates = []
             for q_obj in db_questions:
                 await db.refresh(q_obj, ["comments", "answer"])
-                need_ai = False
                 has_missing_options = "missing_options" in (q_obj.crop_warnings or [])
-                if not has_missing_options and ai_service.is_available():
+                need_ai = False
+                if not has_missing_options:
                     if ai_mode == "all":
                         need_ai = True
                     elif ai_mode == "off":
                         need_ai = False
-                    else:
+                    else:  # only_uncertain
                         if not q_obj.answer or q_obj.answer.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or q_obj.answer.confidence < 0.80:
                             need_ai = True
 
+                if need_ai:
+                    # Weakness priority: WEAK (cat=0), then CONFLICT (cat=1), then NO_DATA (cat=2), then others (cat=3)
+                    st = q_obj.answer.status if q_obj.answer else AnswerStatus.NO_DATA
+                    conf = q_obj.answer.confidence if q_obj.answer else 0.0
+                    voters = q_obj.answer.valid_comments_count if q_obj.answer else 0
+                    if st == AnswerStatus.WEAK:
+                        cat = 0
+                    elif st == AnswerStatus.CONFLICT:
+                        cat = 1
+                    elif st == AnswerStatus.NO_DATA:
+                        cat = 2
+                    else:
+                        cat = 3
+                    q_candidates.append((cat, conf, voters, q_obj.index, q_obj))
+
+            # 2. Sort candidate questions strictly by weakness priority:
+            # WEAK first (lowest conf & fewest voters), then CONFLICT, then NO_DATA.
+            q_candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+
+            # 3. Call AI on prioritized candidates as long as AI quota/service is available
+            ai_results_by_qid: Dict[int, tuple] = {}
+            for cat, conf, voters, q_idx, q_obj in q_candidates:
+                if not ai_service.is_available():
+                    logger.info("AI service quota reached or unavailable; skipping remaining lower-priority questions.")
+                    break
+
+                img_path = getattr(q_obj, "cropped_image_path", None) or getattr(q_obj, "local_image_path", None)
+                if not img_path:
+                    continue
+                local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
+                if not local_img.exists():
+                    continue
+
                 ai_votes = []
                 ai_options = {}
-                img_path = getattr(q_obj, "cropped_image_path", None) or getattr(q_obj, "local_image_path", None)
-                if need_ai and img_path and ai_service.is_available():
-                    local_img = Path(img_path) if Path(img_path).is_absolute() else settings.BASE_DIR / img_path
-                    if local_img.exists():
-                        analyses = ai_service.analyze_question_ensemble(local_img)
-                        for a in analyses:
-                            ai_votes.append({
-                                "provider": a.provider or "ai",
-                                "answers": a.answers,
-                                "confidence": a.confidence,
-                            })
-                            if a.options:
-                                ai_options.update(a.options)
+                analyses = ai_service.analyze_question_ensemble(local_img)
+                for a in analyses:
+                    ai_votes.append({
+                        "provider": a.provider or "ai",
+                        "answers": a.answers,
+                        "confidence": a.confidence,
+                    })
+                    if a.options:
+                        ai_options.update(a.options)
+
+                if ai_votes:
+                    ai_results_by_qid[q_obj.id] = (ai_votes, ai_options)
+
+            # 4. Tally votes and update answers for all questions
+            updated_any = False
+            answers_map: Dict[int, Answer] = {}
+
+            for q_obj in db_questions:
+                ai_votes, ai_options = ai_results_by_qid.get(q_obj.id, ([], {}))
 
                 voting_res = tally_votes(
                     q_obj.comments,
@@ -406,7 +444,7 @@ async def _run_background_ai_refinement(
                 if ai_votes:
                     breakdown["_ai_votes"] = ai_votes
                     updated_any = True
-                elif need_ai and not ai_service.is_available():
+                elif q_obj.id in [c[4].id for c in q_candidates] and q_obj.id not in ai_results_by_qid:
                     breakdown["ai_pending"] = True
 
                 if not q_obj.answer:

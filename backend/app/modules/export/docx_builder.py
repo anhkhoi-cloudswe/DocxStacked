@@ -169,6 +169,13 @@ def is_valid_keyword(
     if any(p in lower for p in placeholders):
         return False
 
+    # Keywords must be concise keyphrases/terms (<= 4 words, <= 25 chars), not full sentence options or code statements
+    words = kw_strip.split()
+    if len(words) > 4 or len(kw_strip) > 25:
+        return False
+    if any(ch in kw_strip for ch in ['(', ')', '{', '}', ';', '=', '"', "'"]):
+        return False
+
     def _normalize(t: str) -> str:
         s = t.lower()
         s = re.sub(r"^[a-d]\s*[\.\:\-\)]\s*", "", s)

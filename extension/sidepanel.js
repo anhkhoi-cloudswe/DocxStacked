@@ -18,6 +18,7 @@ const state = {
   recentSubjects: [],
   backendOnline: false,
   queueCompleted: false,
+  expandedSubjects: new Set(),
 };
 
 // Common API helper for Extension with pinned header
@@ -145,6 +146,7 @@ const tabPanels = {
 
 // Đã soạn elements
 const elDocsContainer = document.getElementById("docs-list-container");
+const elInputSearchDasoan = document.getElementById("input-search-dasoan");
 const elBtnRefreshDocs = document.getElementById("btn-refresh-docs");
 const elCheckSelectAllDasoan = document.getElementById("check-select-all-dasoan");
 const elBadgeDasoanSelected = document.getElementById("badge-dasoan-selected");
@@ -1560,12 +1562,90 @@ function updateDasoanSelectionBadge() {
   }
 }
 
+function saveExpandedSubjects() {
+  const storage = (typeof chrome !== "undefined" && chrome.storage && (chrome.storage.session || chrome.storage.local)) || null;
+  if (storage) {
+    try {
+      storage.set({ dasoan_expanded_subjects: Array.from(state.expandedSubjects) });
+    } catch (e) {}
+  }
+}
+
+async function loadExpandedSubjects() {
+  const storage = (typeof chrome !== "undefined" && chrome.storage && (chrome.storage.session || chrome.storage.local)) || null;
+  if (storage) {
+    return new Promise((resolve) => {
+      try {
+        storage.get(["dasoan_expanded_subjects"], (res) => {
+          if (res && Array.isArray(res.dasoan_expanded_subjects)) {
+            state.expandedSubjects = new Set(res.dasoan_expanded_subjects);
+          }
+          resolve();
+        });
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+}
+
+function filterDasoanDocuments() {
+  if (!elDocsContainer) return;
+  const q = (elInputSearchDasoan && elInputSearchDasoan.value.trim()) || "";
+  const qClean = removeAccents(q);
+  const isSearching = qClean.length > 0;
+
+  const groups = elDocsContainer.querySelectorAll(".dasoan-group");
+  let matchCount = 0;
+
+  groups.forEach(group => {
+    const subjCode = group.dataset.subject || "";
+    const subjName = group.dataset.subjectName || "";
+    const codeClean = removeAccents(subjCode);
+    const nameClean = removeAccents(subjName);
+    const isMatch = !isSearching || codeClean.includes(qClean) || nameClean.includes(qClean);
+
+    const arrow = group.querySelector(".dasoan-arrow");
+    const docsWrap = group.querySelector(".dasoan-group-docs");
+
+    if (isMatch) {
+      group.style.display = "flex";
+      matchCount++;
+      if (isSearching) {
+        if (arrow) arrow.classList.add("expanded");
+        if (docsWrap) docsWrap.classList.add("expanded");
+      } else {
+        const wasExpanded = state.expandedSubjects.has(subjCode);
+        if (arrow) arrow.classList.toggle("expanded", wasExpanded);
+        if (docsWrap) docsWrap.classList.toggle("expanded", wasExpanded);
+      }
+    } else {
+      group.style.display = "none";
+    }
+  });
+
+  let noMatchEl = document.getElementById("dasoan-no-match");
+  if (isSearching && matchCount === 0 && groups.length > 0) {
+    if (!noMatchEl) {
+      noMatchEl = document.createElement("div");
+      noMatchEl.id = "dasoan-no-match";
+      noMatchEl.style.cssText = "text-align: center; color: var(--muted); font-size: 11px; padding: 16px;";
+      elDocsContainer.appendChild(noMatchEl);
+    }
+    noMatchEl.innerText = `Không tìm thấy môn nào khớp với "${q}".`;
+  } else if (noMatchEl) {
+    noMatchEl.remove();
+  }
+}
+
 async function loadDocuments() {
   if (!elDocsContainer) return;
   elDocsContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 12px;">Đang tải danh sách tài liệu...</div>';
   selectedDocs.clear();
   updateDasoanSelectionBadge();
   if (elCheckSelectAllDasoan) elCheckSelectAllDasoan.checked = false;
+
+  await loadExpandedSubjects();
 
   try {
     const res = await apiFetch("/api/user/documents");
@@ -1587,16 +1667,52 @@ async function loadDocuments() {
 
     elDocsContainer.innerHTML = "";
     Object.keys(grouped).sort().forEach(subjCode => {
+      const subjObj = (state.cachedSubjects || []).find(s => (s.code || "").toUpperCase() === subjCode.toUpperCase());
+      const subjName = subjObj ? (subjObj.name || "") : "";
+      const displayTitle = subjName && subjName !== subjCode ? `${subjCode} - ${subjName}` : subjCode;
+
+      const groupEl = document.createElement("div");
+      groupEl.className = "dasoan-group";
+      groupEl.dataset.subject = subjCode;
+      groupEl.dataset.subjectName = subjName;
+
       const groupHeader = document.createElement("div");
-      groupHeader.style.cssText = "display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; background: #1e293b; border-radius: 4px; font-weight: 700; font-size: 11px; color: #93c5fd; margin-top: 4px;";
+      groupHeader.className = "dasoan-group-header";
       groupHeader.innerHTML = `
-        <span>${subjCode} (${grouped[subjCode].length} đề)</span>
-        <label style="display: inline-flex; align-items: center; gap: 3px; font-size: 10px; cursor: pointer; color: #94a3b8; font-weight: normal;">
+        <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;">
+          <span class="dasoan-arrow"></span>
+          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${displayTitle}">${displayTitle} (${grouped[subjCode].length} đề)</span>
+        </div>
+        <label style="display: inline-flex; align-items: center; gap: 3px; font-size: 10px; cursor: pointer; color: #94a3b8; font-weight: normal; flex-shrink: 0;" onclick="event.stopPropagation();">
           <input type="checkbox" class="check-group-select" data-subject="${subjCode}" />
           <span>Chọn nhóm</span>
         </label>
       `;
-      elDocsContainer.appendChild(groupHeader);
+
+      const groupDocsWrap = document.createElement("div");
+      groupDocsWrap.className = "dasoan-group-docs";
+
+      const isExpanded = state.expandedSubjects.has(subjCode);
+      if (isExpanded) {
+        groupHeader.querySelector(".dasoan-arrow").classList.add("expanded");
+        groupDocsWrap.classList.add("expanded");
+      }
+
+      // Toggle group expansion on header click
+      groupHeader.addEventListener("click", (e) => {
+        if (e.target.closest("label") || e.target.closest("input")) return;
+        const arrow = groupHeader.querySelector(".dasoan-arrow");
+        const willExpand = !groupDocsWrap.classList.contains("expanded");
+        groupDocsWrap.classList.toggle("expanded", willExpand);
+        arrow.classList.toggle("expanded", willExpand);
+
+        const q = (elInputSearchDasoan && elInputSearchDasoan.value.trim()) || "";
+        if (!q) {
+          if (willExpand) state.expandedSubjects.add(subjCode);
+          else state.expandedSubjects.delete(subjCode);
+          saveExpandedSubjects();
+        }
+      });
 
       const groupCheckboxes = [];
       grouped[subjCode].forEach(doc => {
@@ -1642,11 +1758,12 @@ async function loadDocuments() {
           }
         });
 
-        elDocsContainer.appendChild(item);
+        groupDocsWrap.appendChild(item);
       });
 
       const groupCb = groupHeader.querySelector(".check-group-select");
-      groupCb.addEventListener("change", () => {
+      groupCb.addEventListener("change", (e) => {
+        e.stopPropagation();
         const checked = groupCb.checked;
         groupCheckboxes.forEach(cb => {
           cb.checked = checked;
@@ -1656,17 +1773,27 @@ async function loadDocuments() {
         });
         updateDasoanSelectionBadge();
       });
+
+      groupEl.appendChild(groupHeader);
+      groupEl.appendChild(groupDocsWrap);
+      elDocsContainer.appendChild(groupEl);
     });
+
+    filterDasoanDocuments();
 
   } catch (err) {
     elDocsContainer.innerHTML = `<div style="color: #fca5a5; font-size: 11px; padding: 8px;">Lỗi: ${err.message}</div>`;
   }
 }
 
+if (elInputSearchDasoan) {
+  elInputSearchDasoan.addEventListener("input", filterDasoanDocuments);
+}
+
 if (elCheckSelectAllDasoan) {
   elCheckSelectAllDasoan.addEventListener("change", () => {
     const checked = elCheckSelectAllDasoan.checked;
-    const allCbs = elDocsContainer.querySelectorAll(".doc-checkbox, .check-group-select");
+    const allCbs = elDocsContainer.querySelectorAll(".dasoan-group:not([style*='display: none']) .doc-checkbox, .dasoan-group:not([style*='display: none']) .check-group-select");
     allCbs.forEach(cb => {
       cb.checked = checked;
       if (cb.classList.contains("doc-checkbox")) {

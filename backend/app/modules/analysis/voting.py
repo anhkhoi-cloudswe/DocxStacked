@@ -340,9 +340,10 @@ def tally_votes(
             
             # Confidence for multi-choice: average share of top-N options relative to total weight
             top_n_weight = sum(w for opt, w in top_n)
-            confidence = round(top_n_weight / max(total_weight * n_target, 1.0), 3)
+            denom_n = total_weight * n_target
+            confidence = round(top_n_weight / denom_n, 3) if denom_n > 0 else 0.0
             # Alternatively, ratio of top-N weight to total
-            set_ratio = top_n_weight / max(total_weight, 1.0)
+            set_ratio = (top_n_weight / total_weight) if total_weight > 0 else 0.0
             
             # Check margin to (N+1)-th option
             next_opt = sorted_options[n_target] if len(sorted_options) > n_target else None
@@ -363,19 +364,19 @@ def tally_votes(
                 winning_letters = sorted_options[0][0].split()
             answer_set = sorted(winning_letters)
             top_weight = sorted_options[0][1]
-            confidence = round(top_weight / max(total_weight, 1.0), 3)
+            confidence = round(top_weight / total_weight, 3) if total_weight > 0 else 0.0
             
             # For multi-choice without known N, check margin to next unselected option
             if len(sorted_options) > len(winning_letters):
                 unselected_top = sorted_options[len(winning_letters)][1]
-                if unselected_top / max(top_weight, 1.0) > 0.40:
+                if (unselected_top / top_weight) > 0.40 if top_weight > 0 else False:
                     conflict = True
     else:
         # Single choice rule: highest weight letter wins
         best_letter = sorted_options[0][0]
         top_weight = sorted_options[0][1]
         answer_set = [best_letter]
-        confidence = round(top_weight / max(total_weight, 1.0), 3)
+        confidence = round(top_weight / total_weight, 3) if total_weight > 0 else 0.0
 
         # Check top 2 options for single choice
         if len(sorted_options) >= 2:
@@ -393,7 +394,7 @@ def tally_votes(
                 # Rule B: Margin between weights < 15%
                 top1_w = sorted_options[0][1]
                 top2_w = sorted_options[1][1]
-                margin = (top1_w - top2_w) / max(total_weight, 1.0)
+                margin = (top1_w - top2_w) / total_weight if total_weight > 0 else 0.0
                 if margin < 0.15:
                     conflict = True
 
