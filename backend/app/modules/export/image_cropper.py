@@ -811,6 +811,10 @@ def crop_exam_images(
                 if len(retry_res.warnings) < len(res.warnings):
                     results[idx] = retry_res
 
+    # Assign crop_warnings to each question object
+    for q, res in zip(questions, results):
+        q.crop_warnings = res.warnings
+
     # Log any multiple-choice hint width variation
     if hint_widths and (max(hint_widths) - min(hint_widths)) > 30:
         logger.info(

@@ -481,11 +481,12 @@ def _render_question_to_doc(
     run_ans.font.size = Pt(20)
     run_ans.font.color.rgb = RGBColor(0xEE, 0x00, 0x00)  # Teacher Red #EE0000
 
-    # Note run for low-confidence, conflict, or missing options
+    # Note run for low-confidence, conflict, missing options, or image crop quality warnings
     if highlight_check_needed and (
         status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA)
         or ans_text.startswith("?")
         or has_missing_options
+        or bool(raw_warnings)
     ):
         run_note = ans_paragraph.add_run(" (cần kiểm tra lại)")
         run_note.bold = False

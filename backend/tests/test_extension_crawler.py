@@ -217,20 +217,21 @@ def test_existing_exam_title_preserved(tmp_path, monkeypatch):
     without prefix duplication ('MLN122 - MLN122') or suffix adding.
     """
     monkeypatch.setattr(settings, "STORAGE_DIR", tmp_path)
-    import sqlite3
-    db_path = Path("data/docxstacked.db")
-    if not db_path.exists():
-        pytest.skip("data/docxstacked.db not found")
+    original_title = "MLN122 - SU26 - RE"
+    exam_url = "https://fuoverflow.com/threads/mln122-su26-re.7207/"
 
-    conn = sqlite3.connect(db_path)
-    c = conn.cursor()
-    c.execute("SELECT id, title, url FROM exams WHERE id = 136")
-    row = c.fetchone()
-    conn.close()
-
-    assert row is not None, "Exam ID 136 must exist"
-    original_title = row[1]
-    exam_url = row[2]
+    # First ingest the original exam to ensure it exists in the test DB
+    client.post(
+        "/api/ingest",
+        json={
+            "subject_code": "MLN122",
+            "exam_title": original_title,
+            "exam_url": exam_url,
+            "questions": [],
+            "options": {"ai_enabled": False},
+        },
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN},
+    )
 
     # Ingest with slightly different or decorated title
     payload = {

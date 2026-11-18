@@ -636,9 +636,10 @@
   <div id="queue-resume-banner" class="notice-box" style="display: none; background: rgba(59, 130, 246, 0.15); border: 1px solid #3b82f6; color: #93c5fd; padding: 6px 10px; border-radius: 6px; font-size: 11px; margin-bottom: 6px;">
     <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
       <span id="queue-resume-text" style="font-weight: 500;">Hàng đợi đang dừng</span>
-      <div style="display: flex; gap: 8px; font-weight: 600;">
-        <span id="btn-banner-view" style="cursor: pointer; text-decoration: underline; color: #60a5fa;">Xem</span>
-        <span>·</span>
+      <div id="banner-actions-running" style="display: none;">
+        <span id="btn-banner-view" style="cursor: pointer; text-decoration: underline; color: #60a5fa; font-weight: 600;">Xem tiến trình</span>
+      </div>
+      <div id="banner-actions-stopped" style="display: flex; gap: 8px; font-weight: 600;">
         <span id="btn-banner-resume" style="cursor: pointer; text-decoration: underline; color: #34d399;">Tiếp tục</span>
         <span>·</span>
         <span id="btn-banner-cancel" style="cursor: pointer; text-decoration: underline; color: #f87171;">Huỷ</span>
@@ -778,9 +779,13 @@
       <div id="result-filename" style="color: #34d399; font-weight: 600; font-size: 12px;">
         Xuất file Word thành công!
       </div>
-      <div style="display: flex; gap: 6px; margin-top: 4px;">
-        <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1;">
+      <div id="result-completed-list" style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px;"></div>
+      <div style="display: flex; gap: 6px; margin-top: 6px;">
+        <a id="result-download-btn" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1; display: none;">
           Tải Word
+        </a>
+        <a id="result-download-zip-btn" class="btn-secondary btn-download" href="#" target="_blank" style="flex: 1; display: none; background: rgba(99, 102, 241, 0.2); border-color: #6366f1; color: #a5b4fc;">
+          Tải ZIP
         </a>
         <button id="btn-open-folder" class="btn-secondary" style="flex: 1;">
           Mở thư mục
