@@ -21,12 +21,19 @@
   }
 
   function getCleanTitle() {
+    let raw = "";
     const titleEl = document.querySelector(".p-title-value");
     if (titleEl) {
-      // Remove any tags/prefixes if needed
-      return titleEl.innerText.trim();
+      const clone = titleEl.cloneNode(true);
+      clone.querySelectorAll(".label, .label--accent, .label--primary").forEach(b => b.remove());
+      raw = clone.innerText.trim();
+    } else {
+      raw = (document.title || "").replace(/\s*\|\s*FuOverflow\s*Community.*$/i, "").trim();
     }
-    return document.title.replace(" | FuOverflow Community", "").trim();
+    // Clean notification prefix like '(2) ' and XenForo badge prefixes
+    raw = raw.replace(/^\(\d+\)\s*/, "");
+    raw = raw.replace(/^(?:\[?(?:Đề\s*Thi\s*FE|Đề\s*Thi\s*PE|Đề\s*thi\s*FE|Đề\s*thi\s*PE|Tài\s*Liệu|Tài\s*liệu)\]?[\s\-_:]*)+/i, "");
+    return raw.trim();
   }
 
   function injectComposeButton() {

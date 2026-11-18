@@ -233,8 +233,10 @@ def _render_question_to_doc(
         if full_raw_path.exists() and full_raw_path.stat().st_size > 0:
             try:
                 if use_raw_fallback:
-                    target_img_path = full_raw_path
-                    target_img = Image.open(full_raw_path)
+                    raw_fallback_png = cropped_dir / f"q{q.index:03d}_raw_fallback.png"
+                    target_img = Image.open(full_raw_path).convert("RGB")
+                    target_img.save(raw_fallback_png, format="PNG")
+                    target_img_path = raw_fallback_png
                 else:
                     # Priority: cropped_dir (freshly cropped by crop_exam_images) > q.cropped_image_path (may be stale)
                     target_img_path = None
@@ -273,6 +275,12 @@ def _render_question_to_doc(
 
                     target_img = Image.open(target_img_path)
 
+                # Ensure image passed to python-docx is strictly PNG (python-docx lacks WebP support)
+                if str(target_img_path).lower().endswith(".webp"):
+                    converted_png = cropped_dir / f"q{q.index:03d}_converted.png"
+                    target_img.save(converted_png, format="PNG")
+                    target_img_path = converted_png
+
                 # Scale image at 120 dpi (max 16.51 cm width)
                 img_w_px = target_img.width
                 width_cm = min(16.51, (img_w_px / 120.0) * 2.54)
@@ -281,7 +289,11 @@ def _render_question_to_doc(
                 img_paragraph.add_run().add_picture(str(target_img_path), width=Cm(width_cm))
                 img_inserted = True
             except Exception as img_err:
-                logger.warning(f"Error cropping/inserting image for Q{q.index} ({full_raw_path}): {img_err}")
+                logger.warning(
+                    f"Error cropping/inserting image for Q{q.index} ({full_raw_path}): "
+                    f"{type(img_err).__name__}: {repr(img_err)}",
+                    exc_info=True,
+                )
 
     if not img_inserted:
         run_missing = img_paragraph.add_run(f"[Ảnh câu {q.index}]")

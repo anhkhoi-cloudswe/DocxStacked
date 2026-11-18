@@ -9,8 +9,17 @@
     "activeTab",
     "scripting",
     "alarms",
-    "downloads"
+    "downloads",
+    "offscreen"
   ],
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1:8000/*",
+      "http://localhost:8000/*",
+      "http://localhost:5173/*",
+      "http://127.0.0.1:5173/*"
+    ]
+  },
   "host_permissions": [
     "https://fuoverflow.com/*",
     "http://127.0.0.1:8000/*",

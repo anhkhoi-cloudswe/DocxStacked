@@ -5,7 +5,71 @@ import { ScreenResult } from './components/ScreenResult';
 import { ScreenSelectSubject } from './components/ScreenSelectSubject';
 import { ScreenSettings } from './components/ScreenSettings';
 import { ScreenUserDocuments } from './components/ScreenUserDocuments';
+import { GlobalModalHost, alertModal } from './components/ModalDialog';
 import type { JobDetails, JobFile, JobStatusResponse } from './types';
+
+const EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
+
+async function tryEnqueueViaExtension(
+  subjectCode: string,
+  examType: string,
+  examIds?: number[]
+): Promise<boolean> {
+  if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
+    try {
+      let examsToEnqueue: any[] = [];
+      if (examIds && examIds.length > 0) {
+        const resp = await fetch(`/api/subjects/${subjectCode}/exams?type=${examType}`);
+        if (resp.ok) {
+          const allExams = await resp.json();
+          examsToEnqueue = allExams.filter((e: any) => examIds.includes(e.id));
+        }
+      }
+
+      const payloadExams =
+        examsToEnqueue.length > 0
+          ? examsToEnqueue.map((e: any) => ({
+              title: e.title,
+              url: e.url,
+              exam_type: e.exam_type || examType,
+              subject_code: subjectCode,
+              question_count: e.question_count || 40,
+              term: e.term || '',
+            }))
+          : [
+              {
+                title: `${subjectCode} - Tự động`,
+                url: `https://fuoverflow.com/threads/${subjectCode.toLowerCase()}/`,
+                exam_type: examType,
+                subject_code: subjectCode,
+              },
+            ];
+
+      return new Promise<boolean>((resolve) => {
+        (window as any).chrome.runtime.sendMessage(
+          EXTENSION_ID,
+          {
+            type: 'ENQUEUE_EXAMS',
+            payload: {
+              subjectCode,
+              exams: payloadExams,
+            },
+          },
+          (res: any) => {
+            if ((window as any).chrome.runtime.lastError || !res || !res.ok) {
+              resolve(false);
+            } else {
+              resolve(true);
+            }
+          }
+        );
+      });
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 type ScreenType = 'select' | 'progress' | 'result' | 'settings' | 'documents';
 
@@ -259,6 +323,31 @@ export const App: React.FC = () => {
     setExamType(selectedExamType);
     setLimit(selectedLimit);
 
+    // Option 1: Send selected exams to Chrome extension via externally_connectable
+    const sentToExt = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds);
+    if (sentToExt) {
+      setIsLoading(false);
+      await alertModal({
+        title: 'Đã gửi sang Extension',
+        message: 'Danh sách đề đã được gửi thành công sang Side Panel của Extension DocxStacked để bắt đầu cào và xuất Word!',
+        type: 'success',
+      });
+      return;
+    }
+
+    // Option 2: Fallback to backend Playwright runner
+    if (gateState !== 'logged_in') {
+      setIsLoading(false);
+      await alertModal({
+        title: 'Dùng Extension để soạn đề',
+        message:
+          'Không phát hiện Extension DocxStacked và máy chủ chưa đăng nhập FUOverflow.\n\n' +
+          'Vui lòng mở Side Panel của Extension để cào đề trực tiếp từ trình duyệt, hoặc đăng nhập FUOverflow trong tab Cài đặt.',
+        type: 'info',
+      });
+      return;
+    }
+
     try {
       const resp = await fetch('/api/jobs', {
         method: 'POST',
@@ -281,7 +370,11 @@ export const App: React.FC = () => {
       setActiveRunningJobId(data.job_id);
       navigateTo('progress', data.job_id);
     } catch (err: any) {
-      alert(err.message || 'Lỗi kết nối tới máy chủ API');
+      await alertModal({
+        title: 'Lỗi tạo tiến trình',
+        message: err.message || 'Lỗi kết nối tới máy chủ API',
+        type: 'error',
+      });
     } finally {
       setIsLoading(false);
     }
@@ -534,6 +627,7 @@ export const App: React.FC = () => {
           DocxStacked — Công cụ biên soạn tài liệu đề thi ôn tập sinh viên FPT
         </div>
       </footer>
+      <GlobalModalHost />
     </div>
   );
 };

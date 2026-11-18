@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
+import { confirmModal } from './ModalDialog';
 import {
   ArrowLeftIcon,
   BookIcon,
@@ -103,7 +104,12 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
   }, [documents]);
 
   const handleDelete = async (doc: DocumentItem) => {
-    const ok = window.confirm(`Bạn có chắc chắn muốn xóa file "${doc.filename}" không?`);
+    const ok = await confirmModal({
+      title: 'Xóa tài liệu',
+      message: `Bạn có chắc chắn muốn xóa file "${doc.filename}" không?`,
+      confirmText: 'Xóa',
+      isDanger: true,
+    });
     if (!ok) return;
     try {
       const res = await fetch(`/api/user/documents?file=${encodeURIComponent(`data/output/${doc.subject_code}/${doc.filename}`)}`, {

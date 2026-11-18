@@ -7,6 +7,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -172,6 +173,39 @@ async def ping_ingest(
     return {"status": "ok", "message": "Token hợp lệ"}
 
 
+def extract_thread_id(url: Optional[str]) -> Optional[str]:
+    """Extract numeric XenForo thread ID from URL (e.g. .../threads/slug.4521/ -> '4521')."""
+    if not url:
+        return None
+    m = re.search(r"/threads/(?:[^\/.]+\.)?(\d+)", url)
+    return m.group(1) if m else None
+
+
+def clean_exam_title(raw_title: str) -> str:
+    r"""
+    Clean exam title:
+    - Strip notification prefix like '(2) ' (/^\(\d+\)\s*/)
+    - Strip XenForo badges/labels like 'Đề Thi FE -', '[Đề Thi FE]', 'Đề Thi PE -', 'Tài Liệu -'
+    - Strip trailing forum suffix ' | FuOverflow Community'
+    """
+    if not raw_title:
+        return ""
+    t = re.sub(r"^\(\d+\)\s*", "", raw_title.strip())
+    t = re.sub(r"\s*\|\s*FuOverflow\s*Community.*$", "", t, flags=re.I).strip()
+    badge_regex = r"^(?:\[?(?:Đề\s*Thi\s*FE|Đề\s*Thi\s*PE|Đề\s*thi\s*FE|Đề\s*thi\s*PE|Tài\s*Liệu|Tài\s*liệu)\]?[\s\-_:]*)+"
+    t = re.sub(badge_regex, "", t, flags=re.I).strip()
+    return t
+
+
+def canonical_thread_url(url: Optional[str], fallback_title: str = "") -> str:
+    if not url:
+        return f"https://fuoverflow.com/threads/{re.sub(r'[^a-zA-Z0-9]', '-', fallback_title.lower())}/"
+    clean = url.split("?")[0].rstrip("/")
+    if clean.endswith("/unread"):
+        clean = clean[:-7]
+    return clean.rstrip("/") + "/"
+
+
 @router.get("/check-exam")
 async def check_exam_exists(
     url: str,
@@ -182,11 +216,12 @@ async def check_exam_exists(
 ):
     """
     Check if an exam with the given thread URL has already been compiled in DocxStacked.
+    Matches by thread ID or canonical URL.
     Returns:
       - exists: bool
       - exam_id: Optional[int]
-      - compiled_at: Optional[str] (e.g. "14:30 15/11/2026")
-      - compiled_time_short: Optional[str] (e.g. "14:30")
+      - compiled_at: Optional[str] (ISO UTC format)
+      - compiled_time_short: Optional[str]
       - question_count: int
       - existing_media_ids: List[str]
       - download_url: Optional[str]
@@ -194,13 +229,26 @@ async def check_exam_exists(
     token = x_ingest_token or x_local_key
     _verify_ingest_access(request, token)
 
-    clean_url = url.split("?")[0].rstrip("/") + "/"
-    stmt = select(Exam).where(Exam.url == clean_url)
-    res = await db.execute(stmt)
-    exam = res.scalar_one_or_none()
+    clean_url = canonical_thread_url(url)
+    tid = extract_thread_id(url)
+
+    exam = None
+    if tid:
+        stmt = select(Exam).where(
+            Exam.url.like(f"%threads/%{tid}/%")
+            | Exam.url.like(f"%threads/%.{tid}/%")
+            | Exam.url.like(f"%threads/%.{tid}")
+            | Exam.url.like(f"%threads/%{tid}")
+        )
+        res = await db.execute(stmt)
+        exam = res.scalar_one_or_none()
 
     if not exam:
-        # Also check without trailing slash
+        stmt = select(Exam).where(Exam.url == clean_url)
+        res = await db.execute(stmt)
+        exam = res.scalar_one_or_none()
+
+    if not exam:
         stmt2 = select(Exam).where(Exam.url == clean_url.rstrip("/"))
         res2 = await db.execute(stmt2)
         exam = res2.scalar_one_or_none()
@@ -426,6 +474,9 @@ async def ingest_exam(
 
     code = payload.subject_code.upper().strip()
     incoming_title = payload.exam_title.strip()
+    cleaned_incoming_title = clean_exam_title(incoming_title)
+    canonical_url = canonical_thread_url(payload.exam_url, cleaned_incoming_title)
+    tid = extract_thread_id(payload.exam_url)
 
     # 1. Get or create Subject
     stmt = select(Subject).where(Subject.code == code)
@@ -449,31 +500,44 @@ async def ingest_exam(
     e_type_str = (payload.exam_type or "FE").upper()
     e_type = ExamType.PE if "PE" in e_type_str else ExamType.FE
 
-    # 3. Get or create Exam - PRESERVE existing title if exam already exists
-    exam_url = payload.exam_url or f"https://fuoverflow.com/threads/{re.sub(r'[^a-zA-Z0-9]', '-', incoming_title.lower())}/"
-    if exam_url:
-        stmt = select(Exam).where(Exam.url == exam_url)
-    else:
-        stmt = select(Exam).where(Exam.subject_id == subject.id, Exam.title == incoming_title)
-    res = await db.execute(stmt)
-    exam = res.scalar_one_or_none()
+    # 3. Get or create Exam - match by thread ID, canonical URL, or title
+    exam = None
+    if tid:
+        stmt = select(Exam).where(
+            Exam.url.like(f"%threads/%{tid}/%")
+            | Exam.url.like(f"%threads/%.{tid}/%")
+            | Exam.url.like(f"%threads/%.{tid}")
+            | Exam.url.like(f"%threads/%{tid}")
+        )
+        res = await db.execute(stmt)
+        exam = res.scalar_one_or_none()
+
+    if not exam and payload.exam_url:
+        stmt = select(Exam).where((Exam.url == canonical_url) | (Exam.url == canonical_url.rstrip("/")))
+        res = await db.execute(stmt)
+        exam = res.scalar_one_or_none()
+
     if not exam:
-        # Clean title: don't duplicate subject code, remove any trailing suffixes
-        clean_title = incoming_title
+        stmt = select(Exam).where(Exam.subject_id == subject.id, Exam.title == cleaned_incoming_title)
+        res = await db.execute(stmt)
+        exam = res.scalar_one_or_none()
+
+    if not exam:
         exam = Exam(
             subject_id=subject.id,
-            title=clean_title,
+            title=cleaned_incoming_title,
             term=term,
             exam_type=e_type,
-            url=exam_url,
+            url=canonical_url,
             question_count=len(payload.questions),
             status=ExamStatus.CRAWLED,
         )
         db.add(exam)
         await db.flush()
     else:
-        # Requirement: Do NOT change title of existing exam. Keep original exam.title!
-        logger.info(f"Exam already exists (ID={exam.id}). Preserving original title: '{exam.title}'")
+        # Update existing exam: canonical url, cleaned title (stripped XenForo badges/numbers), updated count & status
+        exam.title = clean_exam_title(exam.title) or cleaned_incoming_title
+        exam.url = canonical_url
         exam.term = exam.term or term
         exam.exam_type = exam.exam_type or e_type
         exam.question_count = len(payload.questions)
@@ -673,20 +737,36 @@ async def ingest_exam(
     add_divider = active_cfg.get("export", {}).get("show_separator_line", True)
     add_question_number = active_cfg.get("export", {}).get("show_question_number", True)
 
-    docx_path = build_exam_docx(
-        subject_code=code,
-        exam=exam,
-        questions=db_questions,
-        cropped_dir=cropped_dir,
-        answers_map=answers_map,
-        answer_format=ans_format,
-        multi_choice_format=multi_choice_fmt,
-        highlight_check_needed=highlight_check_needed,
-        add_divider=add_divider,
-        add_question_number=add_question_number,
-        unsupported_layout_warning=crop_summary.fallback_to_raw,
-        use_raw_fallback=crop_summary.fallback_to_raw,
-    )
+    try:
+        docx_path = build_exam_docx(
+            subject_code=code,
+            exam=exam,
+            questions=db_questions,
+            cropped_dir=cropped_dir,
+            answers_map=answers_map,
+            answer_format=ans_format,
+            multi_choice_format=multi_choice_fmt,
+            highlight_check_needed=highlight_check_needed,
+            add_divider=add_divider,
+            add_question_number=add_question_number,
+            unsupported_layout_warning=crop_summary.fallback_to_raw,
+            use_raw_fallback=crop_summary.fallback_to_raw,
+        )
+    except RuntimeError as qg_err:
+        logger.warning(f"Quality gate error during ingest: {qg_err}")
+        failed_q_indices = []
+        for q_obj in db_questions:
+            q_ans = answers_map.get(q_obj.id) if answers_map else getattr(q_obj, "answer", None)
+            if not q_ans or not q_ans.answer_set or q_ans.status == AnswerStatus.NO_DATA:
+                failed_q_indices.append(q_obj.index)
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": str(qg_err),
+                "failed_questions": failed_q_indices,
+                "hint": "Cổng chất lượng chặn xuất file Word. Vui lòng kiểm tra lại ảnh nguồn hoặc thử lại.",
+            },
+        )
 
     # Save sidecar metadata
     now_dt = datetime.now()

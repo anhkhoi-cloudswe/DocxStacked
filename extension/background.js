@@ -48,6 +48,20 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Immediate heartbeat on extension launch
 sendAuthHeartbeat();
 
+// Ensure Offscreen Document exists for background crawling
+async function ensureOffscreenDocument() {
+  if (chrome.offscreen && chrome.offscreen.hasDocument) {
+    const hasDoc = await chrome.offscreen.hasDocument();
+    if (!hasDoc) {
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["DOM_SCRAPING"],
+        justification: "Chạy hàng đợi cào đề nền khi đóng sidepanel",
+      });
+    }
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "OPEN_SIDEPANEL") {
     const tabId = sender.tab ? sender.tab.id : undefined;
@@ -58,6 +72,58 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   } else if (message.type === "TRIGGER_HEARTBEAT") {
     sendAuthHeartbeat().then(() => sendResponse({ ok: true }));
+    return true;
+  } else if (message.type === "SETUP_OFFSCREEN") {
+    ensureOffscreenDocument().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+});
+
+// External messages from web dashboard (http://127.0.0.1:8000, http://localhost:5173, etc.)
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  const allowedOrigins = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+  ];
+
+  if (!sender.origin || !allowedOrigins.includes(sender.origin)) {
+    sendResponse({ ok: false, error: "Origin not allowed" });
+    return;
+  }
+
+  if (message.type === "PING_EXTENSION") {
+    sendResponse({ ok: true, version: "1.0.0", name: "DocxStacked" });
+    return;
+  }
+
+  if (message.type === "ENQUEUE_EXAMS") {
+    const payload = message.payload || {};
+    const exams = payload.exams || [];
+    const subjectCode = payload.subjectCode || "TEST";
+
+    if (!Array.isArray(exams) || exams.length === 0) {
+      sendResponse({ ok: false, error: "Danh sách đề trống" });
+      return;
+    }
+
+    // Save to storage for sidepanel to pick up
+    chrome.storage.local.set({
+      externalQueueRequest: {
+        subjectCode,
+        exams,
+        timestamp: Date.now(),
+      },
+    }, () => {
+      // Open side panel in active tab / current window
+      chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+        if (tabs && tabs[0]) {
+          chrome.sidePanel.open({ tabId: tabs[0].id }).catch((e) => console.error(e));
+        }
+      });
+      sendResponse({ ok: true, queued_count: exams.length });
+    });
     return true;
   }
 });

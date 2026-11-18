@@ -631,6 +631,20 @@
     <span id="backend-status" class="status-chip chip-offline">Backend Offline</span>
   </div>
 
+  <!-- Top Resume Banner for Interrupted / Suspended Queue -->
+  <div id="queue-resume-banner" class="notice-box" style="display: none; background: rgba(59, 130, 246, 0.15); border: 1px solid #3b82f6; color: #93c5fd; padding: 6px 10px; border-radius: 6px; font-size: 11px; margin-bottom: 6px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+      <span id="queue-resume-text" style="font-weight: 500;">Hàng đợi đang dừng</span>
+      <div style="display: flex; gap: 8px; font-weight: 600;">
+        <span id="btn-banner-view" style="cursor: pointer; text-decoration: underline; color: #60a5fa;">Xem</span>
+        <span>·</span>
+        <span id="btn-banner-resume" style="cursor: pointer; text-decoration: underline; color: #34d399;">Tiếp tục</span>
+        <span>·</span>
+        <span id="btn-banner-cancel" style="cursor: pointer; text-decoration: underline; color: #f87171;">Huỷ</span>
+      </div>
+    </div>
+  </div>
+
   <!-- Notification Banner -->
   <div id="ui-notice-box" class="notice-box"></div>
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { JobDetails, JobFile, SSEEvent } from '../types';
+import { confirmModal } from './ModalDialog';
 import {
   CheckIcon,
   CookieIcon,
@@ -114,7 +115,13 @@ export const ScreenProgress: React.FC<Props> = ({
   };
 
   const handleForceRebuild = async (file: JobFile) => {
-    if (!window.confirm(`Bạn có chắc chắn muốn tạo lại đề "${file.exam_title || file.filename}" bỏ qua bộ nhớ đệm không?`)) return;
+    const ok = await confirmModal({
+      title: 'Tạo lại đề thi',
+      message: `Bạn có chắc chắn muốn tạo lại đề "${file.exam_title || file.filename}" bỏ qua bộ nhớ đệm không?`,
+      confirmText: 'Tạo lại',
+      isDanger: false,
+    });
+    if (!ok) return;
     try {
       const resp = await fetch('/api/jobs', {
         method: 'POST',

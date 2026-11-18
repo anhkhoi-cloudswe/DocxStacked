@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import type { AppSettings, AIProviderSetting } from '../types';
+import { alertModal, confirmModal } from './ModalDialog';
 import {
   FolderIcon,
   CpuIcon,
@@ -132,7 +133,13 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
 
   const handleCleanData = async () => {
     const retentionDays = settings?.storage?.retention_days ?? 14;
-    if (!window.confirm(`Bạn có chắc muốn dọn ảnh gốc và ảnh crop của các đề đã hoàn thành cũ hơn ${retentionDays} ngày và chạy VACUUM tối ưu hoá database?`)) {
+    const ok = await confirmModal({
+      title: 'Dọn dẹp dữ liệu',
+      message: `Bạn có chắc muốn dọn ảnh gốc và ảnh crop của các đề đã hoàn thành cũ hơn ${retentionDays} ngày và chạy VACUUM tối ưu hoá database?`,
+      confirmText: 'Dọn dẹp',
+      isDanger: true,
+    });
+    if (!ok) {
       return;
     }
     setIsCleaning(true);
@@ -290,7 +297,13 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
   };
 
   const handleReset = async () => {
-    if (!window.confirm('Bạn có chắc muốn đặt lại toàn bộ cài đặt về mặc định từ config.yaml?')) {
+    const ok = await confirmModal({
+      title: 'Khôi phục cài đặt gốc',
+      message: 'Bạn có chắc muốn đặt lại toàn bộ cài đặt về mặc định từ config.yaml?',
+      confirmText: 'Đặt lại',
+      isDanger: true,
+    });
+    if (!ok) {
       return;
     }
     setIsSaving(true);
@@ -314,7 +327,13 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
   };
 
   const handleDeleteKey = async (provider: AIProviderSetting) => {
-    if (!window.confirm(`Bạn có chắc muốn xoá khoá API của ${provider.name} (${provider.api_key_env})?`)) {
+    const ok = await confirmModal({
+      title: 'Xoá khoá API',
+      message: `Bạn có chắc muốn xoá khoá API của ${provider.name} (${provider.api_key_env})?`,
+      confirmText: 'Xoá khoá',
+      isDanger: true,
+    });
+    if (!ok) {
       return;
     }
     const payload = JSON.parse(JSON.stringify(settings));
@@ -448,12 +467,24 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
     
     // Warning when enabling a paid provider
     if (willEnable && IS_PAID_PROVIDER(cur.name)) {
-      const confirmPaid = window.confirm(
-        `CẢNH BÁO CHI PHÍ:\nNhà cung cấp "${cur.name}" là dịch vụ AI TRẢ PHÍ (Paid API).\n` +
-        `Mỗi lượt gọi phân tích hình ảnh đề thi sẽ phát sinh chi phí trực tiếp trên tài khoản của bạn.\n\n` +
-        `Bạn có chắc chắn muốn BẬT nhà cung cấp này không?`
-      );
-      if (!confirmPaid) return;
+      confirmModal({
+        title: 'CẢNH BÁO CHI PHÍ',
+        message:
+          `Nhà cung cấp "${cur.name}" là dịch vụ AI TRẢ PHÍ (Paid API).\n` +
+          `Mỗi lượt gọi phân tích hình ảnh đề thi sẽ phát sinh chi phí trực tiếp trên tài khoản của bạn.\n\n` +
+          `Bạn có chắc chắn muốn BẬT nhà cung cấp này không?`,
+        confirmText: 'Bật dịch vụ',
+        cancelText: 'Huỷ bỏ',
+        isDanger: true,
+      }).then((confirmPaid) => {
+        if (!confirmPaid) return;
+        providers[index] = { ...cur, enabled: willEnable };
+        setSettings({
+          ...settings,
+          ai: { ...settings.ai, providers },
+        });
+      });
+      return;
     }
 
     providers[index] = { ...cur, enabled: willEnable };
@@ -463,10 +494,16 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
     });
   };
 
-  const deleteProvider = (index: number) => {
+  const deleteProvider = async (index: number) => {
     if (!settings) return;
     const target = settings.ai.providers[index];
-    if (!window.confirm(`Bạn có chắc muốn xoá nhà cung cấp "${target.name}"?`)) return;
+    const ok = await confirmModal({
+      title: 'Xoá nhà cung cấp',
+      message: `Bạn có chắc muốn xoá nhà cung cấp "${target.name}"?`,
+      confirmText: 'Xoá',
+      isDanger: true,
+    });
+    if (!ok) return;
 
     const providers = settings.ai.providers.filter((_, idx) => idx !== index);
     setSettings({
@@ -1689,7 +1726,11 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
                 onClick={() => {
                   if (settings.extension?.ingest_token) {
                     navigator.clipboard.writeText(settings.extension.ingest_token);
-                    alert('Đã sao chép Ingest Token vào clipboard!');
+                    alertModal({
+                      title: 'Đã sao chép',
+                      message: 'Đã sao chép Ingest Token vào clipboard!',
+                      type: 'success',
+                    });
                   }
                 }}
                 style={{

@@ -134,3 +134,65 @@ def test_docx_builder_structure(tmp_path: Path):
     div_p = doc.paragraphs[3]
     assert div_p._p.pPr is not None
     assert div_p._p.pPr.find("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pBdr") is not None
+
+
+def test_webp_raw_fallback_conversion_to_png(tmp_path: Path):
+    """
+    Verify that when use_raw_fallback=True with a .webp source image,
+    docx_builder safely converts the WebP to PNG before inserting into python-docx,
+    preventing UnrecognizedImageError.
+    """
+    output_dir = tmp_path / "output"
+    cropped_dir = tmp_path / "cropped"
+
+    # Create synthetic WebP image
+    webp_path = tmp_path / "q1_raw.webp"
+    im = Image.new("RGB", (400, 200), (255, 255, 255))
+    # Add dummy dark text
+    pixels = im.load()
+    for y in range(40, 100):
+        for x in range(30, 250):
+            pixels[x, y] = (10, 10, 10)
+    im.save(webp_path, format="WEBP")
+    assert webp_path.exists()
+
+    exam = Exam(
+        id=101,
+        subject_id=1,
+        title="PRN232 - SU25 - Final Exam",
+        term="SU25",
+        url="https://fuoverflow.com/threads/4521/",
+    )
+    q1 = Question(
+        id=1,
+        exam_id=101,
+        index=1,
+        file_name="q01_Q1.webp",
+        local_image_path=str(webp_path),
+    )
+    q1.answer = Answer(
+        question_id=1,
+        answer_set=["A"],
+        status=AnswerStatus.CONFIDENT,
+    )
+
+    docx_path = build_exam_docx(
+        subject_code="PRN232",
+        exam=exam,
+        questions=[q1],
+        output_dir=output_dir,
+        cropped_dir=cropped_dir,
+        use_raw_fallback=True,
+    )
+
+    assert docx_path.exists()
+    assert docx_path.stat().st_size > 5000
+
+    doc = Document(str(docx_path))
+    # Verify image paragraph contains inline shape (drawing / blip)
+    img_p = doc.paragraphs[1]
+    assert "[Ảnh câu 1]" not in img_p.text
+    # Verify converted PNG exists in cropped_dir
+    converted_pngs = list(cropped_dir.glob("*.png"))
+    assert len(converted_pngs) >= 1
+

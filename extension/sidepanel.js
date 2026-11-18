@@ -40,9 +40,48 @@ async function apiFetch(endpoint, options = {}) {
   }
 }
 
+// Clean exam title: strip notification prefix (e.g. '(2) '), XenForo badges, and forum suffix
+function cleanExamTitle(rawTitle) {
+  if (!rawTitle) return "";
+  let t = rawTitle.trim();
+  t = t.replace(/^\(\d+\)\s*/, "");
+  t = t.replace(/\s*\|\s*FuOverflow\s*Community.*$/i, "");
+  const badgeRegex = /^(?:\[?(?:Đề\s*Thi\s*FE|Đề\s*Thi\s*PE|Đề\s*thi\s*FE|Đề\s*thi\s*PE|Tài\s*Liệu|Tài\s*liệu)\]?[\s\-_:]*)+/i;
+  t = t.replace(badgeRegex, "");
+  return t.trim();
+}
+
+// Unified Local Machine Time Formatter (HH:MM DD/MM/YYYY or HH:MM)
+function formatLocalTime(isoStr, includeDate = true) {
+  if (!isoStr) return "--:--";
+  try {
+    const d = (isoStr instanceof Date) ? isoStr : new Date(isoStr);
+    if (isNaN(d.getTime())) return String(isoStr);
+    const pad = (n) => String(n).padStart(2, "0");
+    const hours = pad(d.getHours());
+    const minutes = pad(d.getMinutes());
+    if (!includeDate) return `${hours}:${minutes}`;
+    const day = pad(d.getDate());
+    const month = pad(d.getMonth() + 1);
+    const year = d.getFullYear();
+    return `${hours}:${minutes} ${day}/${month}/${year}`;
+  } catch (e) {
+    return String(isoStr);
+  }
+}
+
+function formatLocalTimeShort(isoStr) {
+  return formatLocalTime(isoStr, false);
+}
+
 // DOM Elements
 const elBackendStatus = document.getElementById("backend-status");
 const elUiNoticeBox = document.getElementById("ui-notice-box");
+const elQueueResumeBanner = document.getElementById("queue-resume-banner");
+const elQueueResumeText = document.getElementById("queue-resume-text");
+const elBtnBannerView = document.getElementById("btn-banner-view");
+const elBtnBannerResume = document.getElementById("btn-banner-resume");
+const elBtnBannerCancel = document.getElementById("btn-banner-cancel");
 const elThreadTitleDisplay = document.getElementById("thread-title-display");
 const elInputThreadUrl = document.getElementById("input-thread-url");
 const elBtnSyncTab = document.getElementById("btn-sync-tab");
@@ -513,15 +552,17 @@ async function fetchExamsForSelectedSubject(code) {
   }
 }
 
-function renderExamList() {
-  if (!elChondeListContainer) return;
+function getFilteredExams() {
   const q = (elInputSearchExams ? elInputSearchExams.value.trim().toLowerCase() : "");
   const filterType = chondeState.filterType;
 
-  const filtered = chondeState.exams.filter(ex => {
-    if (filterType !== "ALL" && ex.exam_type !== filterType) {
-      if (filterType === "FE" && ex.exam_type !== "FE") return false;
-      if (filterType === "PE" && ex.exam_type !== "PE") return false;
+  return chondeState.exams.filter(ex => {
+    if (filterType === "FE") {
+      const isFE = ex.exam_type === "FE" || /FE|RE/i.test(ex.title);
+      if (!isFE) return false;
+    } else if (filterType === "PE") {
+      const isPE = ex.exam_type === "PE" || /PE/i.test(ex.title);
+      if (!isPE) return false;
     }
     if (q) {
       const matchTitle = (ex.title || "").toLowerCase().includes(q);
@@ -530,6 +571,41 @@ function renderExamList() {
     }
     return true;
   });
+}
+
+function renderExamList() {
+  if (!elChondeListContainer) return;
+  const filtered = getFilteredExams();
+
+  // Auto-deselect exams hidden by current filters or search
+  const visibleUrls = new Set(filtered.map(ex => ex.url));
+  for (const u of Array.from(chondeState.selectedUrls)) {
+    if (!visibleUrls.has(u)) {
+      chondeState.selectedUrls.delete(u);
+    }
+  }
+
+  // Update "Chọn tất cả" checkbox: indeterminate when partially selected
+  if (elCheckSelectAllChonde) {
+    const totalVisible = filtered.length;
+    let selectedVisible = 0;
+    filtered.forEach(ex => {
+      if (chondeState.selectedUrls.has(ex.url)) selectedVisible++;
+    });
+
+    if (totalVisible === 0 || selectedVisible === 0) {
+      elCheckSelectAllChonde.checked = false;
+      elCheckSelectAllChonde.indeterminate = false;
+    } else if (selectedVisible === totalVisible) {
+      elCheckSelectAllChonde.checked = true;
+      elCheckSelectAllChonde.indeterminate = false;
+    } else {
+      elCheckSelectAllChonde.checked = false;
+      elCheckSelectAllChonde.indeterminate = true;
+    }
+  }
+
+  updateChondeSelectionBadge();
 
   if (filtered.length === 0) {
     elChondeListContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 16px;">Không tìm thấy đề thi phù hợp trong môn này.</div>';
@@ -554,23 +630,35 @@ function renderExamList() {
       badgeText = "Bỏ qua";
     } else if (ex.status === "done" || ex.compiled) {
       badgeClass = "badge-status-compiled";
-      badgeText = `Đã soạn ${ex.compiled_at ? "(" + ex.compiled_at + ")" : ""}`;
+      const timeStr = formatLocalTime(ex.compiled_at_iso || ex.compiled_at);
+      badgeText = `Đã soạn (${timeStr})`;
     }
 
     const isChecked = chondeState.selectedUrls.has(ex.url);
+    const cleanTitle = cleanExamTitle(ex.title);
 
     item.innerHTML = `
       <div class="doc-item-row">
         <input type="checkbox" class="chonde-checkbox" data-url="${ex.url}" ${isChecked ? "checked" : ""} style="margin-top: 2px; cursor: pointer;" />
         <div style="flex: 1; min-width: 0;">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 4px;">
-            <span class="doc-item-title" title="${ex.title}">${ex.title}</span>
+            <span class="doc-item-title" title="${cleanTitle}">${cleanTitle}</span>
             <span class="badge-status ${badgeClass}">${badgeText}</span>
           </div>
           <div class="doc-item-meta" style="margin-top: 2px;">
             <span>${ex.exam_type} · ${ex.question_count || 0} câu</span>
             <span>${ex.term || ""}</span>
           </div>
+          ${ex.status === "error" ? `
+            <div style="font-size: 10px; color: #fca5a5; margin-top: 3px; display: flex; justify-content: space-between; align-items: center; background: rgba(239, 68, 68, 0.1); padding: 3px 6px; border-radius: 4px;">
+              <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 210px;" title="${ex.errorMessage || 'Lỗi xử lý'}">
+                ${ex.errorMessage || 'Lỗi xử lý'}
+              </span>
+              <button type="button" class="btn-retry-single" data-url="${ex.url}" style="background: transparent; border: 1px solid #f87171; color: #f87171; border-radius: 3px; padding: 1px 6px; font-size: 9px; cursor: pointer; white-space: nowrap; margin-left: 4px;">
+                Thử lại
+              </button>
+            </div>
+          ` : ""}
         </div>
       </div>
     `;
@@ -582,8 +670,16 @@ function renderExamList() {
       } else {
         chondeState.selectedUrls.delete(ex.url);
       }
-      updateChondeSelectionBadge();
+      renderExamList();
     });
+
+    const retryBtn = item.querySelector(".btn-retry-single");
+    if (retryBtn) {
+      retryBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        startUnifiedQueue([ex]);
+      });
+    }
 
     elChondeListContainer.appendChild(item);
   });
@@ -615,19 +711,39 @@ filterButtonsChonde.forEach(btn => {
 if (elCheckSelectAllChonde) {
   elCheckSelectAllChonde.addEventListener("change", () => {
     const checked = elCheckSelectAllChonde.checked;
-    chondeState.exams.forEach(ex => {
+    const filtered = getFilteredExams();
+    filtered.forEach(ex => {
       if (checked) chondeState.selectedUrls.add(ex.url);
       else chondeState.selectedUrls.delete(ex.url);
     });
-    const cbs = elChondeListContainer.querySelectorAll(".chonde-checkbox");
-    cbs.forEach(cb => { cb.checked = checked; });
-    updateChondeSelectionBadge();
+    renderExamList();
   });
 }
 
 // -------------------------------------------------------------
 // UNIFIED QUEUE ENGINE (Single exam or multiple exams)
 // -------------------------------------------------------------
+function saveQueueProgress() {
+  try {
+    chrome.storage.local.set({
+      savedQueueState: {
+        items: queueEngine.items,
+        currentIndex: queueEngine.currentIndex,
+        isRunning: queueEngine.isRunning,
+        isPaused: queueEngine.isPaused,
+        updatedAt: Date.now(),
+      },
+    });
+  } catch (e) {}
+}
+
+function clearSavedQueueProgress() {
+  try {
+    chrome.storage.local.remove(["savedQueueState"]);
+    if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
+  } catch (e) {}
+}
+
 function startUnifiedQueue(items) {
   if (queueEngine.isRunning) {
     log("Hàng đợi đang chạy!", "warn");
@@ -644,10 +760,12 @@ function startUnifiedQueue(items) {
   queueEngine.isPaused = false;
   queueEngine.skipCurrent = false;
 
+  if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
   if (elQueueProgressCard) elQueueProgressCard.style.display = "block";
   if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
   if (elBtnQueuePause) elBtnQueuePause.innerText = "Dừng";
 
+  saveQueueProgress();
   runUnifiedQueueLoop();
 }
 
@@ -659,6 +777,7 @@ async function runUnifiedQueueLoop() {
     queueEngine.activeExam = currentItem;
     currentItem.status = "running";
     renderExamList();
+    saveQueueProgress();
 
     const totalItems = queueEngine.items.length;
     const itemNum = queueEngine.currentIndex + 1;
@@ -684,16 +803,20 @@ async function runUnifiedQueueLoop() {
         log(`Đã bỏ qua đề: ${currentItem.title}`, "warn");
       } else if (err.message === "USER_STOPPED") {
         currentItem.status = "error";
+        currentItem.errorMessage = "Đã dừng bởi người dùng";
         log("Đã dừng hàng đợi.", "warn");
+        saveQueueProgress();
         break;
       } else {
         currentItem.status = "error";
+        currentItem.errorMessage = err.shortReason || err.message;
         log(`Lỗi đề ${currentItem.title}: ${err.message}`, "error");
       }
     }
 
     renderExamList();
     queueEngine.currentIndex++;
+    saveQueueProgress();
     await sleep(MIN_REQUEST_INTERVAL_MS);
   }
 
@@ -703,6 +826,7 @@ async function runUnifiedQueueLoop() {
 function finishUnifiedQueue() {
   queueEngine.isRunning = false;
   queueEngine.isPaused = false;
+  clearSavedQueueProgress();
   if (elBtnMainAction) {
     elBtnMainAction.innerText = state.existingExam ? "Cập nhật bình luận" : "Soạn đề này";
     elBtnMainAction.className = "btn-main btn-start";
@@ -712,6 +836,64 @@ function finishUnifiedQueue() {
       if (!queueEngine.isRunning) elQueueProgressCard.style.display = "none";
     }, 4000);
   }
+}
+
+if (elBtnBannerView) {
+  elBtnBannerView.addEventListener("click", () => {
+    if (elQueueProgressCard) {
+      elQueueProgressCard.style.display = "block";
+      elQueueProgressCard.scrollIntoView({ behavior: "smooth" });
+    }
+  });
+}
+
+if (elBtnBannerResume) {
+  elBtnBannerResume.addEventListener("click", async () => {
+    chrome.storage.local.get(["savedQueueState"], async (data) => {
+      const qState = data.savedQueueState;
+      if (!qState || !qState.items) return;
+      if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
+
+      queueEngine.items = qState.items;
+      queueEngine.currentIndex = qState.currentIndex || 0;
+      queueEngine.isRunning = true;
+      queueEngine.isPaused = false;
+
+      // Check backend for the current item in case it finished while panel was closed
+      if (queueEngine.currentIndex < queueEngine.items.length) {
+        const checkItem = queueEngine.items[queueEngine.currentIndex];
+        try {
+          const res = await apiFetch(`/api/ingest/check-exam?url=${encodeURIComponent(checkItem.url)}`);
+          if (res.ok) {
+            const checkData = await res.json();
+            if (checkData.exists) {
+              checkItem.status = "done";
+              checkItem.compiled = true;
+              queueEngine.currentIndex++;
+            }
+          }
+        } catch (e) {}
+      }
+
+      if (elQueueProgressCard) elQueueProgressCard.style.display = "block";
+      if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
+      if (elBtnQueuePause) elBtnQueuePause.innerText = "Dừng";
+
+      renderExamList();
+      runUnifiedQueueLoop();
+    });
+  });
+}
+
+if (elBtnBannerCancel) {
+  elBtnBannerCancel.addEventListener("click", () => {
+    clearSavedQueueProgress();
+    queueEngine.isRunning = false;
+    queueEngine.isPaused = false;
+    queueEngine.items = [];
+    if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
+    log("Đã huỷ hàng đợi đã lưu.", "info");
+  });
 }
 
 if (elBtnQueuePause) {
@@ -771,21 +953,11 @@ async function checkOpenExamStatus(url) {
       const data = await res.json();
       if (data.exists) {
         state.existingExam = data;
-        let timeLabel = "--:--";
-        if (data.compiled_at_iso || (data.compiled_at && data.compiled_at.includes("T"))) {
-          try {
-            const d = new Date(data.compiled_at_iso || data.compiled_at);
-            timeLabel = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-          } catch (e) {
-            timeLabel = data.compiled_time_short || "--:--";
-          }
-        } else {
-          timeLabel = data.compiled_time_short || data.compiled_at || "--:--";
-        }
+        const timeLabel = formatLocalTime(data.compiled_at_iso || data.compiled_at);
 
         if (elOpenExamBadge) {
           elOpenExamBadge.className = "badge-status badge-status-compiled";
-          elOpenExamBadge.innerText = `Đã soạn lúc ${timeLabel}`;
+          elOpenExamBadge.innerText = `Đã soạn (${timeLabel})`;
         }
         if (elBtnMainAction) elBtnMainAction.innerText = "Cập nhật bình luận";
         if (elBtnReopenDownload) {
@@ -814,7 +986,7 @@ async function syncFromActiveTab() {
       if (tabUrl.includes("fuoverflow.com/threads/")) {
         const cleanUrl = tabUrl.split("?")[0];
         elInputThreadUrl.value = cleanUrl;
-        const cleanTitle = (tabs[0].title || "").replace(" | FuOverflow Community", "").trim();
+        const cleanTitle = cleanExamTitle(tabs[0].title || "");
         elThreadTitleDisplay.innerText = cleanTitle;
         elThreadTitleDisplay.title = cleanTitle;
         hideNotice();
@@ -909,7 +1081,7 @@ async function executeFeExamCrawl(exam) {
   const threadDoc = parser.parseFromString(html, "text/html");
 
   const titleEl = threadDoc.querySelector("h1.p-title-value, title");
-  const threadTitle = titleEl ? titleEl.innerText.replace(" | FuOverflow Community", "").trim() : exam.title;
+  const threadTitle = cleanExamTitle(titleEl ? titleEl.innerText : exam.title);
 
   let subjectCode = exam.subject_code || "TEST";
   const mCode = threadTitle.match(/^([A-Za-z]{2,5}\d{3}[A-Za-z]?)/);
@@ -1006,7 +1178,21 @@ async function executeFeExamCrawl(exam) {
     body: JSON.stringify(payload),
   });
 
-  if (!res.ok) throw new Error(`Ingest HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 422) {
+      const errData = await res.json().catch(() => ({}));
+      const reason = errData.error || errData.detail || "Cổng chất lượng chặn (ảnh không đạt chuẩn)";
+      const failedQs = (errData.failed_questions && errData.failed_questions.length > 0)
+        ? ` (câu: ${errData.failed_questions.join(", ")})`
+        : "";
+      const err = new Error(`${reason}${failedQs}`);
+      err.status = 422;
+      err.shortReason = reason;
+      throw err;
+    }
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Ingest HTTP ${res.status}${errText ? ": " + errText.substring(0, 100) : ""}`);
+  }
   const result = await res.json();
   updateProgress(100, "Hoàn tất xuất Word!");
 
@@ -1337,7 +1523,7 @@ async function loadDocuments() {
       grouped[subjCode].forEach(doc => {
         const item = document.createElement("div");
         item.className = "doc-item";
-        const timeStr = doc.created_at || "--:--";
+        const timeStr = formatLocalTime(doc.created_at);
 
         item.innerHTML = `
           <div class="doc-item-row">
@@ -1597,6 +1783,40 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function checkSavedQueueState() {
+  chrome.storage.local.get(["savedQueueState"], async (data) => {
+    const qState = data.savedQueueState;
+    if (!qState || !qState.items || qState.items.length === 0) return;
+
+    const total = qState.items.length;
+    let doneOrSkipped = 0;
+    qState.items.forEach(it => {
+      if (it.status === "done" || it.status === "skipped") doneOrSkipped++;
+    });
+
+    if (doneOrSkipped < total) {
+      if (elQueueResumeBanner && elQueueResumeText) {
+        const cur = Math.min((qState.currentIndex || 0) + 1, total);
+        elQueueResumeText.innerText = `Hàng đợi ${cur}/${total} đang dừng`;
+        elQueueResumeBanner.style.display = "block";
+      }
+      queueEngine.items = qState.items;
+      queueEngine.currentIndex = qState.currentIndex || 0;
+      renderExamList();
+    }
+  });
+}
+
+async function checkExternalQueueRequest() {
+  chrome.storage.local.get(["externalQueueRequest"], (data) => {
+    const req = data.externalQueueRequest;
+    if (!req || !req.exams || req.exams.length === 0) return;
+    chrome.storage.local.remove(["externalQueueRequest"]);
+    log(`Nhận yêu cầu soạn ${req.exams.length} đề từ Web Dashboard. Bắt đầu...`, "info");
+    startUnifiedQueue(req.exams);
+  });
+}
+
 // -------------------------------------------------------------
 // INITIALIZATION
 // -------------------------------------------------------------
@@ -1604,6 +1824,23 @@ async function initExtension() {
   checkBackendHealth();
   initSubjectsCache();
   syncFromActiveTab();
+  checkSavedQueueState();
+  checkExternalQueueRequest();
 }
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === "THREAD_SELECTED" && message.data) {
+    const data = message.data;
+    if (elInputThreadUrl) elInputThreadUrl.value = data.url;
+    const cleanTitle = cleanExamTitle(data.title);
+    if (elThreadTitleDisplay) {
+      elThreadTitleDisplay.innerText = cleanTitle;
+      elThreadTitleDisplay.title = cleanTitle;
+    }
+    checkOpenExamStatus(data.url);
+    sendResponse({ ok: true });
+    return true;
+  }
+});
 
 initExtension();

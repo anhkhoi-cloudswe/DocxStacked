@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import re
 from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import Exam, ExamType, Subject
+from backend.app.db.models import Exam, ExamStatus, ExamType, Subject
 from backend.app.db.session import get_db
+from backend.app.api.ingest import clean_exam_title, extract_thread_id
 from backend.app.modules.crawler.exams import crawl_subject_exams
 from backend.app.modules.crawler.subjects import (
     get_or_fetch_subjects,
@@ -198,11 +199,15 @@ async def parse_forum_html(
 
     # Get all compiled exams for this subject if available
     db_exams_by_url = {}
+    db_exams_by_tid = {}
     if subj:
         exam_stmt = select(Exam).where(Exam.subject_id == subj.id)
         exam_res = await db.execute(exam_stmt)
         for ex in exam_res.scalars().all():
             db_exams_by_url[ex.url.rstrip("/")] = ex
+            ex_tid = extract_thread_id(ex.url)
+            if ex_tid:
+                db_exams_by_tid[ex_tid] = ex
 
     results = []
     for item in thread_items:
@@ -211,9 +216,11 @@ async def parse_forum_html(
             continue
 
         raw_title = title_el.get_text(strip=True)
+        cleaned_title = clean_exam_title(raw_title)
         href = title_el.get("href", "")
         thread_url = f"https://fuoverflow.com{href}" if href.startswith("/") else href
         norm_url = thread_url.rstrip("/")
+        tid = extract_thread_id(thread_url)
 
         badge_el = item.select_one(".label")
         badge_text = badge_el.get_text(strip=True).upper() if badge_el else ""
@@ -254,19 +261,26 @@ async def parse_forum_html(
         # Status check
         compiled = False
         compiled_at = None
-        doc_filename = None
-        if norm_url in db_exams_by_url:
-            db_ex = db_exams_by_url[norm_url]
+        compiled_at_iso = None
+        db_ex = (db_exams_by_tid.get(tid) if tid else None) or db_exams_by_url.get(norm_url)
+        if db_ex and (db_ex.status == ExamStatus.CRAWLED or (db_ex.question_count and db_ex.question_count > 0)):
             compiled = True
-            compiled_at = db_ex.created_at.strftime("%H:%M %d/%m/%Y") if db_ex.created_at else None
-            # Check if file exists in data/output
-            # e.g. Subject - Term - Type or docx name
-            # Return DB exam question count if updated
+            dt = db_ex.updated_at or db_ex.created_at
+            if dt:
+                if dt.tzinfo is None:
+                    dt_utc = dt.replace(tzinfo=timezone.utc)
+                else:
+                    dt_utc = dt.astimezone(timezone.utc)
+                compiled_at_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                compiled_at = compiled_at_iso
+
             if db_ex.question_count and db_ex.question_count > 0:
                 q_count = db_ex.question_count
+            if db_ex.title:
+                cleaned_title = clean_exam_title(db_ex.title)
 
         results.append({
-            "title": raw_title,
+            "title": cleaned_title or raw_title,
             "url": thread_url,
             "exam_type": exam_type,
             "term": term,
@@ -274,6 +288,7 @@ async def parse_forum_html(
             "question_count": q_count,
             "compiled": compiled,
             "compiled_at": compiled_at,
+            "compiled_at_iso": compiled_at_iso,
             "subject_code": subject_code,
         })
 

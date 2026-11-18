@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "2.5.0-top-left-panel-no-red-bar"
+CROP_ALGORITHM_VERSION = "2.6.0-red-bar-left-panel"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -383,119 +383,171 @@ def crop_question_single(
 
         if bar:
             layout = "red_bar"
-            x0 = bar[1] + 4
-
-            # Extract choice hint from left column
             choice_hint_im, choice_hint_w = extract_choice_hint(im, bar[0])
 
-            # Check if this is a split 2-column question (e.g. Kizspy layout with text on left, chart on right)
-            # Conditions: bar is to the right (bar[0] >= 0.25 * W) and left area contains substantial question text.
-            is_split_2col = False
-            box_l = None
-            if bar[0] >= int(0.25 * W):
-                left_q_area = a[95:min(700, H), 10:bar[0]]
-                dark_l = (left_q_area.mean(2) < cfg.dark_threshold) & (
-                    (left_q_area.max(2) - left_q_area.min(2)) < cfg.color_diff_threshold
-                )
-                if dark_l.sum() > 1500:
-                    ys_l, xs_l = np.where(dark_l)
-                    if xs_l.max() - xs_l.min() > 200:
-                        is_split_2col = True
-                        box_l = (
-                            int(10 + xs_l.min()),
-                            int(95 + ys_l.min()),
-                            int(10 + xs_l.max() + 1),
-                            int(95 + ys_l.max() + 1),
-                        )
-
-            # In 2024 software layouts (narrow left bar, x0 < 350), detect horizontal divider line below progress bar
-            y_start = 0
-            if x0 < 350:
-                top_region = a[:min(70, H), x0:].astype(int)
-                row_means = top_region.mean(axis=(1, 2))
-                dark_rows = [y for y, m in enumerate(row_means) if m < 185]
-                if dark_rows and 38 <= max(dark_rows) <= 58:
-                    y_start = max(dark_rows) + 1
-
-            box = (x0, y_start, W, H)
-
-            # 2. Search for white panel containing question (or right-hand graphic)
-            wp = white_panel(
-                a[y_start:, :],
-                x0,
-                min_area_ratio=cfg.white_panel_min_area_ratio,
-                max_width_ratio=cfg.white_panel_max_width_ratio,
-                closing_size=cfg.closing_kernel_size,
-                min_val=cfg.white_min_val,
+            # Check if this is a red_bar_left_panel layout (e.g. PRN232 SU25):
+            # The red bar is at column >= 0.25 * W, right canvas (bar[1]+1..W) has virtually NO text (< 100 dark px),
+            # and middle region between sidebar and red bar contains substantial question text (>= 500 dark px).
+            right_q_area = a[:, bar[1] + 1 :]
+            dark_r_cnt = int(
+                ((right_q_area.mean(2) < cfg.dark_threshold) &
+                 ((right_q_area.max(2) - right_q_area.min(2)) < cfg.color_diff_threshold)).sum()
             )
-            if wp:
-                layout = "red_bar+white_panel"
-                # Check whether canvas outside panel has gray background (SP 2024 layouts with watermark / corner tag)
-                # or pure white canvas (FA 2024 wide layouts where text flows across container).
-                right_bg_mean = float(a[100 : max(101, H - 100), max(0, W - 50) :].mean())
-                bottom_bg_mean = float(a[max(0, H - 50) :, 100 : max(101, W - 100)].mean())
-                is_gray_canvas = (right_bg_mean < 246) or (bottom_bg_mean < 246)
 
-                if is_gray_canvas or bar[0] < 350:
-                    # In gray canvas layouts (e.g. PRM392 SP24 FE/RE), constrain search to white card panel (+ 30px)
-                    # to isolate out FUO watermark in mid canvas and yellow "Q: N" tag in bottom-right corner.
-                    box = (wp[0], wp[1] + y_start, min(W, wp[2] + 30), min(H, wp[3] + y_start + 30))
+            is_left_panel = False
+            sidebar_edge = 166
+            if bar[0] >= int(0.25 * W) and dark_r_cnt < 100:
+                for x_scan in range(120, min(220, bar[0])):
+                    if a[:, x_scan].mean() > 250:
+                        sidebar_edge = x_scan
+                        break
+                mid_q_area = a[:, sidebar_edge + 4 : bar[0]]
+                dark_mid_cnt = int(
+                    ((mid_q_area.mean(2) < cfg.dark_threshold) &
+                     ((mid_q_area.max(2) - mid_q_area.min(2)) < cfg.color_diff_threshold)).sum()
+                )
+                if dark_mid_cnt >= 500:
+                    is_left_panel = True
+
+            if is_left_panel:
+                layout = "red_bar_left_panel"
+                box = (sidebar_edge + 4, 0, bar[0], H)
+                m = text_mask(
+                    a,
+                    box,
+                    dark_threshold=cfg.dark_threshold,
+                    color_diff_threshold=cfg.color_diff_threshold,
+                    allow_subpixel=True,
+                    border_dark_ratio=cfg.border_dark_ratio,
+                    border_edge_depth=cfg.border_edge_depth,
+                )
+                ys, xs = np.where(m)
+                if len(ys) == 0:
+                    warnings.append("no_text")
+                    bx = box
                 else:
-                    # For pure white wide layouts (e.g. FA 2024 RE), search spans full right canvas (W, H)
-                    # so text overflowing panel boundary is never clamped or truncated.
-                    box = (wp[0], wp[1] + y_start, W, H)
-
-            # 3. Text mask
-            m = text_mask(
-                a,
-                box,
-                dark_threshold=cfg.dark_threshold,
-                color_diff_threshold=cfg.color_diff_threshold,
-                allow_subpixel=True,
-                border_dark_ratio=cfg.border_dark_ratio,
-                border_edge_depth=cfg.border_edge_depth,
-            )
-            ys, xs = np.where(m)
-
-            if len(ys) == 0:
-                warnings.append("no_text")
-                bx = box
+                    bx = (
+                        int(box[0] + xs.min()),
+                        int(box[1] + ys.min()),
+                        int(box[0] + xs.max() + 1),
+                        int(box[1] + ys.max() + 1),
+                    )
+                    num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                    if num_lines < 3:
+                        warnings.append("few_lines")
+                    if (bx[3] - bx[1]) < 60 or num_lines <= 1:
+                        warnings.append("missing_options")
             else:
-                bx = (
-                    int(box[0] + xs.min()),
-                    int(box[1] + ys.min()),
-                    int(box[0] + xs.max() + 1),
-                    int(box[1] + ys.max() + 1),
-                )
-                # Structural check: line count >= 3
-                num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
-                if num_lines < 3 and not is_split_2col:
-                    warnings.append("few_lines")
-                if 2 <= num_lines <= 4 and not is_split_2col:
-                    warnings.append("missing_stem")
-                if ((bx[3] - bx[1]) < 80 or num_lines <= 1) and not is_split_2col:
-                    warnings.append("missing_options")
+                x0 = bar[1] + 4
 
-            # Handle split 2-column question: combine left question text + right chart into stacked image
-            if is_split_2col and box_l is not None:
-                layout = "split_2col_question_chart"
-                t_core = im.crop(box_l)
-                c_core = im.crop(bx)
-                pad = cfg.padding_px
-                W_st = max(t_core.width, c_core.width) + 2 * pad
-                H_st = t_core.height + c_core.height + 3 * pad
-                st_canvas = Image.new("RGB", (W_st, H_st), "white")
-                st_canvas.paste(t_core, (pad, pad))
-                chart_x = (W_st - c_core.width) // 2
-                st_canvas.paste(c_core, (chart_x, t_core.height + 2 * pad))
-                final_cropped = st_canvas
-                # Represent bounding box as union of both areas
-                bx = (
-                    min(box_l[0], bx[0]),
-                    min(box_l[1], bx[1]),
-                    max(box_l[2], bx[2]),
-                    max(box_l[3], bx[3]),
+                # Check if this is a split 2-column question (e.g. Kizspy layout with text on left, chart on right)
+                # Conditions: bar is to the right (bar[0] >= 0.25 * W) and left area contains substantial question text.
+                is_split_2col = False
+                box_l = None
+                if bar[0] >= int(0.25 * W):
+                    left_q_area = a[95:min(700, H), 10:bar[0]]
+                    dark_l = (left_q_area.mean(2) < cfg.dark_threshold) & (
+                        (left_q_area.max(2) - left_q_area.min(2)) < cfg.color_diff_threshold
+                    )
+                    if dark_l.sum() > 1500:
+                        ys_l, xs_l = np.where(dark_l)
+                        if xs_l.max() - xs_l.min() > 200:
+                            is_split_2col = True
+                            box_l = (
+                                int(10 + xs_l.min()),
+                                int(95 + ys_l.min()),
+                                int(10 + xs_l.max() + 1),
+                                int(95 + ys_l.max() + 1),
+                            )
+
+                # In 2024 software layouts (narrow left bar, x0 < 350), detect horizontal divider line below progress bar
+                y_start = 0
+                if x0 < 350:
+                    top_region = a[:min(70, H), x0:].astype(int)
+                    row_means = top_region.mean(axis=(1, 2))
+                    dark_rows = [y for y, m in enumerate(row_means) if m < 185]
+                    if dark_rows and 38 <= max(dark_rows) <= 58:
+                        y_start = max(dark_rows) + 1
+
+                box = (x0, y_start, W, H)
+
+                # 2. Search for white panel containing question (or right-hand graphic)
+                wp = white_panel(
+                    a[y_start:, :],
+                    x0,
+                    min_area_ratio=cfg.white_panel_min_area_ratio,
+                    max_width_ratio=cfg.white_panel_max_width_ratio,
+                    closing_size=cfg.closing_kernel_size,
+                    min_val=cfg.white_min_val,
                 )
+                if wp:
+                    layout = "red_bar+white_panel"
+                    # Check whether canvas outside panel has gray background (SP 2024 layouts with watermark / corner tag)
+                    # or pure white canvas (FA 2024 wide layouts where text flows across container).
+                    right_bg_mean = float(a[100 : max(101, H - 100), max(0, W - 50) :].mean())
+                    bottom_bg_mean = float(a[max(0, H - 50) :, 100 : max(101, W - 100)].mean())
+                    is_gray_canvas = (right_bg_mean < 246) or (bottom_bg_mean < 246)
+
+                    if is_gray_canvas or bar[0] < 350:
+                        # In gray canvas layouts (e.g. PRM392 SP24 FE/RE), constrain search to white card panel (+ 30px)
+                        # to isolate out FUO watermark in mid canvas and yellow "Q: N" tag in bottom-right corner.
+                        box = (wp[0], wp[1] + y_start, min(W, wp[2] + 30), min(H, wp[3] + y_start + 30))
+                    else:
+                        # For pure white wide layouts (e.g. FA 2024 RE), search spans full right canvas (W, H)
+                        # so text overflowing panel boundary is never clamped or truncated.
+                        box = (wp[0], wp[1] + y_start, W, H)
+
+                # 3. Text mask
+                m = text_mask(
+                    a,
+                    box,
+                    dark_threshold=cfg.dark_threshold,
+                    color_diff_threshold=cfg.color_diff_threshold,
+                    allow_subpixel=True,
+                    border_dark_ratio=cfg.border_dark_ratio,
+                    border_edge_depth=cfg.border_edge_depth,
+                )
+                ys, xs = np.where(m)
+
+                if len(ys) == 0:
+                    warnings.append("no_text")
+                    bx = box
+                else:
+                    bx = (
+                        int(box[0] + xs.min()),
+                        int(box[1] + ys.min()),
+                        int(box[0] + xs.max() + 1),
+                        int(box[1] + ys.max() + 1),
+                    )
+                    # Structural check: line count >= 3
+                    num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                    if num_lines < 3 and not is_split_2col:
+                        warnings.append("few_lines")
+                    if 2 <= num_lines <= 4 and not is_split_2col:
+                        warnings.append("missing_stem")
+                    if ((bx[3] - bx[1]) < 80 or num_lines <= 1) and not is_split_2col:
+                        warnings.append("missing_options")
+
+                # Handle split 2-column question: combine left question text + right chart into stacked image
+                if is_split_2col and box_l is not None:
+                    layout = "split_2col_question_chart"
+                    t_core = im.crop(box_l)
+                    c_core = im.crop(bx)
+                    pad = cfg.padding_px
+                    W_st = max(t_core.width, c_core.width) + 2 * pad
+                    H_st = t_core.height + c_core.height + 3 * pad
+                    st_canvas = Image.new("RGB", (W_st, H_st), "white")
+                    st_canvas.paste(t_core, (pad, pad))
+                    chart_x = (W_st - c_core.width) // 2
+                    st_canvas.paste(c_core, (chart_x, t_core.height + 2 * pad))
+                    final_cropped = st_canvas
+                    # Represent bounding box as union of both areas
+                    bx = (
+                        min(box_l[0], bx[0]),
+                        min(box_l[1], bx[1]),
+                        max(box_l[2], bx[2]),
+                        max(box_l[3], bx[3]),
+                    )
 
         else:
             # 4. No red bar: check top-left white panel first (software layouts with gray background, FUO watermark, and Q:N corner tag)
@@ -750,7 +802,10 @@ def crop_exam_images(
 
     # --- Pass 3: Warning Rate Evaluation ---
     total = len(results)
-    critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options"}
+    if dominant_layout in ["red_bar_left_panel", "red_bar+white_panel", "modern_2026", "top_left_white_panel"]:
+        critical_warnings = {"no_text", "crop_too_large"}
+    else:
+        critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options"}
     critical_flagged = [r for r in results if any(w in critical_warnings for w in r.warnings)]
     warning_rate = (len(critical_flagged) / total) if total > 0 else 0.0
     fallback_to_raw = warning_rate > cfg.warning_rate_threshold

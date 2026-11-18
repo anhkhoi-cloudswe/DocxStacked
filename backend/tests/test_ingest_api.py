@@ -109,3 +109,69 @@ def test_ingest_payload_flow():
     assert check_data["compiled_at_iso"] is not None
     assert check_data["compiled_at_iso"].endswith("Z")
     assert "T" in check_data["compiled_at_iso"]
+
+
+def test_ingest_duplicate_thread_deduplication():
+    """Verify that ingesting the same thread twice (even with /unread or notification prefix) results in exactly ONE exam."""
+    import sqlite3
+
+    payload1 = {
+        "subject_code": "TEST102",
+        "exam_title": "(2) Đề Thi FE - TEST102 - Thread Dedup Test",
+        "exam_url": "https://fuoverflow.com/threads/test-thread-dedup.7777/",
+        "term": "SU26",
+        "exam_type": "FE",
+        "questions": [
+            {
+                "index": 1,
+                "file_name": "q001.png",
+                "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "comments": [{"raw_text": "B", "upvotes": 2}]
+            }
+        ],
+        "options": {"ai_enabled": False}
+    }
+
+    # First ingest
+    res1 = client.post("/api/ingest", json=payload1, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res1.status_code == 200
+    data1 = res1.json()
+    exam_id_1 = data1["exam_id"]
+    assert data1["exam_title"] == "TEST102 - Thread Dedup Test"
+
+    # Second ingest with /unread and different raw title
+    payload2 = {
+        "subject_code": "TEST102",
+        "exam_title": "[Đề Thi FE] TEST102 - Thread Dedup Test",
+        "exam_url": "https://fuoverflow.com/threads/test-thread-dedup.7777/unread",
+        "term": "SU26",
+        "exam_type": "FE",
+        "questions": [
+            {
+                "index": 1,
+                "file_name": "q001.png",
+                "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "comments": [{"raw_text": "B", "upvotes": 3}]
+            }
+        ],
+        "options": {"ai_enabled": False}
+    }
+
+    res2 = client.post("/api/ingest", json=payload2, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res2.status_code == 200
+    data2 = res2.json()
+    exam_id_2 = data2["exam_id"]
+
+    # Must be the exact same exam ID
+    assert exam_id_1 == exam_id_2
+
+    # Query DB directly to guarantee only 1 exam exists for thread 7777
+    from backend.app.db.session import sync_engine
+    with sync_engine.connect() as conn:
+        from sqlalchemy import text
+        rows = conn.execute(text("SELECT id, title, url FROM exams WHERE url LIKE '%7777%'")).fetchall()
+
+    assert len(rows) == 1, f"Expected 1 exam for thread 7777, got {len(rows)}: {rows}"
+    assert rows[0][1] == "TEST102 - Thread Dedup Test"
+    assert rows[0][2] == "https://fuoverflow.com/threads/test-thread-dedup.7777/"
+

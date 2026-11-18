@@ -320,4 +320,33 @@ def test_anti_raw_crop_top_left_panel_and_prm392_fe():
     assert 245 <= wp[3] <= 255
 
 
+def test_red_bar_left_panel_layout(tmp_path: Path):
+    """
+    Verify red_bar_left_panel layout (e.g. PRN232 SU25):
+    - Left sidebar (0..166), question in middle panel (166..809), red bar at 809, blank right canvas.
+    - Accurately recognized as red_bar_left_panel.
+    - Zero warning flags on clean question.
+    - Cropped image bounds isolate question stem and choices.
+    """
+    fixture_path = FIXTURES_DIR / "2025_prn232_su25_fe_q01.webp"
+    assert fixture_path.exists(), f"Fixture missing: {fixture_path}"
+
+    out_cropped = tmp_path / "q01_cropped.png"
+    out_hint = tmp_path / "q01_hint.png"
+
+    res = crop_question_single(
+        input_path=fixture_path,
+        output_path=out_cropped,
+        hint_output_path=out_hint,
+    )
+
+    assert res.layout == "red_bar_left_panel"
+    assert res.warnings == []
+    assert res.success is True
+    assert 450 <= res.cropped_image.width <= 520
+    assert 120 <= res.cropped_image.height <= 180
+    assert out_cropped.exists()
+
+
+
 

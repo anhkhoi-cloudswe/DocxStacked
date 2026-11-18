@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ActivityIcon, BookIcon, LogoutIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon } from './icons';
+import { confirmModal } from './ModalDialog';
 
 interface HeaderProps {
   onNavigateSettings?: () => void;
@@ -44,7 +45,13 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   const handleLogout = async () => {
-    if (!window.confirm('Bạn có chắc chắn muốn đăng xuất phiên tài khoản FUOverflow?')) return;
+    const ok = await confirmModal({
+      title: 'Đăng xuất tài khoản',
+      message: 'Bạn có chắc chắn muốn đăng xuất phiên tài khoản FUOverflow?',
+      confirmText: 'Đăng xuất',
+      isDanger: true,
+    });
+    if (!ok) return;
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2000);
