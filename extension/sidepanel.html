@@ -29,7 +29,7 @@
       background-color: var(--bg);
       color: var(--text);
       padding: 10px;
-      padding-bottom: 54px; /* Space for bottom tab bar */
+      padding-bottom: 84px; /* Space for bottom tab bar and version bar */
       font-size: 13px;
       line-height: 1.4;
       min-height: 100vh;
@@ -989,6 +989,12 @@
     <a id="link-open-dashboard" class="dashboard-link" href="http://127.0.0.1:8000" target="_blank">
       Mở bảng điều khiển đầy đủ (Dashboard)
     </a>
+    <div id="sidepanel-version-bar" style="text-align: center; font-size: 10px; color: var(--muted); padding: 3px 6px; border-top: 1px solid rgba(255, 255, 255, 0.05); display: flex; flex-direction: column; gap: 2px;">
+      <span>Phiên bản: v<span id="sidepanel-version-text">1.0.1</span></span>
+      <div id="sidepanel-version-warning" style="display: none; color: #f87171; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 4px; padding: 3px 4px; font-weight: 600; font-size: 11px;">
+        Phiên bản cũ, đóng và mở lại panel
+      </div>
+    </div>
   </div>
 
   <script src="sidepanel.js"></script>

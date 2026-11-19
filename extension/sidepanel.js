@@ -2182,21 +2182,100 @@ function applyQueueStateToUi(qState) {
 }
 
 async function checkSavedQueueState() {
-  chrome.storage.local.get(["savedQueueState"], (data) => {
-    if (data.savedQueueState) {
-      applyQueueStateToUi(data.savedQueueState);
-    }
-  });
+  try {
+    chrome.storage.local.get(["savedQueueState"], (data) => {
+      if (data && data.savedQueueState) {
+        applyQueueStateToUi(data.savedQueueState);
+      }
+    });
+  } catch (e) {}
 }
 
 async function checkExternalQueueRequest() {
-  chrome.storage.local.get(["externalQueueRequest"], (data) => {
-    const req = data.externalQueueRequest;
-    if (!req || !req.exams || req.exams.length === 0) return;
-    chrome.storage.local.remove(["externalQueueRequest"]);
-    log(`Nhận yêu cầu soạn ${req.exams.length} đề từ Web Dashboard. Bắt đầu...`, "info");
-    startUnifiedQueue(req.exams);
-  });
+  try {
+    chrome.storage.local.get(["externalQueueRequest", "savedQueueState"], (data) => {
+      const req = data.externalQueueRequest;
+      if (!req || !req.exams || req.exams.length === 0) return;
+      chrome.storage.local.remove(["externalQueueRequest"]);
+      if (!data.savedQueueState || !data.savedQueueState.isRunning) {
+        log(`Nhận yêu cầu soạn ${req.exams.length} đề từ Web Dashboard. Bắt đầu...`, "info");
+        startUnifiedQueue(req.exams);
+      }
+    });
+  } catch (e) {}
+}
+
+// -------------------------------------------------------------
+// EXTENSION VERSION CHECK & LOG REPLAY
+// -------------------------------------------------------------
+const myManifestVersion = chrome.runtime.getManifest()?.version || "1.0.1";
+let registeredBgInstanceId = null;
+
+function checkExtensionVersion() {
+  const warningEl = document.getElementById("sidepanel-version-warning");
+  const verTextEl = document.getElementById("sidepanel-version-text");
+  if (verTextEl) {
+    verTextEl.innerText = myManifestVersion;
+  }
+
+  try {
+    chrome.runtime.sendMessage({ type: "GET_BACKGROUND_VERSION" }, (res) => {
+      if (chrome.runtime.lastError || !res || !res.ok) {
+        if (warningEl) {
+          warningEl.innerText = "Phiên bản cũ, đóng và mở lại panel";
+          warningEl.style.display = "block";
+        }
+        return;
+      }
+
+      if (res.version && res.version !== myManifestVersion) {
+        if (warningEl) {
+          warningEl.innerText = `Phiên bản cũ (v${myManifestVersion} < v${res.version}), đóng và mở lại panel`;
+          warningEl.style.display = "block";
+        }
+        return;
+      }
+
+      if (registeredBgInstanceId === null) {
+        registeredBgInstanceId = res.instanceId;
+      } else if (res.instanceId && res.instanceId !== registeredBgInstanceId) {
+        if (warningEl) {
+          warningEl.innerText = "Extension đã cập nhật, đóng và mở lại panel";
+          warningEl.style.display = "block";
+        }
+        return;
+      }
+
+      if (warningEl) {
+        warningEl.style.display = "none";
+      }
+    });
+  } catch (err) {
+    if (warningEl) {
+      warningEl.innerText = "Phiên bản cũ, đóng và mở lại panel";
+      warningEl.style.display = "block";
+    }
+  }
+}
+
+async function loadRecentLogs() {
+  try {
+    chrome.storage.local.get(["recentLogs"], (data) => {
+      if (data && Array.isArray(data.recentLogs) && elLogBox) {
+        const existingLines = Array.from(elLogBox.querySelectorAll(".log-line")).map(l => l.innerText);
+        data.recentLogs.forEach((item) => {
+          if (!existingLines.includes(item.text)) {
+            const line = document.createElement("div");
+            line.className = `log-line log-${item.level || "info"}`;
+            line.innerText = item.text;
+            line.title = item.text;
+            elLogBox.appendChild(line);
+          }
+        });
+        elLogBox.scrollTop = elLogBox.scrollHeight;
+      }
+    });
+  } catch (e) {}
 }
 
 // -------------------------------------------------------------
@@ -2208,6 +2287,8 @@ async function initExtension() {
   syncFromActiveTab();
   checkSavedQueueState();
   checkExternalQueueRequest();
+  loadRecentLogs();
+  checkExtensionVersion();
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -2220,6 +2301,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       elThreadTitleDisplay.title = cleanTitle;
     }
     checkOpenExamStatus(data.url);
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.type === "APPEND_LOG" && message.logItem) {
+    if (elLogBox) {
+      const existingLines = Array.from(elLogBox.querySelectorAll(".log-line")).map(l => l.innerText);
+      if (!existingLines.includes(message.logItem.text)) {
+        const line = document.createElement("div");
+        line.className = `log-line log-${message.logItem.level || "info"}`;
+        line.innerText = message.logItem.text;
+        line.title = message.logItem.text;
+        elLogBox.appendChild(line);
+        elLogBox.scrollTop = elLogBox.scrollHeight;
+      }
+    }
     sendResponse({ ok: true });
     return true;
   }
@@ -2257,9 +2354,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.savedQueueState) {
-    applyQueueStateToUi(changes.savedQueueState.newValue);
+  if (areaName === "local") {
+    if (changes.savedQueueState) {
+      applyQueueStateToUi(changes.savedQueueState.newValue);
+    }
+    if (changes.recentLogs && changes.recentLogs.newValue) {
+      const list = changes.recentLogs.newValue;
+      if (Array.isArray(list) && elLogBox) {
+        const existingLines = Array.from(elLogBox.querySelectorAll(".log-line")).map(l => l.innerText);
+        list.forEach((item) => {
+          if (!existingLines.includes(item.text)) {
+            const line = document.createElement("div");
+            line.className = `log-line log-${item.level || "info"}`;
+            line.innerText = item.text;
+            line.title = item.text;
+            elLogBox.appendChild(line);
+          }
+        });
+        elLogBox.scrollTop = elLogBox.scrollHeight;
+      }
+    }
   }
 });
+
+// Fallback triggers: Window focus and visibility
+window.addEventListener("focus", () => {
+  checkSavedQueueState();
+  checkExtensionVersion();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    checkSavedQueueState();
+    checkExtensionVersion();
+  }
+});
+
+// Periodic fallback polling: every 2 seconds for queue progress
+setInterval(() => {
+  try {
+    chrome.storage.local.get(["savedQueueState"], (data) => {
+      if (data && data.savedQueueState) {
+        const q = data.savedQueueState;
+        if (q.isRunning || queueEngine.isRunning) {
+          applyQueueStateToUi(q);
+        }
+      }
+    });
+  } catch (e) {}
+}, 2000);
+
+// Periodic version check: every 10 seconds
+setInterval(() => {
+  checkExtensionVersion();
+}, 10000);
 
 initExtension();

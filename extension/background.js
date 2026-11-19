@@ -1,6 +1,8 @@
 // background.js - DocxStacked Chromium Extension (MV3)
 // Configures side panel behavior to open when user clicks extension action icon.
 
+const BACKGROUND_INSTANCE_ID = "bg_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error("Side panel behavior error:", error));
@@ -16,6 +18,12 @@ let lastAuthStatus = {
 chrome.storage.local.get(["lastAuthStatus"], (res) => {
   if (res && res.lastAuthStatus) {
     lastAuthStatus = res.lastAuthStatus;
+  }
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.lastAuthStatus && changes.lastAuthStatus.newValue) {
+    lastAuthStatus = changes.lastAuthStatus.newValue;
   }
 });
 
@@ -83,6 +91,32 @@ async function ensureOffscreenDocument() {
   }
 }
 
+async function appendLogToStorage(msg, level = "info") {
+  try {
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+    const logItem = {
+      text: `[${timeStr}] ${msg}`,
+      rawMsg: msg,
+      level: level,
+      timestamp: Date.now(),
+    };
+
+    chrome.runtime.sendMessage({
+      type: "APPEND_LOG",
+      logItem: logItem,
+    }).catch(() => {});
+
+    const data = await chrome.storage.local.get(["recentLogs"]);
+    const list = data.recentLogs || [];
+    list.push(logItem);
+    if (list.length > 50) list.shift();
+    await chrome.storage.local.set({ recentLogs: list });
+  } catch (e) {
+    console.error("appendLogToStorage error:", e);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "OPEN_SIDEPANEL") {
     const tabId = sender.tab ? sender.tab.id : undefined;
@@ -96,6 +130,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   } else if (message.type === "SETUP_OFFSCREEN") {
     ensureOffscreenDocument().then(() => sendResponse({ ok: true }));
+    return true;
+  } else if (message.type === "GET_BACKGROUND_VERSION") {
+    sendResponse({
+      ok: true,
+      version: chrome.runtime.getManifest().version,
+      instanceId: BACKGROUND_INSTANCE_ID,
+    });
     return true;
   }
 });
@@ -117,7 +158,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   if (message.type === "PING_EXTENSION" || message.type === "PING") {
     sendResponse({
       ok: true,
-      version: "1.0.0",
+      version: chrome.runtime.getManifest().version,
       name: "DocxStacked",
       logged_in: Boolean(lastAuthStatus.logged_in),
       username: lastAuthStatus.username,
@@ -140,6 +181,9 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
     (async () => {
       try {
+        // Ghi log ngay khi nhận lệnh từ Dashboard
+        await appendLogToStorage(`[Dashboard] Nhận lệnh ${exams.length} đề`, "info");
+
         // 1. Ensure Offscreen document is created and ready
         await ensureOffscreenDocument();
 
@@ -161,20 +205,31 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
         await chrome.storage.local.set({
           savedQueueState: initialQueueState,
-          externalQueueRequest: {
-            subjectCode,
-            exams,
-            timestamp: Date.now(),
-          },
         });
 
-        // 3. Immediately kick off offscreen queue without waiting for sidepanel
-        chrome.runtime.sendMessage({
-          type: "OFFSCREEN_START_QUEUE",
-          items: exams,
-          currentIndex: 0,
-          completedExams: [],
-        }).catch(() => {});
+        // 3. Immediately kick off offscreen queue with retry confirmation
+        let offscreenStarted = false;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          try {
+            const resp = await chrome.runtime.sendMessage({
+              type: "OFFSCREEN_START_QUEUE",
+              items: exams,
+              currentIndex: 0,
+              completedExams: [],
+            });
+            if (resp && resp.ok) {
+              offscreenStarted = true;
+              break;
+            }
+          } catch (e) {
+            // Offscreen listener might still be mounting
+          }
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
+        if (!offscreenStarted) {
+          throw new Error("Offscreen scraper không phản hồi sau 5 lần thử");
+        }
 
         // 4. Try opening side panel in active tab
         try {
@@ -194,6 +249,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
         });
       } catch (err) {
         console.error("Error enqueuing exams:", err);
+        await appendLogToStorage(`[Lỗi] Không thể khởi động offscreen: ${err.message}`, "error");
         sendResponse({ ok: false, error: err.message || "Lỗi khởi động hàng đợi" });
       }
     })();
