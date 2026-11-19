@@ -5,6 +5,20 @@ chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error("Side panel behavior error:", error));
 
+// In-memory auth state cached from fuoverflow.com session
+let lastAuthStatus = {
+  logged_in: false,
+  username: null,
+  timestamp: 0,
+};
+
+// Restore persisted auth status on worker startup
+chrome.storage.local.get(["lastAuthStatus"], (res) => {
+  if (res && res.lastAuthStatus) {
+    lastAuthStatus = res.lastAuthStatus;
+  }
+});
+
 // Heartbeat function to report auth status to backend every 30-60s
 async function sendAuthHeartbeat() {
   try {
@@ -22,6 +36,13 @@ async function sendAuthHeartbeat() {
         username = match[1].trim();
       }
     }
+
+    lastAuthStatus = {
+      logged_in: isLoggedIn,
+      username: username,
+      timestamp: Date.now(),
+    };
+    chrome.storage.local.set({ lastAuthStatus }).catch(() => {});
 
     // Ping backend with auth status
     await fetch("http://127.0.0.1:8000/api/auth/extension-heartbeat", {
@@ -94,7 +115,14 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   }
 
   if (message.type === "PING_EXTENSION" || message.type === "PING") {
-    sendResponse({ ok: true, version: "1.0.0", name: "DocxStacked" });
+    sendResponse({
+      ok: true,
+      version: "1.0.0",
+      name: "DocxStacked",
+      logged_in: Boolean(lastAuthStatus.logged_in),
+      username: lastAuthStatus.username,
+      timestamp: lastAuthStatus.timestamp,
+    });
     // Opportunistically refresh heartbeat on ping
     sendAuthHeartbeat().catch(() => {});
     return;

@@ -41,11 +41,7 @@ def extract_answers_and_flags_from_docx(docx_path: Path):
             is_flagged = False
             for run in para.runs:
                 if run.bold and run.font.size == Pt(20):
-                    m_ans = re.match(r"^([A-D](?:\s*,\s*[A-D])*)", run.text.strip())
-                    if m_ans:
-                        ans_found = m_ans.group(1).strip()
-                    elif "?" in run.text:
-                        ans_found = "?"
+                    ans_found = run.text.strip()
                 if "(cần kiểm tra lại)" in run.text:
                     is_flagged = True
             
@@ -89,6 +85,18 @@ def print_10col_table(title: str, answers: dict, total_q: int):
     print("-" * 75)
     print(f"Ghi chú: Ký hiệu '*' biểu thị câu có gắn nhãn '(cần kiểm tra lại)'.")
     print(f"Tổng số câu có cờ: {flagged_count}/{total_q}")
+
+def print_full_answers_table(title: str, answers: dict, total_q: int):
+    print(f"\n=======================================================")
+    print(f" BẢNG ĐÁP ÁN NGUYÊN CHUỖI TRÍCH XUẤT TỪ FILE WORD: {title}")
+    print(f"=======================================================")
+    print(f"{'Câu':<6} | {'Đáp án nguyên chuỗi trong Word':<45} | {'Cần ktra':<10}")
+    print("-" * 68)
+    for q in range(1, total_q + 1):
+        ans_str, flagged = answers.get(q, ("-", False))
+        flag_str = "CÓ CỜ (*)" if flagged else "Không"
+        print(f"Câu {q:02d} | {ans_str:<45} | {flag_str:<10}")
+    print("-" * 68)
 
 def count_images_in_docx(docx_path: Path) -> int:
     doc = Document(str(docx_path))
@@ -213,7 +221,7 @@ def recompile_ite302c():
 
     con.close()
 
-    out_dir = BASE_DIR / "data" / "output"
+    out_dir = BASE_DIR / "data" / "output" / subject_code
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\nBuilding Word document for {exam.title}...")
@@ -293,7 +301,7 @@ def recompile_prm393():
 
     con.close()
 
-    out_dir = BASE_DIR / "data" / "output"
+    out_dir = BASE_DIR / "data" / "output" / subject_code
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\nBuilding Word document for {exam.title}...")
@@ -314,6 +322,7 @@ def recompile_prm393():
 
     extracted_ans = extract_answers_and_flags_from_docx(out_docx)
     print_10col_table("PRM393 - SU26 - FE", extracted_ans, len(questions))
+    print_full_answers_table("PRM393 - SU26 - FE", extracted_ans, len(questions))
 
     return out_docx, sha, size, img_count, extracted_ans
 

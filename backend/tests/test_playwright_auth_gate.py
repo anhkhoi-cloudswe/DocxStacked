@@ -62,7 +62,7 @@ def test_auth_gate_tab_switching_20_times_stable(dist_server):
                 "username": "TestFPTStudent",
             })
         ))
-        page.route("**/api/subjects", lambda route: route.fulfill(
+        page.route("**/api/subjects*", lambda route: route.fulfill(
             status=200,
             content_type="application/json",
             body=json.dumps([])
@@ -134,7 +134,7 @@ def test_auth_gate_extension_sleep_20s_no_transition(dist_server):
                 )
 
         page.route("**/api/auth/status", handle_auth)
-        page.route("**/api/subjects", lambda route: route.fulfill(
+        page.route("**/api/subjects*", lambda route: route.fulfill(
             status=200,
             content_type="application/json",
             body=json.dumps([])
@@ -232,7 +232,7 @@ def test_auth_gate_navbar_hidden_in_non_logged_in_states(dist_server):
             content_type="application/json",
             body=json.dumps({"logged_in": True, "username": "LoggedInUser", "auth_source": "server"})
         ))
-        page3.route("**/api/subjects", lambda route: route.fulfill(
+        page3.route("**/api/subjects*", lambda route: route.fulfill(
             status=200,
             content_type="application/json",
             body=json.dumps([])
@@ -241,5 +241,175 @@ def test_auth_gate_navbar_hidden_in_non_logged_in_states(dist_server):
         page3.wait_for_selector(".header-nav", timeout=5000)
         assert page3.locator(".header-nav").is_visible(), "Navbar MUST be visible in logged_in state"
         page3.close()
+
+        browser.close()
+
+
+def test_extension_logged_in_backend_logged_out_flow_and_screenshots(dist_server):
+    """
+    Simulate extension reporting logged_in while /api/auth/status reports logged_in: false:
+    1. Page MUST NOT contain the word 'Đăng nhập' anywhere.
+    2. Start button MUST say 'Bắt đầu soạn đề' and be clickable.
+    3. Capture full-page screenshots for all 3 states: logged_in, logged_out, no_extension.
+    """
+    screenshot_dir = Path(__file__).resolve().parent.parent.parent / "data" / "screenshots"
+    screenshot_dir.mkdir(parents=True, exist_ok=True)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1280, "height": 900})
+
+        # --- 1. STATE: LOGGED_IN (Extension logged_in, backend Playwright logged_out) ---
+        page_in = context.new_page()
+
+        # Backend Playwright reports NOT logged in
+        page_in.route("**/api/auth/status", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "logged_in": False,
+                "status_code": "not_logged_in",
+                "auth_source": "browser",
+                "detail": "Playwright backend chưa đăng nhập",
+            })
+        ))
+
+        # Subjects mock
+        page_in.route("**/api/subjects*", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({
+                "items": [
+                    {
+                        "id": 1,
+                        "code": "PRM393",
+                        "name": "Lập trình ứng dụng di động",
+                        "category": "Kỹ thuật phần mềm",
+                    }
+                ],
+                "total": 1,
+            })
+        ))
+
+        # Exams mock for PRM393
+        page_in.route("**/api/subjects/PRM393/exams*", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps([
+                {
+                    "id": 39,
+                    "subject_id": 1,
+                    "title": "PRM393 - SU26 - FE",
+                    "url": "https://fuoverflow.com/threads/39/",
+                    "exam_type": "FE",
+                    "term": "SU26",
+                    "question_count": 50,
+                    "compiled": True,
+                    "has_file": True,
+                }
+            ])
+        ))
+
+        # Extension reports LOGGED_IN directly to window
+        page_in.add_init_script("""
+            window.DocxStackedExtensionPresent = true;
+            window.__DOCXSTACKED_TEST_MODE__ = true;
+            window.__DOCXSTACKED_AUTH_LOGGED_IN__ = true;
+            window.__DOCXSTACKED_AUTH_USERNAME__ = "SinhVienFU";
+        """)
+
+        page_in.goto(dist_server)
+        page_in.wait_for_selector(".header-nav", timeout=5000)
+
+        # Wait for subjects to load and check PRM393 checkbox
+        page_in.wait_for_selector("text=PRM393", timeout=5000)
+        checkbox = page_in.locator("input[type='checkbox']").first
+        checkbox.check()
+        page_in.wait_for_timeout(300)
+
+        # Verify: Header nav is visible and displays user name
+        assert page_in.locator(".header-nav").is_visible()
+        assert "SinhVienFU" in page_in.content()
+
+        # Requirement 1: NO occurrence of "Đăng nhập" anywhere on the page
+        body_text = page_in.locator("body").inner_text()
+        assert "Đăng nhập" not in body_text, f"Expected no 'Đăng nhập' on page, but found occurrences in: {body_text}"
+
+        # Requirement 2: Start button exists, is enabled, and says 'Bắt đầu soạn đề'
+        all_btn_texts = page_in.locator("button").all_inner_texts()
+        print("ALL BUTTONS:", all_btn_texts)
+        start_btn = page_in.locator("button:has-text('Bắt đầu soạn đề')")
+        assert start_btn.count() > 0, f"Start button must exist. Found buttons: {all_btn_texts}"
+        assert start_btn.is_visible(), "Start button 'Bắt đầu soạn đề' must be visible"
+        assert start_btn.is_enabled(), "Start button 'Bắt đầu soạn đề' must be clickable"
+
+        # Capture screenshot 1: logged_in
+        ss_logged_in = screenshot_dir / "screenshot_logged_in.png"
+        page_in.screenshot(path=str(ss_logged_in), full_page=True)
+        assert ss_logged_in.exists()
+        page_in.close()
+
+        # --- 2. STATE: LOGGED_OUT (Extension detected but not logged in to FUOverflow) ---
+        page_out = context.new_page()
+        page_out.route("**/api/auth/status", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"logged_in": False, "status_code": "not_logged_in"})
+        ))
+        page_out.add_init_script("""
+            window.DocxStackedExtensionPresent = true;
+            window.__DOCXSTACKED_TEST_MODE__ = true;
+            window.__DOCXSTACKED_AUTH_LOGGED_IN__ = false;
+            window.__DOCXSTACKED_AUTH_LOGGED_OUT__ = true;
+            window.__mockFailureElapsed = 35000;
+        """)
+
+        page_out.goto(dist_server)
+        page_out.wait_for_timeout(500)
+        # Trigger 3 failed checks to satisfy anti-flicker threshold (>= 3 failures, >= 30s)
+        for _ in range(3):
+            page_out.evaluate("window.__triggerCheckAuth && window.__triggerCheckAuth();")
+            page_out.wait_for_timeout(200)
+
+        page_out.wait_for_selector("text=Chưa đăng nhập FUOverflow", timeout=5000)
+        # Verify diagnostic lines
+        assert page_out.locator("text=Chẩn đoán kết nối:").is_visible()
+        assert page_out.locator("text=Lý do lỗi cuối cùng:").is_visible()
+        assert page_out.locator("text=Số lần thất bại liên tiếp:").is_visible()
+
+        # Capture screenshot 2: logged_out
+        ss_logged_out = screenshot_dir / "screenshot_logged_out.png"
+        page_out.screenshot(path=str(ss_logged_out), full_page=True)
+        assert ss_logged_out.exists()
+        page_out.close()
+
+        # --- 3. STATE: NO_EXTENSION (Extension not detected on browser) ---
+        page_noext = context.new_page()
+        page_noext.route("**/api/auth/status", lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"logged_in": False, "status_code": "not_logged_in"})
+        ))
+        page_noext.add_init_script("""
+            delete window.DocxStackedExtensionPresent;
+            delete window.__DOCXSTACKED_TEST_MODE__;
+            delete window.__DOCXSTACKED_AUTH_LOGGED_IN__;
+            window.__mockFailureElapsed = 35000;
+        """)
+
+        page_noext.goto(dist_server)
+        page_noext.wait_for_timeout(500)
+        for _ in range(3):
+            page_noext.evaluate("window.__triggerCheckAuth && window.__triggerCheckAuth();")
+            page_noext.wait_for_timeout(200)
+
+        page_noext.wait_for_selector("text=Chưa thấy extension trên trình duyệt này", timeout=5000)
+        assert page_noext.locator("text=Chẩn đoán kết nối:").is_visible()
+
+        # Capture screenshot 3: no_extension
+        ss_noext = screenshot_dir / "screenshot_no_extension.png"
+        page_noext.screenshot(path=str(ss_noext), full_page=True)
+        assert ss_noext.exists()
+        page_noext.close()
 
         browser.close()

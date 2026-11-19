@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { Subject, ExamItem, AuthStatus } from '../types';
+import type { Subject, ExamItem } from '../types';
 import {
   ArrowRightIcon,
   BookIcon,
@@ -22,9 +22,22 @@ interface Props {
   initialOpenLogin?: boolean;
   loginTrigger?: number;
   isLoggedIn?: boolean;
+  forumLoggedIn?: boolean;
 }
 
-export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, initialOpenLogin, loginTrigger, isLoggedIn = true }) => {
+export const ScreenSelectSubject: React.FC<Props> = ({
+  onStartJob,
+  isLoading,
+  initialOpenLogin,
+  loginTrigger,
+  isLoggedIn = true,
+  forumLoggedIn: propForumLoggedIn,
+}) => {
+  // Single source of truth for forum auth state
+  const forumLoggedIn = Boolean(propForumLoggedIn !== undefined ? propForumLoggedIn : isLoggedIn);
+  const [manualLoggedIn, setManualLoggedIn] = useState<boolean>(false);
+  const effectiveLoggedIn = forumLoggedIn || manualLoggedIn;
+
   // Subjects list & search
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [totalSubjects, setTotalSubjects] = useState<number>(0);
@@ -48,8 +61,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
   const [isLoadingExams, setIsLoadingExams] = useState<boolean>(false);
   const [selectedExamIds, setSelectedExamIds] = useState<Record<string, number[]>>({});
 
-  // System statuses
-  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  // Modal statuses
   const [showCookieModal, setShowCookieModal] = useState<boolean>(Boolean(initialOpenLogin));
   const [loginModalMode, setLoginModalMode] = useState<'account' | 'cookie'>('account');
   const [accountUsername, setAccountUsername] = useState<string>('');
@@ -74,11 +86,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
 
   // Open modal when header login button or URL trigger is clicked
   useEffect(() => {
-    if (loginTrigger && loginTrigger > 0 && (!authStatus || !authStatus.logged_in)) {
+    if (loginTrigger && loginTrigger > 0 && !effectiveLoggedIn) {
       setShowCookieModal(true);
       setLoginModalMode('account');
     }
-  }, [loginTrigger, authStatus]);
+  }, [loginTrigger, effectiveLoggedIn]);
 
   // Debounce search query 250ms
   useEffect(() => {
@@ -279,7 +291,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
       });
       const data = await res.json();
       if (data.logged_in) {
-        setAuthStatus({ logged_in: true, username: accountUsername.trim() });
+        setManualLoggedIn(true);
         setShowCookieModal(false);
         setAccountPassword('');
       } else {
@@ -308,7 +320,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
       });
       const data = await res.json();
       if (data.logged_in) {
-        setAuthStatus({ logged_in: true, username: 'Thành viên FUOverflow' });
+        setManualLoggedIn(true);
         setShowCookieModal(false);
         setCookieInput('');
       } else {
@@ -358,7 +370,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
   return (
     <div className="select-subject-layout">
       {/* Session Authentication Warning Banner - strictly reflects extension login state */}
-      {!isLoggedIn && (
+      {!effectiveLoggedIn && (
         <div
           style={{
             gridColumn: '1 / -1',
@@ -1116,10 +1128,10 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
               <h4 className="serif-title" style={{ fontSize: 'var(--text-base)', margin: 0, display: 'flex', alignItems: 'center' }}>
                 <span className="step-badge">3</span> Kế hoạch & Bắt đầu
               </h4>
-              {authStatus?.logged_in ? (
+              {effectiveLoggedIn ? (
                 <span style={{ fontSize: '11px', color: 'var(--status-confident-text)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#2D6A4F', display: 'inline-block' }} />
-                  <span>{authStatus.username || 'Đã đăng nhập'}</span>
+                  <span>Đã kết nối FUOverflow</span>
                 </span>
               ) : (
                 <button
@@ -1207,7 +1219,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                   Vui lòng tích chọn ít nhất 1 môn ở Bước 1 bên trái
                 </div>
               </div>
-            ) : !authStatus?.logged_in ? (
+            ) : !effectiveLoggedIn ? (
               <div>
                 <button
                   type="button"
@@ -1269,7 +1281,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
                       <ArrowRightIcon size={16} />
                       <span>
                         {examType === 'FE'
-                          ? `Bắt đầu biên soạn (${totalExamsSelected} đề)`
+                          ? `Bắt đầu soạn đề (${totalExamsSelected} đề)`
                           : `Bắt đầu tải đề PE (${totalExamsSelected} đề)`}
                       </span>
                     </>

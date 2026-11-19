@@ -119,7 +119,65 @@ export const App: React.FC = () => {
     inFlightRef.current = true;
 
     try {
-      // 1. Probe backend auth status
+      // 1. Probe extension presence and forum auth
+      const PINNED_EXT_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
+      let extDetected = false;
+      let extAuthLoggedIn: boolean | null = null;
+      let extAuthUsername: string | null = null;
+
+      if (typeof window !== 'undefined' && (window as any).__DOCXSTACKED_AUTH_LOGGED_IN__ !== undefined) {
+        extDetected = true;
+        extAuthLoggedIn = Boolean((window as any).__DOCXSTACKED_AUTH_LOGGED_IN__);
+        extAuthUsername = (window as any).__DOCXSTACKED_AUTH_USERNAME__ || 'Extension User';
+      } else if (typeof window !== 'undefined' && ((window as any).DocxStackedExtensionPresent || (window as any).__DOCXSTACKED_TEST_MODE__)) {
+        extDetected = true;
+        if ((window as any).__DOCXSTACKED_AUTH_LOGGED_OUT__) {
+          extAuthLoggedIn = false;
+        } else {
+          extAuthLoggedIn = true;
+          extAuthUsername = 'Extension User';
+        }
+      } else if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.id) {
+        extDetected = true;
+      } else if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
+        try {
+          const pingResult = await new Promise<any>((resolve) => {
+            let done = false;
+            const timer = setTimeout(() => {
+              if (!done) {
+                done = true;
+                resolve(null);
+              }
+            }, 1500);
+            (window as any).chrome.runtime.sendMessage(
+              PINNED_EXT_ID,
+              { type: 'PING_EXTENSION' },
+              (response: any) => {
+                if (!done) {
+                  done = true;
+                  clearTimeout(timer);
+                  if (response && response.ok && !((window as any).chrome?.runtime?.lastError)) {
+                    resolve(response);
+                  } else {
+                    resolve(null);
+                  }
+                }
+              }
+            );
+          });
+          if (pingResult) {
+            extDetected = true;
+            if (pingResult.logged_in !== undefined) {
+              extAuthLoggedIn = Boolean(pingResult.logged_in);
+              extAuthUsername = pingResult.username || null;
+            }
+          }
+        } catch {
+          extDetected = false;
+        }
+      }
+
+      // 2. Probe backend auth status
       let authRes: Response | null = null;
       let authData: any = null;
       try {
@@ -134,67 +192,33 @@ export const App: React.FC = () => {
         // Backend offline or timeout
       }
 
-      // If backend reports logged in, immediately unlock
-      if (authRes && authRes.ok && authData && authData.logged_in) {
+      // 3. Resolve single source of truth for forumLoggedIn
+      const isExtLoggedIn = extAuthLoggedIn === true;
+      const isServerLoggedIn = Boolean(authRes && authRes.ok && authData && authData.logged_in);
+
+      if (isExtLoggedIn || isServerLoggedIn) {
         consecutiveFailuresRef.current = 0;
         firstFailureTimeRef.current = null;
         setConsecutiveFailures(0);
-        if (authData.username) setAuthUsername(authData.username);
-        if (authData.auth_source) setAuthSource(authData.auth_source);
-        transitionTo('logged_in', `Xác thực thành công từ ${authData.auth_source || 'server'}`);
+        const resolvedUser = (authData && authData.username) || extAuthUsername || 'Extension User';
+        setAuthUsername(resolvedUser);
+        const resolvedSource = isExtLoggedIn ? 'Extension (FUOverflow)' : (authData?.auth_source || 'server');
+        setAuthSource(resolvedSource);
+        transitionTo('logged_in', `Xác thực thành công từ ${resolvedSource}`);
         return;
-      }
-
-      // 2. Probe extension presence
-      const PINNED_EXT_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
-      let extDetected = false;
-
-      if (typeof window !== 'undefined' && ((window as any).DocxStackedExtensionPresent || (window as any).__DOCXSTACKED_TEST_MODE__)) {
-        extDetected = true;
-      } else if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.id) {
-        extDetected = true;
-      } else if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
-        try {
-          extDetected = await new Promise<boolean>((resolve) => {
-            let done = false;
-            const timer = setTimeout(() => {
-              if (!done) {
-                done = true;
-                resolve(false);
-              }
-            }, 1500);
-            (window as any).chrome.runtime.sendMessage(
-              PINNED_EXT_ID,
-              { type: 'PING_EXTENSION' },
-              (response: any) => {
-                if (!done) {
-                  done = true;
-                  clearTimeout(timer);
-                  if (response && response.ok && !((window as any).chrome?.runtime?.lastError)) {
-                    resolve(true);
-                  } else {
-                    resolve(false);
-                  }
-                }
-              }
-            );
-          });
-        } catch {
-          extDetected = false;
-        }
       }
 
       let failureReason = '';
       let targetDegradedState: AuthGateState = 'no_extension';
 
-      if (!authRes || !authData) {
-        failureReason = 'Không thể kết nối đến máy chủ backend (lỗi mạng hoặc backend chưa bật)';
-        targetDegradedState = 'no_extension';
-      } else if (!extDetected) {
+      if (!extDetected) {
         failureReason = 'Không tìm thấy Extension DocxStacked trên trình duyệt này';
         targetDegradedState = 'no_extension';
+      } else if (!authRes || !authData) {
+        failureReason = 'Không thể kết nối đến máy chủ backend (lỗi mạng hoặc backend chưa bật)';
+        targetDegradedState = 'no_extension';
       } else {
-        failureReason = 'Chưa đăng nhập tài khoản FUOverflow';
+        failureReason = 'Chưa đăng nhập tài khoản FUOverflow trên Extension';
         targetDegradedState = 'logged_out';
       }
 
@@ -210,7 +234,10 @@ export const App: React.FC = () => {
       if (firstFailureTimeRef.current === null) {
         firstFailureTimeRef.current = now;
       }
-      const elapsedMs = now - firstFailureTimeRef.current;
+      const elapsedMs =
+        typeof (window as any).__mockFailureElapsed === 'number'
+          ? (window as any).__mockFailureElapsed
+          : (now - firstFailureTimeRef.current);
 
       // Anti-flicker rule: only transition to no_extension or logged_out
       // after >= 3 consecutive failures over >= 30 seconds.
@@ -238,6 +265,9 @@ export const App: React.FC = () => {
       checkAuthStatus();
     }, 30000);
 
+    if (typeof window !== 'undefined') {
+      (window as any).__triggerCheckAuth = () => checkAuthStatus(true);
+    }
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         // Tab became visible: background check if at least 30s has passed since last check
@@ -644,9 +674,28 @@ export const App: React.FC = () => {
                   <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
                     Chưa đăng nhập FUOverflow
                   </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-4)' }}>
                     Vui lòng đăng nhập tài khoản FUOverflow để sử dụng hệ thống.
                   </p>
+                  <div
+                    style={{
+                      margin: '0 auto var(--space-6)',
+                      padding: 'var(--space-3) var(--space-4)',
+                      backgroundColor: 'var(--bg-subtle, rgba(0,0,0,0.03))',
+                      borderRadius: 'var(--radius-md)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: 'var(--text-xs)',
+                      textAlign: 'left',
+                      color: 'var(--text-secondary)',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div><strong style={{ color: 'var(--text-primary)' }}>Chẩn đoán kết nối:</strong></div>
+                    <div>• Nguồn kiểm tra: <span style={{ fontFamily: 'var(--font-mono)' }}>Extension PING & Backend API</span></div>
+                    <div>• Lý do lỗi cuối cùng: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastFailureReason || 'Chưa đăng nhập tài khoản FUOverflow'}</span></div>
+                    <div>• Thời điểm kiểm tra cuối: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastCheckTime || 'Chưa kiểm tra'}</span></div>
+                    <div>• Số lần thất bại liên tiếp: <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{consecutiveFailures}</span></div>
+                  </div>
                 </>
               )}
 
@@ -713,6 +762,7 @@ export const App: React.FC = () => {
                   initialOpenLogin={initialOpenLogin}
                   loginTrigger={loginTrigger}
                   isLoggedIn={gateState === 'logged_in'}
+                  forumLoggedIn={gateState === 'logged_in'}
                 />
               )}
 

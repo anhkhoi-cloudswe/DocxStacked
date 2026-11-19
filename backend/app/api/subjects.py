@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
@@ -310,10 +310,14 @@ async def parse_forum_html(
                 compiled_at_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
                 compiled_at = compiled_at_iso
 
-            if db_ex.question_count and db_ex.question_count > 0:
-                q_count = db_ex.question_count
-            if db_ex.title:
-                cleaned_title = clean_exam_title(db_ex.title)
+            if db_ex:
+                real_cnt = await db.scalar(select(func.count(Question.id)).where(Question.exam_id == db_ex.id)) or 0
+                if real_cnt > 0:
+                    q_count = real_cnt
+                elif db_ex.question_count and db_ex.question_count > 0:
+                    q_count = db_ex.question_count
+                if db_ex.title:
+                    cleaned_title = clean_exam_title(db_ex.title)
 
         results.append({
             "title": cleaned_title or raw_title,
@@ -417,6 +421,11 @@ async def list_subject_exams(
                 dt_utc = dt.astimezone(timezone.utc)
             compiled_at_iso = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
+        real_q_count = await db.scalar(
+            select(func.count(Question.id)).where(Question.exam_id == e.id)
+        ) or 0
+        final_q_count = real_q_count if real_q_count > 0 else (e.question_count or 0)
+
         exam_outs.append(
             ExamOut(
                 id=e.id,
@@ -426,7 +435,7 @@ async def list_subject_exams(
                 exam_type=e.exam_type.value if hasattr(e.exam_type, "value") else str(e.exam_type),
                 term=e.term,
                 post_date=e.post_date,
-                question_count=e.question_count,
+                question_count=final_q_count,
                 compiled=compiled,
                 has_file=has_file,
                 missing_file=missing_file,
