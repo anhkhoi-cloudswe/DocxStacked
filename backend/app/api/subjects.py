@@ -8,7 +8,7 @@ from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.config import get_settings
-from backend.app.db.models import Exam, ExamStatus, ExamType, Subject
+from backend.app.db.models import Exam, ExamStatus, ExamType, Question, Subject
 from backend.app.db.session import get_db
 from backend.app.api.ingest import clean_exam_title, extract_thread_id
 from backend.app.modules.crawler.exams import crawl_subject_exams

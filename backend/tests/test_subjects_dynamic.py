@@ -146,28 +146,46 @@ async def test_lookup_subject_flow():
 @pytest.mark.asyncio
 async def test_subject_exams_api():
     async with async_session_factory() as db:
-        # Ensure CSD202 exists and has an exam
-        subj = await lookup_subject_by_code(db, "CSD202")
-        if subj:
-            test_url = "https://fuoverflow.com/threads/csd202-fe-su26-1.99999/"
-            from sqlalchemy import select
-            existing = (await db.execute(select(Exam).where(Exam.url == test_url))).scalar_one_or_none()
-            if not existing:
-                exam = Exam(
-                    subject_id=subj.id,
-                    title="CSD202 FE SU26 Đề 1",
-                    url=test_url,
-                    exam_type=ExamType.FE,
-                    term="SU26",
-                    question_count=40,
-                )
-                db.add(exam)
-                await db.commit()
+        # Seed PRM393 with exam and questions in test DB
+        from sqlalchemy import select
+        subj = (await db.execute(select(Subject).where(Subject.code == "PRM393"))).scalar_one_or_none()
+        if not subj:
+            subj = Subject(code="PRM393", name="Lập trình ứng dụng di động", forum_url="https://fuoverflow.com/forums/PRM393/")
+            db.add(subj)
+            await db.commit()
+            await db.refresh(subj)
+
+        test_url = "https://fuoverflow.com/threads/prm393-su26-fe.39399/"
+        existing = (await db.execute(select(Exam).where(Exam.url == test_url))).scalar_one_or_none()
+        if not existing:
+            exam = Exam(
+                id=3939,
+                subject_id=subj.id,
+                title="PRM393 - SU26 - FE",
+                url=test_url,
+                exam_type=ExamType.FE,
+                term="SU26",
+                question_count=0, # Intentionally 0 to verify dynamic count calculation
+            )
+            db.add(exam)
+            await db.flush()
+
+            # Add 50 questions to test database
+            from backend.app.db.models import Question
+            for i in range(1, 51):
+                db.add(Question(
+                    exam_id=exam.id,
+                    index=i,
+                    file_name=f"q{i:02d}.png",
+                ))
+            await db.commit()
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/api/subjects/CSD202/exams?type=FE")
+        resp = await client.get("/api/subjects/PRM393/exams?type=FE")
         assert resp.status_code == 200
         exams = resp.json()
         assert isinstance(exams, list)
-        assert any("CSD202" in e["title"] for e in exams)
+        prm_exam = next((e for e in exams if e["title"] == "PRM393 - SU26 - FE"), None)
+        assert prm_exam is not None, "PRM393 - SU26 - FE should be returned"
+        assert prm_exam["question_count"] == 50, f"Expected 50 questions, got {prm_exam['question_count']}"

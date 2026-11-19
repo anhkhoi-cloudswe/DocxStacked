@@ -138,22 +138,66 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
       return;
     }
 
-    // Save to storage for sidepanel to pick up
-    chrome.storage.local.set({
-      externalQueueRequest: {
-        subjectCode,
-        exams,
-        timestamp: Date.now(),
-      },
-    }, () => {
-      // Open side panel in active tab / current window
-      chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-        if (tabs && tabs[0]) {
-          chrome.sidePanel.open({ tabId: tabs[0].id }).catch((e) => console.error(e));
+    (async () => {
+      try {
+        // 1. Ensure Offscreen document is created and ready
+        await ensureOffscreenDocument();
+
+        // 2. Clear previous queue state and save initial queue state directly in storage
+        const initialQueueState = {
+          items: exams,
+          currentIndex: 0,
+          isRunning: true,
+          isPaused: false,
+          isCompleted: false,
+          currentExamTitle: exams[0].title || "Đang soạn...",
+          currentQuestionIndex: 0,
+          totalQuestions: exams[0].question_count || 40,
+          progressPct: 0,
+          statusText: `Đã nhận ${exams.length} đề, đang soạn...`,
+          completedExams: [],
+          updatedAt: Date.now(),
+        };
+
+        await chrome.storage.local.set({
+          savedQueueState: initialQueueState,
+          externalQueueRequest: {
+            subjectCode,
+            exams,
+            timestamp: Date.now(),
+          },
+        });
+
+        // 3. Immediately kick off offscreen queue without waiting for sidepanel
+        chrome.runtime.sendMessage({
+          type: "OFFSCREEN_START_QUEUE",
+          items: exams,
+          currentIndex: 0,
+          completedExams: [],
+        }).catch(() => {});
+
+        // 4. Try opening side panel in active tab
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tabs && tabs[0]) {
+            await chrome.sidePanel.open({ tabId: tabs[0].id });
+          }
+        } catch (e) {
+          console.warn("Could not auto-open side panel:", e);
         }
-      });
-      sendResponse({ ok: true, queued_count: exams.length });
-    });
-    return true;
+
+        sendResponse({
+          ok: true,
+          ack: true,
+          queued_count: exams.length,
+          message: `Đã nhận ${exams.length} đề, đang soạn`,
+        });
+      } catch (err) {
+        console.error("Error enqueuing exams:", err);
+        sendResponse({ ok: false, error: err.message || "Lỗi khởi động hàng đợi" });
+      }
+    })();
+
+    return true; // Keep channel open for async response
   }
 });

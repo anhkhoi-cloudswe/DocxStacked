@@ -10,11 +10,19 @@ import type { JobDetails, JobFile, JobStatusResponse } from './types';
 
 const EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
 
+interface EnqueueResult {
+  success: boolean;
+  ack?: boolean;
+  queuedCount?: number;
+  message?: string;
+  error?: string;
+}
+
 async function tryEnqueueViaExtension(
   subjectCode: string,
   examType: string,
   examIds?: number[]
-): Promise<boolean> {
+): Promise<EnqueueResult> {
   if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
     try {
       let examsToEnqueue: any[] = [];
@@ -45,30 +53,58 @@ async function tryEnqueueViaExtension(
               },
             ];
 
-      return new Promise<boolean>((resolve) => {
-        (window as any).chrome.runtime.sendMessage(
-          EXTENSION_ID,
-          {
-            type: 'ENQUEUE_EXAMS',
-            payload: {
-              subjectCode,
-              exams: payloadExams,
+      return new Promise<EnqueueResult>((resolve) => {
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          resolve({
+            success: false,
+            error: 'Extension không phản hồi sau 5 giây.',
+          });
+        }, 5000);
+
+        try {
+          (window as any).chrome.runtime.sendMessage(
+            EXTENSION_ID,
+            {
+              type: 'ENQUEUE_EXAMS',
+              payload: {
+                subjectCode,
+                exams: payloadExams,
+              },
             },
-          },
-          (res: any) => {
-            if ((window as any).chrome.runtime.lastError || !res || !res.ok) {
-              resolve(false);
-            } else {
-              resolve(true);
+            (res: any) => {
+              if (timedOut) return;
+              clearTimeout(timer);
+              if ((window as any).chrome.runtime.lastError || !res) {
+                const errMsg =
+                  (window as any).chrome.runtime.lastError?.message ||
+                  'Không thể kết nối đến Extension DocxStacked.';
+                resolve({ success: false, error: errMsg });
+              } else if (!res.ok) {
+                resolve({ success: false, error: res.error || 'Extension từ chối nhận đề.' });
+              } else {
+                resolve({
+                  success: true,
+                  ack: Boolean(res.ack),
+                  queuedCount: res.queued_count || payloadExams.length,
+                  message: res.message || `Đã nhận ${res.queued_count || payloadExams.length} đề, đang soạn`,
+                });
+              }
             }
+          );
+        } catch (err: any) {
+          if (!timedOut) {
+            clearTimeout(timer);
+            resolve({ success: false, error: err.message || 'Lỗi gửi tin nhắn sang Extension.' });
           }
-        );
+        }
       });
-    } catch {
-      return false;
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Lỗi chuẩn bị danh sách đề.' };
     }
   }
-  return false;
+  return { success: false, error: 'Extension chưa được cài đặt hoặc không khả dụng trên trình duyệt này.' };
 }
 
 type ScreenType = 'select' | 'progress' | 'result' | 'settings' | 'documents';
@@ -477,19 +513,30 @@ export const App: React.FC = () => {
     setLimit(selectedLimit);
 
     // Option 1: Send selected exams to Chrome extension via externally_connectable
-    const sentToExt = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds);
-    if (sentToExt) {
+    const extResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds);
+    if (extResult.success) {
       setIsLoading(false);
       await alertModal({
         title: 'Đã gửi sang Extension',
-        message: 'Danh sách đề đã được gửi thành công sang Side Panel của Extension DocxStacked để bắt đầu cào và xuất Word!',
+        message: extResult.message || `Đã nhận ${extResult.queuedCount || 1} đề, đang soạn!`,
         type: 'success',
       });
       return;
     }
 
+    // If extension returned explicit failure or timeout
+    if (authSource === 'extension' || (window as any).chrome?.runtime?.sendMessage) {
+      setIsLoading(false);
+      await alertModal({
+        title: 'Lỗi gửi đề sang Extension',
+        message: extResult.error || 'Extension không phản hồi trong 5 giây. Vui lòng kiểm tra lại Side Panel.',
+        type: 'error',
+      });
+      return;
+    }
+
     // Option 2: Fallback to backend Playwright runner
-    if (authSource === 'extension' || gateState !== 'logged_in') {
+    if (gateState !== 'logged_in') {
       setIsLoading(false);
       await alertModal({
         title: 'Dùng Extension để soạn đề',

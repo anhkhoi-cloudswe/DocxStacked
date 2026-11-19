@@ -1,15 +1,19 @@
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from backend.app.core.config import get_settings
 from backend.app.db.models import Answer, AnswerStatus, Exam, ExamType, Job, JobStatus, Question, Subject
 from backend.app.db.session import get_db
 from backend.app.modules.jobs.orchestrator import get_orchestrator
+
+settings = get_settings()
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 

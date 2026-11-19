@@ -2118,6 +2118,11 @@ function applyQueueStateToUi(qState) {
   const cur = Math.min((qState.currentIndex || 0) + 1, total);
   const curTitle = qState.currentExamTitle || cleanExamTitle(qState.items[qState.currentIndex]?.title || "Đang soạn...");
 
+  // Auto switch to "Soạn đề" tab if a queue is running or was just received
+  if (qState.isRunning && state.activeTab !== "soande") {
+    switchTab("soande");
+  }
+
   // Render completed list if present
   if (qState.completedExams && qState.completedExams.length > 0) {
     renderCompletedExamsList(qState.completedExams);
@@ -2125,7 +2130,11 @@ function applyQueueStateToUi(qState) {
 
   if (qState.isRunning) {
     // 1. Show running progress card with current stats (DO NOT RESET TO 0/0)
-    if (elQueueProgressCard) elQueueProgressCard.style.display = "block";
+    if (elQueueProgressCard) {
+      elQueueProgressCard.style.display = "block";
+      // Ensure progress card is visible in view
+      elQueueProgressCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
     if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
     if (elBtnQueuePause) elBtnQueuePause.innerText = "Dừng";
 

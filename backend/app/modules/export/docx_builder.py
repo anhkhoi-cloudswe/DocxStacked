@@ -169,11 +169,15 @@ def is_valid_keyword(
     if any(p in lower for p in placeholders):
         return False
 
-    # Keywords must be concise keyphrases/terms (<= 7 words, <= 50 chars), not long sentence options or SQL statements
+    # Keywords must be concise keyphrases/terms:
+    # Standard: <= 4 words, <= 25 chars.
+    # On Vietnamese exams, common historical/political terms (e.g. 'đầu thập niên 50 thế kỷ XX') can take up to 7 words / 35 chars.
     words = kw_strip.split()
-    if len(words) > 7 or len(kw_strip) > 50:
+    max_words = 7 if is_vietnamese_exam else 4
+    max_chars = 35 if is_vietnamese_exam else 25
+    if len(words) > max_words or len(kw_strip) > max_chars:
         return False
-    if any(ch in kw_strip for ch in ['{', '}', ';', '=', '"']):
+    if any(ch in kw_strip for ch in ['(', ')', '{', '}', ';', '=', '"', "'"]):
         return False
 
     def _normalize(t: str) -> str:
