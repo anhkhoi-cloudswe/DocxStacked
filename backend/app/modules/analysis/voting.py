@@ -137,10 +137,12 @@ def tally_votes(
             ) if parent_c else None
             if parent_parsed and parent_parsed.answers:
                 parent_upvotes = parent_c.upvotes or 0
+                if parent_upvotes > 1000:
+                    parent_upvotes = 0
                 if parent_upvotes < 0:
                     agree_weight = 0.125
                 else:
-                    parent_weight = 1.0 + math.log2(1.0 + max(0, parent_upvotes))
+                    parent_weight = 1.0 + math.log2(1.0 + min(20, max(0, parent_upvotes)))
                     agree_weight = round(parent_weight * 0.5, 3)
                 seen_authors.add(author)
                 contributions.append(
@@ -163,10 +165,14 @@ def tally_votes(
                 if m_neg:
                     raw_upvotes = int(m_neg.group(1))
 
+            # Treat abnormal upvotes > 1000 as 0
+            if raw_upvotes > 1000:
+                raw_upvotes = 0
+
             if raw_upvotes < 0:
                 weight = 0.25
             else:
-                upvote_val = max(0, raw_upvotes)
+                upvote_val = min(20, max(0, raw_upvotes))
                 weight = round(1.0 + math.log2(1.0 + upvote_val), 3)
 
             seen_authors.add(author)
@@ -415,6 +421,40 @@ def tally_votes(
                     if ai_disagreement_policy == "conflict":
                         conflict = True
                     break
+
+    # Rule 1.c: When unweighted majority of independent human commenters AND AI both oppose a high-weight vote:
+    # Flag CONFLICT and set the answer according to the majority, not the single high-weight vote.
+    comm_voters_per_opt: Dict[str, Set[str]] = {}
+    for cv in community_votes:
+        for l in cv.answers:
+            opt = l.upper()
+            if opt not in comm_voters_per_opt:
+                comm_voters_per_opt[opt] = set()
+            comm_voters_per_opt[opt].add(cv.author_hash)
+
+    ai_chosen_opts: Set[str] = set()
+    for ac in ai_contributions:
+        ai_chosen_opts.update(a.upper() for a in ac.answers)
+
+    if answer_set and ai_chosen_opts and comm_voters_per_opt:
+        current_winner = answer_set[0]
+        curr_voters_cnt = len(comm_voters_per_opt.get(current_winner, set()))
+        best_alt = None
+        best_alt_voters = curr_voters_cnt
+        for alt_opt, voters_set in comm_voters_per_opt.items():
+            if alt_opt != current_winner and alt_opt in ai_chosen_opts and current_winner not in ai_chosen_opts:
+                if len(voters_set) > best_alt_voters:
+                    best_alt = alt_opt
+                    best_alt_voters = len(voters_set)
+                elif len(voters_set) == best_alt_voters and best_alt is not None:
+                    if weights_per_option.get(alt_opt, 0.0) > weights_per_option.get(best_alt, 0.0):
+                        best_alt = alt_opt
+
+        if best_alt:
+            conflict = True
+            answer_set = [best_alt]
+            confidence = round(weights_per_option.get(best_alt, 0.0) / total_weight, 3) if total_weight > 0 else 0.0
+            ai_disagreed = False
 
     # Rule: Negative-weight votes should not suppress real conflicts.
     # If removing negative-weight contributions would change the winner or cause a conflict, re-flag.

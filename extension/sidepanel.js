@@ -1448,7 +1448,13 @@ async function loadSettings() {
             </label>
           </div>
         </div>
-        <div style="font-size: 11px; color: var(--muted);">${p.model || ""}</div>
+        <div style="display: flex; align-items: center; gap: 6px; margin-top: 3px;">
+          <span style="font-size: 11px; color: var(--muted);">Model:</span>
+          <select class="select-provider-model" style="font-size: 11px; padding: 2px 4px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px; max-width: 180px;">
+            <option value="${p.model || ''}">${p.model || 'Chọn model'}</option>
+          </select>
+          <button class="btn-secondary btn-fetch-models" style="padding: 2px 6px; font-size: 10px;" title="Tải danh sách model trực tiếp từ khoá">Tải model</button>
+        </div>
         ${persistentStatusHtml}
         <div class="provider-action-status" style="font-size: 11px; margin-top: 2px; display: none;"></div>
         <div style="display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;">
@@ -1460,6 +1466,49 @@ async function loadSettings() {
       `;
 
       const statusLine = pRow.querySelector(".provider-action-status");
+      const modelSelect = pRow.querySelector(".select-provider-model");
+      const btnFetchModels = pRow.querySelector(".btn-fetch-models");
+
+      // Populate models dynamically
+      const loadModelsForSelect = async () => {
+        try {
+          btnFetchModels.innerText = "...";
+          const mRes = await apiFetch(`/api/settings/providers/${encodeURIComponent(p.name)}/models`);
+          if (mRes.ok) {
+            const mData = await mRes.json();
+            const list = mData.models || [];
+            if (list.length > 0) {
+              const curModel = p.model;
+              modelSelect.innerHTML = list.map(m => `<option value="${m.id}" ${m.id === curModel ? "selected" : ""}>${m.name || m.id}</option>`).join("");
+              if (!list.some(m => m.id === curModel) && curModel) {
+                modelSelect.insertAdjacentHTML("afterbegin", `<option value="${curModel}" selected>${curModel} (Hiện tại)</option>`);
+              }
+            }
+          }
+        } catch (e) {
+        } finally {
+          btnFetchModels.innerText = "Tải model";
+        }
+      };
+
+      btnFetchModels.addEventListener("click", loadModelsForSelect);
+
+      // Model change
+      modelSelect.addEventListener("change", async (e) => {
+        const newModel = e.target.value;
+        try {
+          const payload = { ...state.settingsData };
+          payload.ai.providers[idx].model = newModel;
+          await apiFetch("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          log(`Đã đổi model cho ${p.name} thành ${newModel}`, "info");
+        } catch (err) {
+          log(`Lỗi đổi model: ${err.message}`, "error");
+        }
+      });
 
       // Provider Enable Toggle
       pRow.querySelector(".check-provider-toggle").addEventListener("change", async (e) => {
@@ -1638,6 +1687,32 @@ function filterDasoanDocuments() {
   }
 }
 
+function formatSubjectGroupHeader(subjCode, rawName) {
+  const code = (subjCode || "").trim().toUpperCase();
+  if (!rawName) return { title: code, display: code, cleanName: "" };
+
+  let name = rawName.trim();
+  // Strip parentheses/brackets containing the subject code, e.g. (PRN232) or [PRN232]
+  const parenRegex = new RegExp(`[\\(\\[\\{]\\s*${code}\\s*[\\)\\]\\}]`, "gi");
+  name = name.replace(parenRegex, "").trim();
+
+  // Strip leading subject code e.g. "PRN232 - " or "PRN232: " or "PRN232 "
+  const prefixRegex = new RegExp(`^${code}\\s*[-–—:·.]*\\s*`, "gi");
+  name = name.replace(prefixRegex, "").trim();
+
+  // Strip trailing subject code e.g. " - PRN232"
+  const suffixRegex = new RegExp(`\\s*[-–—:·.]*\\s*${code}$`, "gi");
+  name = name.replace(suffixRegex, "").trim();
+
+  // If the remaining name is empty or identical to subject code (case-insensitive)
+  if (!name || name.toUpperCase() === code) {
+    return { title: code, display: code, cleanName: "" };
+  }
+
+  const fullDisplay = `${code} · ${name}`;
+  return { title: fullDisplay, display: fullDisplay, cleanName: name };
+}
+
 async function loadDocuments() {
   if (!elDocsContainer) return;
   elDocsContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 12px;">Đang tải danh sách tài liệu...</div>';
@@ -1668,25 +1743,29 @@ async function loadDocuments() {
     elDocsContainer.innerHTML = "";
     Object.keys(grouped).sort().forEach(subjCode => {
       const subjObj = (state.cachedSubjects || []).find(s => (s.code || "").toUpperCase() === subjCode.toUpperCase());
-      const subjName = subjObj ? (subjObj.name || "") : "";
-      const displayTitle = subjName && subjName !== subjCode ? `${subjCode} - ${subjName}` : subjCode;
+      const rawSubjName = subjObj ? (subjObj.name || "") : "";
+      const { display: displayTitle, cleanName } = formatSubjectGroupHeader(subjCode, rawSubjName);
+      const count = grouped[subjCode].length;
 
       const groupEl = document.createElement("div");
       groupEl.className = "dasoan-group";
       groupEl.dataset.subject = subjCode;
-      groupEl.dataset.subjectName = subjName;
+      groupEl.dataset.subjectName = cleanName || rawSubjName;
 
       const groupHeader = document.createElement("div");
       groupHeader.className = "dasoan-group-header";
       groupHeader.innerHTML = `
-        <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0;">
+        <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; margin-right: 8px;">
           <span class="dasoan-arrow"></span>
-          <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${displayTitle}">${displayTitle} (${grouped[subjCode].length} đề)</span>
+          <span class="dasoan-group-title" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;" title="${displayTitle}">${displayTitle}</span>
         </div>
-        <label style="display: inline-flex; align-items: center; gap: 3px; font-size: 10px; cursor: pointer; color: #94a3b8; font-weight: normal; flex-shrink: 0;" onclick="event.stopPropagation();">
-          <input type="checkbox" class="check-group-select" data-subject="${subjCode}" />
-          <span>Chọn nhóm</span>
-        </label>
+        <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
+          <span class="dasoan-group-count" style="font-size: 11px; color: #94a3b8; font-weight: normal; white-space: nowrap;">${count} đề</span>
+          <label style="display: inline-flex; align-items: center; gap: 3px; font-size: 10px; cursor: pointer; color: #94a3b8; font-weight: normal; flex-shrink: 0;" onclick="event.stopPropagation();">
+            <input type="checkbox" class="check-group-select" data-subject="${subjCode}" />
+            <span>Chọn nhóm</span>
+          </label>
+        </div>
       `;
 
       const groupDocsWrap = document.createElement("div");
@@ -1914,14 +1993,38 @@ function parseCommentsFromHtml(htmlStr) {
     const authorEl = c.querySelector(".message-name, .comment-user, .username, .comment-author");
     const authorName = authorEl ? authorEl.innerText.trim() : (c.getAttribute("data-author") || "Unknown");
 
-    const rxBar = c.querySelector(".reactionsBar");
+    // Score parsing: prioritize .user-fuo-vote next to name, fallback to reactionsBar
     let upvotes = 0;
-    if (rxBar) {
-      const nums = rxBar.innerText.match(/\d+/);
-      if (nums) upvotes = parseInt(nums[0], 10);
-      else if (rxBar.querySelectorAll("li, a, bdo").length > 0) {
-        upvotes = rxBar.querySelectorAll("li, a, bdo").length;
+    const voteEl = c.querySelector(".user-fuo-vote, .message-attribution-user .user-fuo-vote");
+    if (voteEl) {
+      const text = voteEl.innerText.trim();
+      const mVote = text.match(/(-?\d+)/);
+      if (mVote) {
+        upvotes = parseInt(mVote[1], 10);
       }
+    } else {
+      const rxBar = c.querySelector(".reactionsBar");
+      if (rxBar && (rxBar.classList.contains("is-active") || rxBar.querySelector(".reaction-image, .reaction"))) {
+        const rxText = rxBar.innerText.trim();
+        const bdis = rxBar.querySelectorAll("a.reactionsBar-link bdi, .reactionsBar bdi");
+        const namedCount = bdis.length;
+
+        const mOthers = rxText.match(/(?:and|và)\s+(\d+)\s+(?:others|người khác)/i);
+        const othersCount = mOthers ? parseInt(mOthers[1], 10) : 0;
+
+        const mTotal = rxText.match(/(\d+)\s+(?:reactions|lượt thích|phản ứng)/i);
+        if (mTotal) {
+          upvotes = parseInt(mTotal[1], 10);
+        } else if (namedCount > 0 || othersCount > 0) {
+          upvotes = namedCount + othersCount;
+        } else {
+          const icons = rxBar.querySelectorAll(".reaction-image, .reaction[data-reaction-id]").length;
+          upvotes = Math.max(icons, 1);
+        }
+      }
+    }
+    if (upvotes > 1000) {
+      upvotes = 0;
     }
 
     const timeEl = c.querySelector("time");

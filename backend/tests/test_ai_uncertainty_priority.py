@@ -49,8 +49,11 @@ def select_questions_for_ai(questions: List[MockQuestion], max_calls: int = 20, 
         elif ai_mode == "off":
             need_ai = False
         else: # only_uncertain
-            if not q.answer or q.answer.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or q.answer.confidence < 0.80:
+            # Questions already CONFIDENT by comments (without AI) must NEVER be included
+            if not q.answer or q.answer.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA):
                 need_ai = True
+            elif q.answer.status == AnswerStatus.CONFIDENT:
+                need_ai = False
 
         if need_ai:
             st = q.answer.status if q.answer else AnswerStatus.NO_DATA
@@ -60,13 +63,11 @@ def select_questions_for_ai(questions: List[MockQuestion], max_calls: int = 20, 
                 cat = 0
             elif st == AnswerStatus.CONFLICT:
                 cat = 1
-            elif st == AnswerStatus.NO_DATA:
-                cat = 2
             else:
-                cat = 3
+                cat = 2
             candidates.append((cat, conf, voters, q.index, q))
 
-    # Sort strictly by weakness priority
+    # Sort strictly by weakness priority: WEAK (cat=0) -> CONFLICT (cat=1) -> NO_DATA (cat=2)
     candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
 
     # Pick up to max_calls
@@ -76,33 +77,31 @@ def select_questions_for_ai(questions: List[MockQuestion], max_calls: int = 20, 
 
 def test_50_questions_simulated_ai_priority():
     """
-    Simulate an exam of 50 questions:
-    - 15 WEAK questions: Q5, Q6, Q7, Q8, Q9, Q10, Q11, Q12, Q15, Q16, Q17, Q18, Q19, Q20, Q28
-    - 6 CONFLICT questions: Q25, Q33, Q37, Q41, Q44, Q45
-    - 4 NO_DATA questions: Q47, Q48, Q49, Q50
-    - 25 CONFIDENT questions (Q1-Q4, Q13-Q14, Q21-Q24, Q26-Q27, Q29-Q32, Q34-Q36, Q38-Q40, Q42-Q43, Q46)
+    Simulate an exam of 50 questions reflecting B5 structure:
+    - 19 WEAK questions (including Q45, Q49 with conf 0.25)
+    - 1 CONFLICT question (Q33)
+    - CONFIDENT questions (including Q25, Q37 with 2 independent commenters each)
 
     Quota limit: 20 calls.
     Verification:
     - Exactly 20 calls made.
-    - All 15 WEAK questions MUST be served first!
-    - Remaining 5 calls go to CONFLICT questions.
-    - Zero calls to CONFIDENT questions.
+    - All 19 WEAK questions MUST be served first (including Q45 and Q49)!
+    - 1 call goes to CONFLICT question (Q33).
+    - Q25 and Q37 (CONFIDENT) NEVER enter candidates.
     """
     questions = []
-    weak_indices = {5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 28}
-    conflict_indices = {25, 33, 37, 41, 44, 45}
-    no_data_indices = {47, 48, 49, 50}
+    weak_indices = {5, 6, 7, 8, 9, 10, 11, 12, 15, 16, 17, 18, 19, 20, 28, 41, 44, 45, 49}
+    conflict_indices = {33}
+    confident_indices = {i for i in range(1, 51)} - weak_indices - conflict_indices
 
     for i in range(1, 51):
         if i in weak_indices:
-            ans = MockAnswer(status=AnswerStatus.WEAK, confidence=0.25, valid_comments_count=1)
+            conf_val = 0.25 if i in (28, 49) else 1.0
+            ans = MockAnswer(status=AnswerStatus.WEAK, confidence=conf_val, valid_comments_count=1)
         elif i in conflict_indices:
-            ans = MockAnswer(status=AnswerStatus.CONFLICT, confidence=0.50, valid_comments_count=2)
-        elif i in no_data_indices:
-            ans = None # NO_DATA
+            ans = MockAnswer(status=AnswerStatus.CONFLICT, confidence=1.0, valid_comments_count=2)
         else:
-            # Confident (e.g. 2 unanimous voters, conf=1.0)
+            # Confident by comments (e.g. Q25, Q37 with 2 unanimous voters, conf=1.0)
             ans = MockAnswer(status=AnswerStatus.CONFIDENT, confidence=1.0, valid_comments_count=2)
 
         questions.append(MockQuestion(id=i, index=i, answer=ans))
@@ -119,18 +118,79 @@ def test_50_questions_simulated_ai_priority():
     # Assertions
     assert len(selected) == 20
 
-    # All 15 WEAK questions MUST be among the selected
-    for wi in weak_indices:
-        assert wi in selected_indices, f"Weak question Q{wi} must be prioritized for AI!"
+    # Q45 and Q49 MUST be among selected
+    assert 45 in selected_indices, "Weak question Q45 must be prioritized for AI!"
+    assert 49 in selected_indices, "Weak question Q49 must be prioritized for AI!"
 
-    # The first 15 selected questions MUST be the WEAK ones
-    first_15 = set(selected_indices[:15])
-    assert first_15 == weak_indices, "First 15 calls must strictly be the 15 WEAK questions!"
+    # Q25 and Q37 MUST NEVER be selected
+    assert 25 not in selected_indices, "Confident question Q25 must NEVER be selected for AI!"
+    assert 37 not in selected_indices, "Confident question Q37 must NEVER be selected for AI!"
 
-    # The next 5 selected questions must be CONFLICT questions
-    next_5 = set(selected_indices[15:20])
-    assert next_5.issubset(conflict_indices), "Remaining 5 calls must be CONFLICT questions!"
+    # All 19 WEAK questions MUST be the first 19
+    first_19 = set(selected_indices[:19])
+    assert first_19 == weak_indices, "First 19 calls must strictly be the 19 WEAK questions!"
 
-    # NO CONFIDENT question should EVER be called
-    for q_idx in selected_indices:
-        assert q_idx not in {1, 2, 3, 4, 13, 14, 21, 22, 23, 24}, f"Confident question Q{q_idx} should not be called!"
+    # The 20th question must be CONFLICT (Q33)
+    assert selected_indices[19] == 33
+
+
+def test_real_b5_ai_selection():
+    """
+    Test using real B5 comments from docxstacked.db (Exam 195):
+    - Without AI, tallies real comments for each question.
+    - Confirms Q25 and Q37 are CONFIDENT (voters=2) and NOT selected.
+    - Confirms Q45 and Q49 are WEAK (voters=1) and ARE selected.
+    """
+    import sqlite3
+    from backend.app.db.models import Comment
+    from backend.app.modules.analysis.voting import tally_votes
+    from pathlib import Path
+
+    db_path = Path(__file__).resolve().parent.parent.parent / "data" / "docxstacked.db"
+    if not db_path.exists():
+        pytest.skip("docxstacked.db not available")
+
+    conn = sqlite3.connect(str(db_path))
+    c = conn.cursor()
+    c.execute('SELECT id, "index" FROM questions WHERE exam_id = 195 ORDER BY "index"')
+    q_rows = c.fetchall()
+    if len(q_rows) < 50:
+        pytest.skip("Exam 195 not in database")
+
+    mock_questions = []
+    for qid, qidx in q_rows:
+        c.execute('SELECT id, comment_id, author_hash, raw_text, upvotes, quoted_comment_id, is_reply FROM comments WHERE question_id = ?', (qid,))
+        c_rows = c.fetchall()
+        comments = [
+            Comment(
+                id=r[0],
+                comment_id=r[1],
+                author_hash=r[2],
+                raw_text=r[3],
+                upvotes=r[4],
+                quoted_comment_id=r[5],
+                is_reply=bool(r[6]),
+            )
+            for r in c_rows
+        ]
+        vr = tally_votes(comments)
+        ans = MockAnswer(
+            status=vr.status,
+            confidence=vr.confidence,
+            valid_comments_count=vr.voters_count,
+            answer_set=vr.answer_set,
+        )
+        mock_questions.append(MockQuestion(id=qid, index=qidx, answer=ans))
+
+    selected = select_questions_for_ai(mock_questions, max_calls=20)
+    selected_indices = [q.index for q in selected]
+
+    print("\n[Real B5 Test] Top 20 selected questions for AI:")
+    print("  " + ", ".join(f"Q{q:02d}" for q in selected_indices))
+
+    # Assertions for B5
+    assert 25 not in selected_indices, "B5 Q25 is CONFIDENT from comments alone and must NOT be selected"
+    assert 37 not in selected_indices, "B5 Q37 is CONFIDENT from comments alone and must NOT be selected"
+    assert 45 in selected_indices, "B5 Q45 is WEAK and MUST be selected"
+    assert 49 in selected_indices, "B5 Q49 is WEAK and MUST be selected"
+    assert len(selected) == 20

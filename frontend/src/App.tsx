@@ -84,91 +84,182 @@ export const App: React.FC = () => {
   const [initialOpenLogin, setInitialOpenLogin] = useState<boolean>(false);
   const [loginTrigger, setLoginTrigger] = useState<number>(0);
 
-  // Authentication gate state
-  type AuthGateState = 'checking' | 'backend_offline' | 'extension_missing' | 'not_logged_in' | 'logged_in';
+  // Authentication gate state machine (strictly 4 states: checking, no_extension, logged_out, logged_in)
+  type AuthGateState = 'checking' | 'no_extension' | 'logged_out' | 'logged_in';
   const [gateState, setGateState] = useState<AuthGateState>('checking');
+  const [authUsername, setAuthUsername] = useState<string>('');
   const [authSource, setAuthSource] = useState<'server' | 'extension'>('server');
 
-  const checkAuthStatus = useCallback(async () => {
-    // 1. Check if backend is reachable
-    let authRes: Response | null = null;
-    let authData: any = null;
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
-      authRes = await fetch('/api/auth/status', { signal: controller.signal });
-      clearTimeout(timeoutId);
-      if (authRes.ok) {
-        authData = await authRes.json();
-      }
-    } catch {
-      setGateState('backend_offline');
-      return;
+  // Diagnostics info for status card
+  const [lastFailureReason, setLastFailureReason] = useState<string>('Đang khởi tạo kết nối...');
+  const [lastCheckTime, setLastCheckTime] = useState<string>('');
+  const [consecutiveFailures, setConsecutiveFailures] = useState<number>(0);
+
+  const gateStateRef = React.useRef<AuthGateState>('checking');
+  const consecutiveFailuresRef = React.useRef<number>(0);
+  const firstFailureTimeRef = React.useRef<number | null>(null);
+  const inFlightRef = React.useRef<boolean>(false);
+
+  const transitionTo = useCallback((nextState: AuthGateState, reason: string) => {
+    const prevState = gateStateRef.current;
+    if (prevState !== nextState) {
+      console.log(`[AuthGate] State changed: ${prevState} -> ${nextState} (Reason: ${reason})`);
+      gateStateRef.current = nextState;
+      setGateState(nextState);
     }
-
-    if (!authRes || !authData) {
-      setGateState('backend_offline');
-      return;
-    }
-
-    // If backend reports logged_in, immediately unlock
-    if (authData.logged_in) {
-      if (authData.auth_source) setAuthSource(authData.auth_source);
-      setGateState('logged_in');
-      return;
-    }
-
-    // 2. Check if extension is installed on this browser
-    const PINNED_EXT_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
-    let extDetected = false;
-
-    // A. Check if running inside chrome-extension context or window has extension marker
-    if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.id) {
-      extDetected = true;
-    }
-
-    // B. Ping extension resources or check custom event/DOM indicator if present
-    if (!extDetected && (window as any).DocxStackedExtensionPresent) {
-      extDetected = true;
-    }
-
-    // C. Probe extension via chrome.runtime.sendMessage if available
-    if (!extDetected && typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
-      try {
-        await new Promise<void>((resolve) => {
-          (window as any).chrome.runtime.sendMessage(
-            PINNED_EXT_ID,
-            { type: 'PING' },
-            (response: any) => {
-              if (response && !((window as any).chrome.runtime.lastError)) {
-                extDetected = true;
-              }
-              resolve();
-            }
-          );
-          setTimeout(resolve, 350);
-        });
-      } catch {
-        // Ignored
-      }
-    }
-
-    // If extension is not detected on this browser, show extension_missing
-    if (!extDetected && !(window as any).__DOCXSTACKED_TEST_MODE__) {
-      setGateState('extension_missing');
-      return;
-    }
-
-    // 3. Extension is present but user not logged into FUOverflow
-    setGateState('not_logged_in');
   }, []);
+
+  const checkAuthStatus = useCallback(async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+
+    try {
+      // 1. Probe backend auth status
+      let authRes: Response | null = null;
+      let authData: any = null;
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
+        authRes = await fetch('/api/auth/status', { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (authRes.ok) {
+          authData = await authRes.json();
+        }
+      } catch {
+        // Backend offline or timeout
+      }
+
+      // If backend reports logged in, immediately unlock
+      if (authRes && authRes.ok && authData && authData.logged_in) {
+        consecutiveFailuresRef.current = 0;
+        firstFailureTimeRef.current = null;
+        setConsecutiveFailures(0);
+        if (authData.username) setAuthUsername(authData.username);
+        if (authData.auth_source) setAuthSource(authData.auth_source);
+        transitionTo('logged_in', `Xác thực thành công từ ${authData.auth_source || 'server'}`);
+        return;
+      }
+
+      // 2. Probe extension presence
+      const PINNED_EXT_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
+      let extDetected = false;
+
+      if (typeof window !== 'undefined' && ((window as any).DocxStackedExtensionPresent || (window as any).__DOCXSTACKED_TEST_MODE__)) {
+        extDetected = true;
+      } else if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.id) {
+        extDetected = true;
+      } else if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
+        try {
+          extDetected = await new Promise<boolean>((resolve) => {
+            let done = false;
+            const timer = setTimeout(() => {
+              if (!done) {
+                done = true;
+                resolve(false);
+              }
+            }, 1500);
+            (window as any).chrome.runtime.sendMessage(
+              PINNED_EXT_ID,
+              { type: 'PING_EXTENSION' },
+              (response: any) => {
+                if (!done) {
+                  done = true;
+                  clearTimeout(timer);
+                  if (response && response.ok && !((window as any).chrome?.runtime?.lastError)) {
+                    resolve(true);
+                  } else {
+                    resolve(false);
+                  }
+                }
+              }
+            );
+          });
+        } catch {
+          extDetected = false;
+        }
+      }
+
+      let failureReason = '';
+      let targetDegradedState: AuthGateState = 'no_extension';
+
+      if (!authRes || !authData) {
+        failureReason = 'Không thể kết nối đến máy chủ backend (lỗi mạng hoặc backend chưa bật)';
+        targetDegradedState = 'no_extension';
+      } else if (!extDetected) {
+        failureReason = 'Không tìm thấy Extension DocxStacked trên trình duyệt này';
+        targetDegradedState = 'no_extension';
+      } else {
+        failureReason = 'Chưa đăng nhập tài khoản FUOverflow';
+        targetDegradedState = 'logged_out';
+      }
+
+      const nowTimeStr = new Date().toLocaleTimeString();
+      setLastCheckTime(nowTimeStr);
+      setLastFailureReason(failureReason);
+
+      consecutiveFailuresRef.current += 1;
+      const count = consecutiveFailuresRef.current;
+      setConsecutiveFailures(count);
+
+      const now = Date.now();
+      if (firstFailureTimeRef.current === null) {
+        firstFailureTimeRef.current = now;
+      }
+      const elapsedMs = now - firstFailureTimeRef.current;
+
+      // Anti-flicker rule: only transition to no_extension or logged_out
+      // after >= 3 consecutive failures over >= 30 seconds.
+      // A single failure keeps current state.
+      if (count >= 3 && elapsedMs >= 30000) {
+        transitionTo(
+          targetDegradedState,
+          `${failureReason} (${count} lần thất bại liên tiếp trong ${Math.round(elapsedMs / 1000)}s)`
+        );
+      } else {
+        console.log(
+          `[AuthGate] Lần kiểm tra thất bại (${count}/3, đã trôi qua ${Math.round(elapsedMs / 1000)}s/30s): ${failureReason}. Giữ nguyên trạng thái: ${gateStateRef.current}`
+        );
+      }
+    } finally {
+      inFlightRef.current = false;
+    }
+  }, [transitionTo]);
 
   useEffect(() => {
     checkAuthStatus();
-    // Poll auth status every 3 seconds to auto-close when user logs in via browser/extension
-    const authTimer = setInterval(checkAuthStatus, 3000);
-    return () => clearInterval(authTimer);
+    // Poll auth status every 5 seconds to detect login
+    const authTimer = setInterval(checkAuthStatus, 5000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Tab became visible: background check without flashing error UI
+        console.log('[AuthGate] Tab trở lại (visible): Kiểm tra ngầm trạng thái phiên...');
+        checkAuthStatus();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(authTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [checkAuthStatus]);
+
+  const handleLogout = useCallback(async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
+      await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal }).catch(() => {});
+      clearTimeout(timeoutId);
+    } catch (e) {
+      console.error('Logout error:', e);
+    } finally {
+      consecutiveFailuresRef.current = 3;
+      firstFailureTimeRef.current = Date.now() - 31000;
+      transitionTo('logged_out', 'Người dùng chủ động nhấn Đăng xuất');
+      window.location.reload();
+    }
+  }, [transitionTo]);
 
   const handleOpenLogin = () => {
     setCurrentScreen('select');
@@ -424,12 +515,15 @@ export const App: React.FC = () => {
         }}
         onOpenLogin={handleOpenLogin}
         isBlocked={gateState !== 'logged_in'}
+        isLoggedIn={gateState === 'logged_in'}
+        username={authUsername}
+        onLogout={handleLogout}
       />
 
       <main style={{ flex: 1, padding: 'var(--space-6) var(--space-4)' }}>
         <div style={{ maxWidth: '1080px', margin: '0 auto' }}>
           {gateState !== 'logged_in' ? (
-            /* Blocking Login Gate Modal / Card with 4 strict explicit states */
+            /* Blocking Login Gate Modal / Card with exactly 3 non-logged-in states */
             <div
               style={{
                 backgroundColor: 'var(--bg-surface)',
@@ -448,11 +542,11 @@ export const App: React.FC = () => {
                   height: '56px',
                   margin: '0 auto var(--space-4)',
                   borderRadius: '50%',
-                  backgroundColor: gateState === 'backend_offline' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(99, 102, 241, 0.15)',
+                  backgroundColor: 'rgba(99, 102, 241, 0.15)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: gateState === 'backend_offline' ? '#EF4444' : 'var(--primary, #6366f1)',
+                  color: 'var(--primary, #6366f1)',
                 }}
               >
                 {gateState === 'checking' && (
@@ -460,21 +554,14 @@ export const App: React.FC = () => {
                     <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
                   </svg>
                 )}
-                {gateState === 'backend_offline' && (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <line x1="12" y1="8" x2="12" y2="12"></line>
-                    <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                  </svg>
-                )}
-                {gateState === 'extension_missing' && (
+                {gateState === 'no_extension' && (
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
                     <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
                     <line x1="12" y1="22.08" x2="12" y2="12"></line>
                   </svg>
                 )}
-                {gateState === 'not_logged_in' && (
+                {gateState === 'logged_out' && (
                   <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                     <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
@@ -493,29 +580,36 @@ export const App: React.FC = () => {
                 </>
               )}
 
-              {gateState === 'backend_offline' && (
-                <>
-                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)', color: '#EF4444' }}>
-                    Không kết nối được backend
-                  </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
-                    Mở terminal và chạy: python run_dev.py
-                  </p>
-                </>
-              )}
-
-              {gateState === 'extension_missing' && (
+              {gateState === 'no_extension' && (
                 <>
                   <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
                     Chưa thấy extension trên trình duyệt này
                   </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
+                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-4)' }}>
                     Mở bằng trình duyệt đã cài extension DocxStacked để tiếp tục.
                   </p>
+                  <div
+                    style={{
+                      margin: '0 auto var(--space-6)',
+                      padding: 'var(--space-3) var(--space-4)',
+                      backgroundColor: 'var(--bg-subtle, rgba(0,0,0,0.03))',
+                      borderRadius: 'var(--radius-md)',
+                      border: '1px solid var(--border-subtle)',
+                      fontSize: 'var(--text-xs)',
+                      textAlign: 'left',
+                      color: 'var(--text-secondary)',
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    <div><strong style={{ color: 'var(--text-primary)' }}>Chẩn đoán kết nối:</strong></div>
+                    <div>• Lý do lỗi cuối cùng: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastFailureReason || 'Không có'}</span></div>
+                    <div>• Thời điểm kiểm tra cuối: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastCheckTime || 'Chưa kiểm tra'}</span></div>
+                    <div>• Số lần thất bại liên tiếp: <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{consecutiveFailures}</span></div>
+                  </div>
                 </>
               )}
 
-              {gateState === 'not_logged_in' && (
+              {gateState === 'logged_out' && (
                 <>
                   <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
                     Chưa đăng nhập FUOverflow
@@ -527,7 +621,7 @@ export const App: React.FC = () => {
               )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-                {gateState === 'not_logged_in' && (
+                {gateState === 'logged_out' && (
                   <a
                     href="https://fuoverflow.com/login"
                     target="_blank"

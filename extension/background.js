@@ -93,8 +93,10 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
     return;
   }
 
-  if (message.type === "PING_EXTENSION") {
+  if (message.type === "PING_EXTENSION" || message.type === "PING") {
     sendResponse({ ok: true, version: "1.0.0", name: "DocxStacked" });
+    // Opportunistically refresh heartbeat on ping
+    sendAuthHeartbeat().catch(() => {});
     return;
   }
 

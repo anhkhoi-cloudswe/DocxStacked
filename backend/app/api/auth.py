@@ -205,7 +205,8 @@ async def get_auth_status():
     """
     global _latest_extension_heartbeat
     now = time.time()
-    if (now - _latest_extension_heartbeat.get("timestamp", 0.0)) < 90.0:
+    # Extension sends heartbeat every 30s. Heartbeat is valid for 120s (4x cycle, >= 2x required).
+    if (now - _latest_extension_heartbeat.get("timestamp", 0.0)) < 120.0:
         if _latest_extension_heartbeat.get("logged_in"):
             return AuthStatusResponse(
                 logged_in=True,

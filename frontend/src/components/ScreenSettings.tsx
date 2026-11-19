@@ -26,7 +26,7 @@ const PROVIDER_TEMPLATES: Record<string, { label: string; isPaid?: boolean; temp
     isPaid: false,
     template: {
       name: 'gemini',
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash-lite',
       api_key_env: 'GEMINI_API_KEY',
       base_url: null,
       enabled: true,

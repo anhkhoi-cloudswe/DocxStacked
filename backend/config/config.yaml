@@ -25,7 +25,7 @@ ai:
   max_retries: 2             # số lần thử lại tối đa cho mỗi provider
   providers:
     - name: gemini
-      model: gemini-2.5-flash
+      model: gemini-3.5-flash-lite
       api_key_env: GEMINI_API_KEY
       enabled: true
     - name: groq

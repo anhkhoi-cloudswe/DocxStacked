@@ -22,19 +22,23 @@ def test_parse_comments_with_reactions():
 
     assert len(comments) == 14
 
-    # Comment 6 has reactions: 'anhduy , Đỗ Quang Minh , hoan@2915 and 2 others' = 5 upvotes
+    # Comment 6 (tunglam2402) has .user-fuo-vote = 10 (reactionsBar has 5) -> prioritizes forum user score 10
     c6 = comments[5]
     assert c6.comment_id == "1265171"
-    assert c6.upvotes == 5
+    assert c6.upvotes == 10
     assert len(c6.author_hash) == 16
     assert c6.html_path == "test/path.html"
     assert "chứ không bao gồm" in c6.raw_text
 
-    # Comment 11 has reaction: 'Kajazi' = 1 upvote
+    # Comment 11 (Vy Vu) has .user-fuo-vote = 79 (reactionsBar has 1) -> prioritizes forum user score 79
     c11 = comments[10]
     assert c11.comment_id == "1266392"
-    assert c11.upvotes == 1
+    assert c11.upvotes == 79
     assert c11.raw_text == "B"
+
+    # Comment 4 (Chỉ có học thì mới qua môn) has negative forum score .user-fuo-vote = -99
+    c4 = comments[3]
+    assert c4.upvotes == -99
 
 
 def test_parse_comments_with_nested_quote():

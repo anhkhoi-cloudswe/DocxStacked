@@ -373,11 +373,16 @@ async def _run_background_ai_refinement(
                     elif ai_mode == "off":
                         need_ai = False
                     else:  # only_uncertain
-                        if not q_obj.answer or q_obj.answer.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA) or q_obj.answer.confidence < 0.80:
+                        # Questions already CONFIDENT by comments (without AI) must NEVER be included
+                        if not q_obj.answer:
                             need_ai = True
+                        elif q_obj.answer.status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA):
+                            need_ai = True
+                        elif q_obj.answer.status == AnswerStatus.CONFIDENT:
+                            need_ai = False
 
                 if need_ai:
-                    # Weakness priority: WEAK (cat=0), then CONFLICT (cat=1), then NO_DATA (cat=2), then others (cat=3)
+                    # Weakness priority: WEAK (cat=0), then CONFLICT (cat=1), then NO_DATA (cat=2)
                     st = q_obj.answer.status if q_obj.answer else AnswerStatus.NO_DATA
                     conf = q_obj.answer.confidence if q_obj.answer else 0.0
                     voters = q_obj.answer.valid_comments_count if q_obj.answer else 0
@@ -385,10 +390,8 @@ async def _run_background_ai_refinement(
                         cat = 0
                     elif st == AnswerStatus.CONFLICT:
                         cat = 1
-                    elif st == AnswerStatus.NO_DATA:
-                        cat = 2
                     else:
-                        cat = 3
+                        cat = 2
                     q_candidates.append((cat, conf, voters, q_obj.index, q_obj))
 
             # 2. Sort candidate questions strictly by weakness priority:
@@ -704,6 +707,10 @@ async def ingest_exam(
                         raw_text = ""
             if not raw_text:
                 continue
+
+            # Treat abnormal upvotes > 1000 as 0
+            if c_data.upvotes is not None and c_data.upvotes > 1000:
+                c_data.upvotes = 0
 
             if c_data.author_hash:
                 author = c_data.author_hash

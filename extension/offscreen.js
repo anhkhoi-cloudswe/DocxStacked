@@ -35,6 +35,46 @@ function blobToBase64(blob) {
   });
 }
 
+function parseSingleCommentScore(c) {
+  // 1. First priority: forum author score displayed next to name in .message-attribution-user
+  const voteEl = c.querySelector(".user-fuo-vote, .message-attribution-user .user-fuo-vote");
+  if (voteEl) {
+    const text = voteEl.innerText.trim();
+    const mVote = text.match(/(-?\d+)/);
+    if (mVote) {
+      let score = parseInt(mVote[1], 10);
+      if (score > 1000) score = 0; // Safeguard abnormal
+      return score;
+    }
+  }
+
+  // 2. Second priority: comment reaction count from reactionsBar
+  const rxBar = c.querySelector(".reactionsBar");
+  let upvotes = 0;
+  if (rxBar && (rxBar.classList.contains("is-active") || rxBar.querySelector(".reaction-image, .reaction"))) {
+    const rxText = rxBar.innerText.trim();
+    const bdis = rxBar.querySelectorAll("a.reactionsBar-link bdi, .reactionsBar bdi");
+    const namedCount = bdis.length;
+
+    const mOthers = rxText.match(/(?:and|và)\s+(\d+)\s+(?:others|người khác)/i);
+    const othersCount = mOthers ? parseInt(mOthers[1], 10) : 0;
+
+    const mTotal = rxText.match(/(\d+)\s+(?:reactions|lượt thích|phản ứng)/i);
+    if (mTotal) {
+      upvotes = parseInt(mTotal[1], 10);
+    } else if (namedCount > 0 || othersCount > 0) {
+      upvotes = namedCount + othersCount;
+    } else {
+      const icons = rxBar.querySelectorAll(".reaction-image, .reaction[data-reaction-id]").length;
+      upvotes = Math.max(icons, 1);
+    }
+  }
+  if (upvotes > 1000) {
+    upvotes = 0;
+  }
+  return upvotes;
+}
+
 function parseCommentsFromHtml(htmlStr) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlStr, "text/html");
@@ -49,15 +89,7 @@ function parseCommentsFromHtml(htmlStr) {
     const authorEl = c.querySelector(".message-name, .comment-user, .username, .comment-author");
     const authorName = authorEl ? authorEl.innerText.trim() : (c.getAttribute("data-author") || "Unknown");
 
-    const rxBar = c.querySelector(".reactionsBar");
-    let upvotes = 0;
-    if (rxBar) {
-      const nums = rxBar.innerText.match(/\d+/);
-      if (nums) upvotes = parseInt(nums[0], 10);
-      else if (rxBar.querySelectorAll("li, a, bdo").length > 0) {
-        upvotes = rxBar.querySelectorAll("li, a, bdo").length;
-      }
-    }
+    const upvotes = parseSingleCommentScore(c);
 
     const timeEl = c.querySelector("time");
     const postedAt = timeEl ? (timeEl.getAttribute("datetime") || timeEl.innerText.trim()) : null;

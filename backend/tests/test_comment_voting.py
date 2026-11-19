@@ -188,3 +188,38 @@ def test_b5_q25_keyword_match_content_comment():
     assert result.voters_count == 2
 
 
+def test_prn232_sp26_fe_q11_and_q29_weight_cap_and_majority_conflict():
+    """PRN232 SP26 FE:
+    Q11: author cuongdz had upvotes=112 (weight 7.82 capped to 5.392) voting A.
+         3 independent commenters (giakhanh123, TC2003, AnhTommy) and AI vote D.
+         Expected outcome: answer D, status CONFLICT.
+    Q29: author cuongdz had upvotes=90504 (abnormal > 1000 reset to 0, or capped) voting B.
+         4 independent commenters (TC2003, Hoang Hai Quan, Gia Huy, AnhTommy) and AI vote C.
+         Expected outcome: answer C.
+    """
+    # Q11 test with real comments + AI
+    q11_comments = [
+        Comment(id=1, comment_id="1147800", author_hash="cuongdz", raw_text="a", upvotes=112),
+        Comment(id=2, comment_id="1151922", author_hash="giakhanh123", raw_text="câu này d nhé cường dz", upvotes=0),
+        Comment(id=3, comment_id="1186424", author_hash="TC2003", raw_text="d", upvotes=0),
+        Comment(id=4, comment_id="1227674", author_hash="AnhTommy", raw_text="D", upvotes=0),
+    ]
+    ai_q11 = [{"provider": "gemini", "answers": ["D"], "confidence": 1.0}]
+    res_q11 = tally_votes(q11_comments, ai_votes=ai_q11)
+    assert res_q11.answer_set == ["D"], f"Expected D, got {res_q11.answer_set}"
+    assert res_q11.status == AnswerStatus.CONFLICT, f"Expected CONFLICT, got {res_q11.status}"
+
+    # Q29 test with real comments + AI
+    q29_comments = [
+        Comment(id=10, comment_id="1147828", author_hash="cuongdz", raw_text="b", upvotes=90504),
+        Comment(id=11, comment_id="1187037", author_hash="TC2003", raw_text="c", upvotes=0),
+        Comment(id=12, comment_id="1200029", author_hash="Hoang Hai Quan DE180071", raw_text="C", upvotes=0),
+        Comment(id=13, comment_id="1203328", author_hash="Gia Huy", raw_text="c", upvotes=0),
+        Comment(id=14, comment_id="1227907", author_hash="AnhTommy", raw_text="C", upvotes=0),
+    ]
+    ai_q29 = [{"provider": "gemini", "answers": ["C"], "confidence": 0.98}]
+    res_q29 = tally_votes(q29_comments, ai_votes=ai_q29)
+    assert res_q29.answer_set == ["C"], f"Expected C, got {res_q29.answer_set}"
+
+
+

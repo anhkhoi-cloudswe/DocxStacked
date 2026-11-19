@@ -105,8 +105,11 @@ FALLBACK_MODELS: Dict[str, List[Dict[str, Any]]] = {
         {"id": "claude-3-opus-20240229", "name": "claude-3-opus-20240229", "supports_vision": True},
     ],
     "gemini": [
-        {"id": "gemini-2.5-flash", "name": "gemini-2.5-flash", "supports_vision": True},
-        {"id": "gemini-2.0-flash", "name": "gemini-2.0-flash", "supports_vision": True},
+        {"id": "gemini-3.5-flash-lite", "name": "gemini-3.5-flash-lite (Gemini 3.5 Flash Lite - Mặc định)", "supports_vision": True},
+        {"id": "gemini-flash-lite-latest", "name": "gemini-flash-lite-latest (Gemini Flash-Lite Latest)", "supports_vision": True},
+        {"id": "gemini-2.5-flash", "name": "gemini-2.5-flash (Gemini 2.5 Flash)", "supports_vision": True},
+        {"id": "gemini-3.1-flash-lite", "name": "gemini-3.1-flash-lite (Gemini 3.1 Flash Lite)", "supports_vision": True},
+        {"id": "gemini-flash-latest", "name": "gemini-flash-latest (Gemini Flash Latest)", "supports_vision": True},
     ],
     "openai": [
         {"id": "gpt-4o-mini", "name": "gpt-4o-mini", "supports_vision": True},
@@ -337,7 +340,28 @@ async def get_provider_models_endpoint(
 
     try:
         # Check live API based on provider name
-        if "openai" in norm_id and not "openrouter" in norm_id:
+        if "gemini" in norm_id or "google" in norm_id:
+            from backend.app.modules.analysis.providers import GeminiProvider
+            provider = GeminiProvider()
+            api_key = provider.get_api_key()
+            if api_key:
+                client = provider._get_client()
+                loop = asyncio.get_running_loop()
+                raw_models = await loop.run_in_executor(None, lambda: list(client.models.list()))
+                for m in raw_models:
+                    mid = m.name or ""
+                    clean_id = mid.replace("models/", "")
+                    actions = getattr(m, "supported_actions", []) or []
+                    display_name = getattr(m, "display_name", "") or clean_id
+                    if "generateContent" in actions:
+                        mid_lower = clean_id.lower()
+                        if not any(skip in mid_lower for skip in ["tts", "audio", "robotics", "embed", "aqa", "bidi"]):
+                            fetched_models.append({
+                                "id": clean_id,
+                                "name": f"{clean_id} ({display_name})" if display_name and display_name != clean_id else clean_id,
+                                "supports_vision": True,
+                            })
+        elif "openai" in norm_id and not "openrouter" in norm_id:
             api_key = target_p.get("api_key") if target_p else None
             if not api_key:
                 env_var = target_p.get("api_key_env", "OPENAI_API_KEY") if target_p else "OPENAI_API_KEY"

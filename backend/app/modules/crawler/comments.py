@@ -53,6 +53,48 @@ def _fetch_media_html_sync(url: str) -> Tuple[str, Optional[str]]:
     return "", "error_unknown"
 
 
+def extract_comment_score(c: BeautifulSoup) -> int:
+    """
+    Extract author reputation / reaction score for a XenForo comment element.
+    Identical logic with extension/offscreen.js and extension/sidepanel.js:
+    1. First priority: forum author score displayed next to name in .message-attribution-user:
+       e.g. <span class="user-fuo-vote user-fuo-vote-negative"><strong>-26</strong></span>
+    2. Fallback: reactions count from .reactionsBar.
+    3. Anomaly safeguard: scores > 1000 reset to 0.
+    """
+    vote_el = c.select_one(".user-fuo-vote, .message-attribution-user .user-fuo-vote")
+    if vote_el:
+        m_vote = re.search(r"(-?\d+)", vote_el.get_text(strip=True))
+        if m_vote:
+            score = int(m_vote.group(1))
+            if score > 1000:
+                score = 0
+            return score
+
+    rx_bar = c.select_one(".reactionsBar")
+    upvotes = 0
+    if rx_bar and ("is-active" in rx_bar.get("class", []) or rx_bar.select(".reaction-image, .reaction")):
+        rx_text = rx_bar.get_text(" ", strip=True)
+        bdis = rx_bar.select("a.reactionsBar-link bdi, .reactionsBar bdi")
+        named_count = len(bdis)
+
+        m_others = re.search(r"(?:and|và)\s+(\d+)\s+(?:others|người khác)", rx_text, re.IGNORECASE)
+        others_count = int(m_others.group(1)) if m_others else 0
+
+        m_total = re.search(r"(\d+)\s+(?:reactions|lượt thích|phản ứng)", rx_text, re.IGNORECASE)
+        if m_total:
+            upvotes = int(m_total.group(1))
+        elif named_count > 0 or others_count > 0:
+            upvotes = named_count + others_count
+        else:
+            icons = len(rx_bar.select(".reaction-image, .reaction[data-reaction-id]"))
+            upvotes = max(icons, 1)
+
+    if upvotes > 1000:
+        upvotes = 0
+    return upvotes
+
+
 def parse_comments_from_html(
     html_str: str,
     question_id: int,
@@ -64,7 +106,7 @@ def parse_comments_from_html(
       - comment_id (string ID)
       - author_hash (SHA-256 hash to respect privacy)
       - raw_text (excluding blockquote contents to avoid duplicate answer attribution)
-      - upvotes (reactions count from .reactionsBar)
+      - upvotes (score from .user-fuo-vote or .reactionsBar)
       - is_reply (boolean)
       - quoted_comment_id (integer ID of parent comment if quoted)
       - html_path (relative path to saved raw HTML)
@@ -84,28 +126,8 @@ def parse_comments_from_html(
         author_name = author_el.get_text(strip=True) if author_el else "Unknown"
         author_hash = hashlib.sha256(author_name.encode("utf-8")).hexdigest()[:16]
 
-        # 3. Reactions / Upvotes count
-        rx_bar = c.select_one(".reactionsBar")
-        upvotes = 0
-        if rx_bar and ("is-active" in rx_bar.get("class", []) or rx_bar.select(".reaction-image, .reaction")):
-            rx_text = rx_bar.get_text(" ", strip=True)
-            # Count named <bdi> users
-            bdis = rx_bar.select("a.reactionsBar-link bdi, .reactionsBar bdi")
-            named_count = len(bdis)
-
-            # Match 'and N others' or 'và N người khác'
-            m_others = re.search(r"(?:and|và)\s+(\d+)\s+(?:others|người khác)", rx_text, re.IGNORECASE)
-            others_count = int(m_others.group(1)) if m_others else 0
-
-            # Match total count explicitly if present
-            m_total = re.search(r"(\d+)\s+(?:reactions|lượt thích|phản ứng)", rx_text, re.IGNORECASE)
-            if m_total:
-                upvotes = int(m_total.group(1))
-            elif named_count > 0 or others_count > 0:
-                upvotes = named_count + others_count
-            else:
-                icons = len(rx_bar.select(".reaction-image, .reaction[data-reaction-id]"))
-                upvotes = max(icons, 1)
+        # 3. Score / Upvotes count
+        upvotes = extract_comment_score(c)
 
         # 4. Quoted Comment ID & is_reply
         quoted_comment_id = None
@@ -184,11 +206,12 @@ async def crawl_question_comments(
         media_url = f"https://fuoverflow.com/media/{question.media_id}/"
 
     # Define raw HTML storage path
+    curr_settings = get_settings()
     media_id_str = str(question.media_id or "unknown")
-    comments_dir = settings.STORAGE_DIR / "raw" / subject_code / exam_slug / "comments"
+    comments_dir = curr_settings.STORAGE_DIR / "raw" / subject_code / exam_slug / "comments"
     comments_dir.mkdir(parents=True, exist_ok=True)
     html_file = comments_dir / f"q{question.index:03d}_{media_id_str}.html"
-    rel_html_path = str(html_file.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
+    rel_html_path = str(html_file.resolve().relative_to(curr_settings.BASE_DIR.resolve())).replace("\\", "/")
 
     html_content = ""
 

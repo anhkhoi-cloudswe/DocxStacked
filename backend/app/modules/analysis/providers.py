@@ -294,7 +294,7 @@ class GeminiProvider(VisionProvider):
     def __init__(
         self,
         name: str = "gemini",
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3.5-flash-lite",
         api_key_env: str = "GEMINI_API_KEY",
         base_url: Optional[str] = None,
         max_retries: int = 4,
