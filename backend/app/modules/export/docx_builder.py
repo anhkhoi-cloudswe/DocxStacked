@@ -241,22 +241,6 @@ def _render_question_to_doc(
         run_num.font.size = Pt(13)
         run_num.font.color.rgb = RGBColor(0x11, 0x18, 0x27)
 
-    # A0. Insert choice hint image (from left panel) if available
-    hint_img_path = cropped_dir / f"q{q.index:03d}_hint.png"
-    if hint_img_path.exists() and hint_img_path.stat().st_size > 100:
-        hint_paragraph = doc.add_paragraph()
-        hint_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        hint_paragraph.paragraph_format.space_before = Pt(0)
-        hint_paragraph.paragraph_format.space_after = Pt(2)
-        hint_paragraph.paragraph_format.keep_with_next = True
-        try:
-            hint_img = Image.open(hint_img_path)
-            hint_w_px = hint_img.width
-            hint_width_cm = min(8.0, (hint_w_px / 120.0) * 2.54)
-            hint_paragraph.add_run().add_picture(str(hint_img_path), width=Cm(hint_width_cm))
-        except Exception:
-            pass  # If hint image fails, skip silently
-
     # A. Cropped Image Paragraph
     img_paragraph = doc.add_paragraph()
     img_paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT

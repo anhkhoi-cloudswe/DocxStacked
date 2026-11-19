@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "2.9.0-kizspy-keep-choice-hint"
+CROP_ALGORITHM_VERSION = "3.0.0-unified-crop-no-separate-hint"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -706,9 +706,8 @@ def crop_question_single(
             output_path.parent.mkdir(parents=True, exist_ok=True)
             final_cropped.save(output_path, format="PNG")
 
-        if hint_output_path and choice_hint_im:
-            hint_output_path.parent.mkdir(parents=True, exist_ok=True)
-            choice_hint_im.save(hint_output_path, format="PNG")
+        # Note: Separate hint.png image strip is deprecated (v3.0.0);
+        # choice hint is preserved directly in the main cropped image.
 
         return CropResult(
             cropped_image=final_cropped,

@@ -222,4 +222,53 @@ def test_prn232_sp26_fe_q11_and_q29_weight_cap_and_majority_conflict():
     assert res_q29.answer_set == ["C"], f"Expected C, got {res_q29.answer_set}"
 
 
+def test_filler_particles_and_ite302c_su25_re_q47():
+    """
+    Test leading letter with filler particles: 'b chứ', 'b mà?', 'a nhé', 'c đó'.
+    Test that dilemma 'a hay b' is ambiguous / not counted.
+    Test real comments of ITE302c - SU25 - RE Q47:
+      - 9 voters for B ('b chứ', 'b mà?', 'b', 'B', ...)
+      - 6 voters for A
+      - Ondelay10 initially voted A, but changed mind to B -> only latest vote B counts.
+      - namcoiy2 voted 'a hay b' -> not counted.
+      - Expected outcome: B wins with 9 voters vs A with 6 voters.
+    """
+    from backend.app.modules.crawler.comments import parse_comments_from_html
+    from pathlib import Path
+
+    fixture_path = Path("data/raw/ITE302C/exam_119_SU25/comments/q047_109917.html")
+    assert fixture_path.exists(), "q047_109917.html must exist"
+
+    raw_html = fixture_path.read_text(encoding="utf-8")
+    parsed = parse_comments_from_html(raw_html, question_id=547)
+
+    # Convert to VoteComment with sequential ids reflecting order
+    vote_comms = [
+        Comment(
+            id=i + 1,
+            comment_id=c.comment_id,
+            author_hash=c.author_hash,
+            raw_text=c.raw_text,
+            upvotes=c.upvotes or 0,
+        )
+        for i, c in enumerate(parsed)
+    ]
+
+    res = tally_votes(vote_comms)
+    assert res.answer_set == ["B"]
+    assert res.voters_count == 15
+
+    a_voters = [c for c in res.contributions if "A" in c.answers]
+    b_voters = [c for c in res.contributions if "B" in c.answers]
+
+    assert len(a_voters) == 6, f"Expected 6 voters for A, got {len(a_voters)}"
+    assert len(b_voters) == 9, f"Expected 9 voters for B, got {len(b_voters)}"
+
+    # Ondelay10 must only vote B
+    ondelay_contrib = [c for c in res.contributions if c.author_hash == "f3c2fdd85b39c3e1"]
+    assert len(ondelay_contrib) == 1
+    assert ondelay_contrib[0].answers == ["B"]
+
+
+
 

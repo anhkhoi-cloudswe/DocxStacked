@@ -254,7 +254,13 @@ function enableActionButtons(enabled) {
   if (elBtnSyncTab) elBtnSyncTab.disabled = !enabled;
 }
 
+let isCheckingHealth = false;
+
 async function checkBackendHealth() {
+  if (isCheckingHealth) return;
+  if (typeof document !== "undefined" && document.hidden) return;
+  isCheckingHealth = true;
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 2000);
 
@@ -277,11 +283,19 @@ async function checkBackendHealth() {
     clearTimeout(timeoutId);
     setBackendOffline();
     return false;
+  } finally {
+    isCheckingHealth = false;
   }
 }
 
-// Check every 5 seconds
-setInterval(checkBackendHealth, 5000);
+// Initial check on load
+checkBackendHealth();
+
+// Check health at most once every 30 seconds, paused when sidepanel is hidden
+setInterval(() => {
+  if (typeof document !== "undefined" && document.hidden) return;
+  checkBackendHealth();
+}, 30000);
 
 // -------------------------------------------------------------
 // TAB SWITCHING LOGIC (3 TABS)

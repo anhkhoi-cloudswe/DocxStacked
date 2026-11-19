@@ -53,6 +53,14 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
+    # Enable timestamps for uvicorn access logs and error logs
+    for uvicorn_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        u_logger = logging.getLogger(uvicorn_name)
+        u_logger.handlers.clear()
+        u_logger.addHandler(console_handler)
+        u_logger.addHandler(file_handler)
+        u_logger.propagate = False
+
     _is_configured = True
 
 

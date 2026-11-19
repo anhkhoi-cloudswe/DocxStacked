@@ -99,6 +99,7 @@ export const App: React.FC = () => {
   const consecutiveFailuresRef = React.useRef<number>(0);
   const firstFailureTimeRef = React.useRef<number | null>(null);
   const inFlightRef = React.useRef<boolean>(false);
+  const lastAuthCheckTimeRef = React.useRef<number>(0);
 
   const transitionTo = useCallback((nextState: AuthGateState, reason: string) => {
     const prevState = gateStateRef.current;
@@ -109,8 +110,12 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  const checkAuthStatus = useCallback(async () => {
+  const checkAuthStatus = useCallback(async (forced: boolean = false) => {
     if (inFlightRef.current) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const nowTs = Date.now();
+    if (!forced && nowTs - lastAuthCheckTimeRef.current < 30000) return;
+    lastAuthCheckTimeRef.current = nowTs;
     inFlightRef.current = true;
 
     try {
@@ -226,15 +231,21 @@ export const App: React.FC = () => {
   }, [transitionTo]);
 
   useEffect(() => {
-    checkAuthStatus();
-    // Poll auth status every 5 seconds to detect login
-    const authTimer = setInterval(checkAuthStatus, 5000);
+    checkAuthStatus(true);
+    // Poll auth status at most once every 30 seconds, paused when tab is hidden
+    const authTimer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      checkAuthStatus();
+    }, 30000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Tab became visible: background check without flashing error UI
-        console.log('[AuthGate] Tab trở lại (visible): Kiểm tra ngầm trạng thái phiên...');
-        checkAuthStatus();
+        // Tab became visible: background check if at least 30s has passed since last check
+        const elapsed = Date.now() - lastAuthCheckTimeRef.current;
+        if (elapsed >= 30000) {
+          console.log('[AuthGate] Tab trở lại (visible): Kiểm tra ngầm trạng thái phiên...');
+          checkAuthStatus(true);
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -375,13 +386,27 @@ export const App: React.FC = () => {
     window.addEventListener('popstate', handlePopState);
 
     // Poll for active running/pending jobs created in this user session
+    // ONLY poll when there is an active running job in this session or progress screen is active!
+    let checkJobsInFlight = false;
+    let lastJobCheckTs = 0;
+
     const checkActiveJobs = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (checkJobsInFlight) return;
+      const myJobId = sessionStorage.getItem('docxstacked_active_job_id');
+      const hasJob = Boolean(myJobId || activeRunningJobId || currentScreen === 'progress');
+      if (!hasJob) return;
+
+      const nowTs = Date.now();
+      if (nowTs - lastJobCheckTs < 30000) return;
+      lastJobCheckTs = nowTs;
+      checkJobsInFlight = true;
+
       fetch('/api/jobs/active')
         .then((r) => (r.ok ? r.json() : null))
         .then((activeJob) => {
           if (activeJob && activeJob.job_id) {
             // Only show indicator if the job was started or interacted with in this session
-            const myJobId = sessionStorage.getItem('docxstacked_active_job_id');
             if (myJobId === activeJob.job_id) {
               setActiveRunningJobId(activeJob.job_id);
               if (!jobId) setJobId(activeJob.job_id);
@@ -393,11 +418,16 @@ export const App: React.FC = () => {
             sessionStorage.removeItem('docxstacked_active_job_id');
           }
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => {
+          checkJobsInFlight = false;
+        });
     };
 
-    checkActiveJobs();
-    const jobPollInterval = setInterval(checkActiveJobs, 5000);
+    if (sessionStorage.getItem('docxstacked_active_job_id')) {
+      checkActiveJobs();
+    }
+    const jobPollInterval = setInterval(checkActiveJobs, 30000);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
@@ -647,7 +677,7 @@ export const App: React.FC = () => {
 
                 <button
                   type="button"
-                  onClick={checkAuthStatus}
+                  onClick={() => checkAuthStatus(true)}
                   style={{
                     display: 'inline-flex',
                     alignItems: 'center',
@@ -682,6 +712,7 @@ export const App: React.FC = () => {
                   isLoading={isLoading}
                   initialOpenLogin={initialOpenLogin}
                   loginTrigger={loginTrigger}
+                  isLoggedIn={gateState === 'logged_in'}
                 />
               )}
 

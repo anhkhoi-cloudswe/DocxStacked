@@ -169,6 +169,10 @@ def parse_comment_text(
 
     lower = cleaned.lower()
 
+    # 0. Check dilemma / multiple options without commitment: "a hay b", "A hoặc B", "C vs D", "a hay c?"
+    if re.search(rf"\b({valid_pattern})\s+(?:hay|hoặc|hoac|vs)\s+({valid_pattern})\b", lower):
+        return ParsedComment(raw_text=raw_text, is_ambiguous=True)
+
     # 1. Check ambiguous / question marks that indicate student is unsure or asking
     # e.g. "có đúng A không?", "ai biết đáp án không", "đáp án là gì thế", "A hay B"
     if re.search(r"\b(ai biết|là gì thế|đáp án gì|chắc không|đúng không|phải không)\b", lower):
@@ -204,6 +208,30 @@ def parse_comment_text(
     m_lead_dot = re.match(rf"^({valid_pattern})[.:]\s+(?!sao|hả|hở|nhỉ).+", cleaned, re.IGNORECASE)
     if m_lead_dot:
         return ParsedComment(raw_text=raw_text, answers=[m_lead_dot.group(1).upper()])
+
+    # 5c. Leading letter with conversational particle / filler words:
+    # e.g. "b chứ", "b mà?", "a nhé", "c đó", "d nha", "b nè", "a thoi", "b nhé mn"
+    # Rule: Starts with single letter [A-D], followed by optional punctuation, and up to 3 conversational filler words.
+    # Must NOT contain another standalone option letter.
+    m_lead_particle = re.match(rf"^({valid_pattern})([,.:;?!~-]*\s+)(.+)$", cleaned, re.IGNORECASE)
+    if m_lead_particle:
+        cand_letter = m_lead_particle.group(1).upper()
+        rem_str = m_lead_particle.group(3).strip()
+        rem_clean = re.sub(r"[?!.,~:;-]+$", "", rem_str).strip()
+        rem_words = rem_clean.split()
+        if 1 <= len(rem_words) <= 3:
+            other_letters = [
+                ch for ch in re.findall(rf"\b({valid_pattern})\b", rem_clean, re.IGNORECASE)
+            ]
+            filler_keywords = {
+                "chứ", "chu", "mà", "ma", "nhé", "nhe", "đó", "do", "nha", "nè", "ne",
+                "thôi", "thoi", "thui", "nhỉ", "nhi", "ạ", "mn", "nào", "nao", "chuẩn", "chuan",
+                "đúng", "dung", "ta", "nữa", "nua", "bạn", "ban", "ông", "ong", "bác", "bac",
+                "ae", "mình", "minh"
+            }
+            is_filler = any(w.lower() in filler_keywords for w in rem_words)
+            if not other_letters and is_filler:
+                return ParsedComment(raw_text=raw_text, answers=[cand_letter])
 
     # 6. Check explicit prefix/suffix patterns:
     # 'đáp án C', 'dap an C', 'chọn B', 'chon B', 'ans: D', 'answer: E', 'câu này E'

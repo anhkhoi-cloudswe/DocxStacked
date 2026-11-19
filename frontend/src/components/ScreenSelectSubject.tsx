@@ -21,9 +21,10 @@ interface Props {
   isLoading: boolean;
   initialOpenLogin?: boolean;
   loginTrigger?: number;
+  isLoggedIn?: boolean;
 }
 
-export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, initialOpenLogin, loginTrigger }) => {
+export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, initialOpenLogin, loginTrigger, isLoggedIn = true }) => {
   // Subjects list & search
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [totalSubjects, setTotalSubjects] = useState<number>(0);
@@ -151,40 +152,12 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
       });
   }, [activeCode, examType]);
 
-  // Check auth & AI statuses on mount
-  const checkAuth = () => {
-    fetch('/api/auth/status')
-      .then((res) => (res.ok ? res.json() : { logged_in: false }))
-      .then((data: AuthStatus) => {
-        setAuthStatus(data);
-        if (data && data.logged_in) {
-          setShowCookieModal(false);
-        }
-      })
-      .catch(() => setAuthStatus({ logged_in: false }));
-  };
-
+  // Sync cookie modal state with login status from Extension
   useEffect(() => {
-    checkAuth();
-  }, []);
-
-  // Periodic real-time background sync every 20 seconds (auto-checks auth status and updates exam list)
-  useEffect(() => {
-    const timer = setInterval(() => {
-      checkAuth();
-      if (activeCode) {
-        fetch(`/api/subjects/${activeCode}/exams?type=${examType}`)
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data: ExamItem[] | null) => {
-            if (data && data.length > 0) {
-              setExams(data);
-            }
-          })
-          .catch(() => {});
-      }
-    }, 20000);
-    return () => clearInterval(timer);
-  }, [activeCode, examType]);
+    if (isLoggedIn) {
+      setShowCookieModal(false);
+    }
+  }, [isLoggedIn]);
 
   // Handle sync subjects button
   const handleSyncSubjects = async () => {
@@ -309,7 +282,6 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
         setAuthStatus({ logged_in: true, username: accountUsername.trim() });
         setShowCookieModal(false);
         setAccountPassword('');
-        checkAuth();
       } else {
         setAccountError(data.message || 'Đăng nhập không thành công.');
       }
@@ -385,8 +357,8 @@ export const ScreenSelectSubject: React.FC<Props> = ({ onStartJob, isLoading, in
 
   return (
     <div className="select-subject-layout">
-      {/* Session Authentication Warning Banner */}
-      {authStatus && !authStatus.logged_in && (
+      {/* Session Authentication Warning Banner - strictly reflects extension login state */}
+      {!isLoggedIn && (
         <div
           style={{
             gridColumn: '1 / -1',
