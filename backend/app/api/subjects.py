@@ -60,7 +60,7 @@ class ExamOut(BaseModel):
     exam_type: str
     term: Optional[str] = None
     post_date: Optional[datetime] = None
-    question_count: int = 0
+    question_count: Optional[int] = None
     compiled: bool = False
     has_file: bool = False
     missing_file: bool = False
@@ -248,13 +248,15 @@ async def parse_forum_html(
         if date_el and date_el.get("datetime"):
             post_date_str = date_el["datetime"]
 
+        db_ex = (db_exams_by_tid.get(tid) if tid else None) or db_exams_by_url.get(norm_url)
+
         # Extract question count
-        q_count = 0
+        q_count = None
         q_match = re.search(r"(\d+)\s*(?:câu|cau|questions?)\b", raw_title, re.IGNORECASE)
         if q_match:
             q_count = int(q_match.group(1))
-        elif is_fe:
-            q_count = 40
+        elif db_ex and db_ex.question_count:
+            q_count = db_ex.question_count
 
         # Extract term
         term_match = re.search(r"\b(SU|FA|SP|WI)\s*(\d{2,4})\b", raw_title, re.IGNORECASE)
@@ -272,7 +274,6 @@ async def parse_forum_html(
         compiled_at = None
         compiled_at_iso = None
         download_url = None
-        db_ex = (db_exams_by_tid.get(tid) if tid else None) or db_exams_by_url.get(norm_url)
         if db_ex:
             from backend.app.modules.export.docx_builder import format_exam_docx_filename
             docx_name = format_exam_docx_filename(subject_code, db_ex)

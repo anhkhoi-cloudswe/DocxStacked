@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "3.0.0-unified-crop-no-separate-hint"
+CROP_ALGORITHM_VERSION = "3.1.0-wide-margin-accurate-clip-detection"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -665,28 +665,16 @@ def crop_question_single(
             if bx[3] >= H - 3:
                 canvas_clipped_sides.append("dưới")
 
-            # 2. Wide sidebar layout (bar[0] >= 500, e.g. ITE302c FA24 RE):
-            # Inner application container cuts leading labels A./B./C. at x ~ 832.
-            # This is an exam-level left edge clipping (handled by top document note, no per-question note).
+            # 2. Wide sidebar layout (bar[0] >= 500):
+            # Only flag if text genuinely touches and is cut off by the left panel container boundary.
             is_fa24_left_clipped = False
             if layout != "red_bar_left_panel" and bar[0] >= 500 and "no_text" not in warnings and box:
-                p_box = a[box[1]:box[3], box[0]:box[2]].astype(int)
-                m_strict = (p_box.mean(2) < 140) & ((p_box.max(2) - p_box.min(2)) < 60)
-                row_sums_m = m_strict.sum(axis=1)
-                lines_m = [y_idx for y_idx, c in enumerate(row_sums_m) if c > 0]
-                groups_m = []
-                cur_g = []
-                for y_val in lines_m:
-                    if not cur_g or y_val == cur_g[-1] + 1:
-                        cur_g.append(y_val)
-                    else:
-                        groups_m.append(cur_g)
-                        cur_g = [y_val]
-                if cur_g:
-                    groups_m.append(cur_g)
-                short_h_count = sum(1 for g in groups_m if len(g) <= 5)
-                if len(groups_m) > 0 and (short_h_count / len(groups_m)) >= 0.5:
-                    is_fa24_left_clipped = True
+                if bx[0] <= box[0] + 2:
+                    p_box = a[box[1]:box[3], box[0]:box[2]].astype(int)
+                    m_strict = (p_box.mean(2) < 140) & ((p_box.max(2) - p_box.min(2)) < 60)
+                    left_edge_dark = m_strict[:, :2].sum()
+                    if left_edge_dark >= 15:
+                        is_fa24_left_clipped = True
 
             if canvas_clipped_sides:
                 warnings.append("source_clipped")
@@ -823,9 +811,9 @@ def crop_exam_images(
     # --- Pass 3: Warning Rate Evaluation ---
     total = len(results)
     if dominant_layout in ["red_bar_left_panel", "red_bar+white_panel", "modern_2026", "top_left_white_panel"]:
-        critical_warnings = {"no_text", "crop_too_large", "source_clipped", "missing_options"}
+        critical_warnings = {"no_text", "crop_too_large", "source_clipped_content", "missing_options"}
     else:
-        critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options", "source_clipped"}
+        critical_warnings = {"no_text", "few_lines", "crop_too_large", "missing_stem", "missing_options", "source_clipped_content"}
     critical_flagged = [r for r in results if any(w in critical_warnings for w in r.warnings)]
     warning_rate = (len(critical_flagged) / total) if total > 0 else 0.0
     fallback_to_raw = warning_rate > cfg.warning_rate_threshold

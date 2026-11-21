@@ -237,18 +237,36 @@ function setBackendOnline(dashboardUrl) {
   if (dashboardUrl && elLinkOpenDashboard) {
     elLinkOpenDashboard.href = dashboardUrl;
   }
+  if (elBtnBannerRestart) {
+    elBtnBannerRestart.disabled = false;
+    elBtnBannerRestart.style.opacity = "1";
+    chrome.storage.local.get(["savedQueueState"], (data) => {
+      const qs = data.savedQueueState;
+      const isComplete = qs && qs.totalQuestions > 0 && (qs.currentQuestionIndex || 0) >= qs.totalQuestions;
+      if (elBtnBannerRestart) {
+        elBtnBannerRestart.innerText = isComplete ? "Gửi lại" : "Soạn lại từ đầu";
+        elBtnBannerRestart.title = isComplete ? "Đã cào xong tất cả câu hỏi, gửi lại lên backend để tạo Word" : "Soạn lại từ đầu";
+      }
+    });
+  }
 }
 
 function setBackendOffline(noticeMsg) {
   state.backendOnline = false;
   if (elBackendStatus) {
     elBackendStatus.className = "status-chip chip-offline";
-    elBackendStatus.innerText = "Backend Offline";
+    elBackendStatus.innerText = "Backend tắt";
   }
   enableActionButtons(false);
+  if (elBtnBannerRestart) {
+    elBtnBannerRestart.disabled = true;
+    elBtnBannerRestart.style.opacity = "0.5";
+    elBtnBannerRestart.innerText = "Backend tắt";
+    elBtnBannerRestart.title = "Backend đang tắt, vui lòng bật backend để tiếp tục";
+  }
   // Do not overwrite completed state if queue has finished
   if (!state.queueCompleted) {
-    showNotice(noticeMsg || "Backend Offline. Mở terminal chạy: python run_dev.py");
+    showNotice(noticeMsg || "Backend tắt. Mở terminal chạy: python run_dev.py");
   }
 }
 
@@ -859,10 +877,8 @@ function renderCompletedExamsList(completedExams) {
     elResultFilename.innerText = `Xuất file Word thành công! ${displayName}`;
   }
 
-  if (elResultDownloadBtn && lastExam) {
-    elResultDownloadBtn.href = `${BACKEND_URL}${lastExam.download_url}`;
-    elResultDownloadBtn.innerText = "Tải file";
-    elResultDownloadBtn.style.display = "inline-flex";
+  if (elResultDownloadBtn) {
+    elResultDownloadBtn.style.display = "none";
   }
 
   elResultCompletedList.innerHTML = "";
@@ -974,14 +990,14 @@ async function startUnifiedQueue(items) {
 
   const totalItems = taggedItems.length;
   const firstTitle = cleanExamTitle(taggedItems[0].title || "Đang soạn...");
-  const firstTotalQ = taggedItems[0].question_count || 40;
+  const firstTotalQ = taggedItems[0].question_count || null;
   if (elQueueProgressTitle) {
     elQueueProgressTitle.innerText = `[1/${totalItems}] ${firstTitle}`;
   }
   if (elQueueOverallRatio) {
     elQueueOverallRatio.innerText = `1/${totalItems}`;
   }
-  updateProgress(0, `Câu 1/${firstTotalQ}`);
+  updateProgress(0, firstTotalQ ? `Câu 1/${firstTotalQ}` : "Câu 1/?");
 
   // Dispatch queue start to background.js (Single Writer)
   const subj = taggedItems[0].subject_code || chondeState.selectedSubject || "TEST";
@@ -1063,9 +1079,58 @@ if (elBtnBannerCancelInterrupted) {
 
 if (elBtnBannerRestart) {
   elBtnBannerRestart.addEventListener("click", async () => {
-    elBtnBannerRestart.innerText = "Đang nạp...";
-    const data = await chrome.storage.local.get(["savedQueueState"]);
+    if (!state.backendOnline) {
+      showUiNotice("Backend đang tắt. Vui lòng bật backend để tiếp tục.", "error");
+      return;
+    }
+    const data = await chrome.storage.local.get(["savedQueueState", "lastIngestPayload"]);
     const qState = data.savedQueueState;
+    const isScrapeComplete = qState && qState.totalQuestions > 0 && qState.currentQuestionIndex >= qState.totalQuestions;
+
+    if (isScrapeComplete && (data.lastIngestPayload || qState.pendingPayload)) {
+      // Requirement 6: Đã cào xong 50/50, gửi lại lên backend thay vì cào lại từ đầu
+      elBtnBannerRestart.innerText = "Đang gửi...";
+      elBtnBannerRestart.disabled = true;
+      try {
+        const payload = data.lastIngestPayload || qState.pendingPayload;
+        log("Đang gửi lại payload câu hỏi lên backend...", "info");
+        const res = await apiFetch("/api/ingest", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-DocxStacked-Ext": (typeof chrome !== "undefined" && chrome.runtime) ? chrome.runtime.id : "extension",
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => "");
+          throw new Error(`HTTP ${res.status}: ${errText.substring(0, 80)}`);
+        }
+        const resJson = await res.json();
+        log(`Xuất Word thành công: ${resJson.docx_filename}`, "success");
+        const completedItem = {
+          id: resJson.exam_id,
+          run_id: qState.runId,
+          title: qState.currentExamTitle || "Đề thi",
+          docx_filename: resJson.docx_filename,
+          download_url: resJson.download_url,
+          subject_code: resJson.subject_code,
+          compiled_at: new Date().toISOString(),
+        };
+        await clearSavedQueueProgress();
+        renderCompletedExamsList([completedItem]);
+        navigateToCompletedDocInDasoan(completedItem);
+        return;
+      } catch (err) {
+        log(`Lỗi gửi lại backend: ${err.message}`, "error");
+        showUiNotice(`Lỗi gửi lại backend: ${err.message}`, "error");
+        elBtnBannerRestart.disabled = false;
+        elBtnBannerRestart.innerText = "Gửi lại";
+        return;
+      }
+    }
+
+    elBtnBannerRestart.innerText = "Đang nạp...";
     if (qState && qState.items && qState.items.length > 0) {
       log("Bắt đầu soạn lại hàng đợi từ đầu...", "info");
       startUnifiedQueue(qState.items);
@@ -1149,10 +1214,82 @@ if (elBtnQueueRetry) {
   });
 }
 
+// Helper: Check if thread is a valid exam thread (not Q&A / discussion)
+function isExamThread(title, url = "", imgCount = null) {
+  const t = (title || "").trim();
+  const lower = t.toLowerCase();
+
+  // 1. Explicit non-exam / Q&A keywords
+  if (
+    /^(?:hỏi\s*đáp|thắc\s*mắc|thảo\s*luận|hỏi\s*-\s*đáp|q&a|faq)\b/i.test(t) ||
+    lower.includes("thắc mắc về") ||
+    lower.includes("hỏi đáp về") ||
+    lower.includes("thảo luận về") ||
+    lower.includes("xin tài liệu") ||
+    lower.includes("chia sẻ kinh nghiệm") ||
+    (lower.endsWith("?") && !lower.includes("câu"))
+  ) {
+    return false;
+  }
+
+  // 2. If DOM inspection confirmed 0 question attachments
+  if (imgCount !== null && imgCount === 0) {
+    return false;
+  }
+
+  // 3. Exam pattern validation
+  const hasExamCode = /[A-Za-z]{2,5}\d{3}/i.test(t);
+  const hasExamType = /\b(FE|PE|Trial|Đề\s*thi|Thi\s*thử|Final|Exam|Midterm)\b/i.test(t);
+  const hasTerm = /\b(SU|FA|SP|WI)\s*\d{2,4}\b/i.test(t);
+  const hasQuestionCount = /\b\d+\s*câu\b/i.test(t);
+
+  // If title has no exam markers, not an exam thread
+  if (!hasExamType && !hasTerm && !hasQuestionCount) {
+    return false;
+  }
+
+  return true;
+}
+
 // -------------------------------------------------------------
 // KHỐI 1: ĐỀ ĐANG MỞ (Check Fuoverflow tab, compile / update / download)
 // -------------------------------------------------------------
-async function checkOpenExamStatus(url) {
+async function checkOpenExamStatus(url, title = null, imgCount = null) {
+  const currentTitle = title || elThreadTitleDisplay?.innerText || "";
+
+  // Requirement 7: Non-exam thread detection
+  if (url && url.includes("fuoverflow.com/threads/") && !isExamThread(currentTitle, url, imgCount)) {
+    if (elOpenExamBadge) {
+      elOpenExamBadge.className = "badge-status";
+      elOpenExamBadge.style.background = "rgba(239, 68, 68, 0.15)";
+      elOpenExamBadge.style.color = "#f87171";
+      elOpenExamBadge.style.borderColor = "#ef4444";
+      elOpenExamBadge.innerText = "Không phải đề thi";
+    }
+    if (elBtnMainAction) {
+      elBtnMainAction.disabled = true;
+      elBtnMainAction.style.opacity = "0.5";
+      elBtnMainAction.style.cursor = "not-allowed";
+      elBtnMainAction.innerText = "Đây không phải trang đề thi";
+      elBtnMainAction.title = "Trang này là chủ đề hỏi đáp / thảo luận, không chứa đề thi trắc nghiệm.";
+    }
+    if (elBtnReopenDownload) elBtnReopenDownload.style.display = "none";
+    state.existingExam = null;
+    return;
+  } else {
+    if (elOpenExamBadge) {
+      elOpenExamBadge.style.background = "";
+      elOpenExamBadge.style.color = "";
+      elOpenExamBadge.style.borderColor = "";
+    }
+    if (elBtnMainAction) {
+      elBtnMainAction.disabled = false;
+      elBtnMainAction.style.opacity = "1";
+      elBtnMainAction.style.cursor = "pointer";
+      elBtnMainAction.title = "";
+    }
+  }
+
   if (!url || !url.includes("fuoverflow.com/threads/")) {
     if (elOpenExamBadge) {
       elOpenExamBadge.className = "badge-status badge-status-uncompiled";
@@ -1207,7 +1344,25 @@ async function syncFromActiveTab() {
         elThreadTitleDisplay.innerText = cleanTitle;
         elThreadTitleDisplay.title = cleanTitle;
         hideNotice();
-        checkOpenExamStatus(cleanUrl);
+
+        // Check if page has question images / attachments
+        let imgCount = null;
+        try {
+          const evalRes = await chrome.scripting.executeScript({
+            target: { tabId: tabs[0].id },
+            func: () => {
+              const items = document.querySelectorAll(
+                "section.message-attachments ul.attachmentList li.file, .message-content .bbImage, .message-content .lbContainer"
+              );
+              return items.length;
+            },
+          });
+          if (evalRes && evalRes[0] && evalRes[0].result !== undefined) {
+            imgCount = evalRes[0].result;
+          }
+        } catch (scriptErr) {}
+
+        checkOpenExamStatus(cleanUrl, cleanTitle, imgCount);
       } else {
         showNotice("Tab hiện tại không phải trang đề thi FuOverflow (/threads/...)!");
       }
@@ -1233,8 +1388,12 @@ if (elBtnMainAction) {
       showNotice("Vui lòng nhập hoặc đồng bộ URL đề thi hợp lệ!");
       return;
     }
-    const isUpdate = !!state.existingExam;
     const title = elThreadTitleDisplay.innerText || "Đề thi FuOverflow";
+    if (!isExamThread(title, url)) {
+      showNotice("Đây không phải trang đề thi! Không thể soạn đề từ chủ đề này.");
+      return;
+    }
+    const isUpdate = !!state.existingExam;
     const mCode = title.match(/^([A-Za-z]{2,5}\d{3}[A-Za-z]?)/);
     const subjCode = mCode ? mCode[1].toUpperCase() : "TEST";
 
@@ -2282,6 +2441,22 @@ function applyQueueStateToUi(qState) {
     if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
     if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
 
+    // Requirement 6: Check if scraping 50/50 was finished
+    const isScrapeComplete = qState.totalQuestions > 0 && (qState.currentQuestionIndex || 0) >= qState.totalQuestions;
+    if (elBtnBannerRestart) {
+      if (!state.backendOnline) {
+        elBtnBannerRestart.disabled = true;
+        elBtnBannerRestart.style.opacity = "0.5";
+        elBtnBannerRestart.innerText = "Backend tắt";
+        elBtnBannerRestart.title = "Backend đang tắt, vui lòng bật backend để tiếp tục";
+      } else {
+        elBtnBannerRestart.disabled = false;
+        elBtnBannerRestart.style.opacity = "1";
+        elBtnBannerRestart.innerText = isScrapeComplete ? "Gửi lại" : "Soạn lại từ đầu";
+        elBtnBannerRestart.title = isScrapeComplete ? "Đã cào xong tất cả câu hỏi, gửi lại lên backend để tạo Word" : "Soạn lại từ đầu";
+      }
+    }
+
     if (elQueueResumeBanner && elQueueResumeText) {
       elQueueResumeText.innerText = qState.statusText || `Hàng đợi bị gián đoạn: ${curTitle}`;
       elQueueResumeBanner.style.background = "rgba(245, 158, 11, 0.15)";
@@ -2315,7 +2490,7 @@ function applyQueueStateToUi(qState) {
 
     // Requirement 4: Ensure progress bar shows real "Câu x/y" from start, never "Đã nhận 1 đề..."
     const curQ = qState.currentQuestionIndex || 1;
-    const totalQ = qState.totalQuestions || (qState.items[qState.currentIndex]?.question_count || 40);
+    const totalQ = qState.totalQuestions || (qState.items[qState.currentIndex]?.question_count || "?");
     const progressStatus = (qState.statusText && !qState.statusText.includes("Đã nhận"))
       ? qState.statusText
       : `Câu ${curQ}/${totalQ}`;
@@ -2359,6 +2534,7 @@ function applyQueueStateToUi(qState) {
     }
   } else if (qState.isCompleted) {
     state.queueCompleted = true;
+    if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
     if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
     if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
   } else {
@@ -2547,6 +2723,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     state.queueCompleted = true;
     queueEngine.isRunning = false;
     queueEngine.isPaused = false;
+    if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
     if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
     if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
     if (message.completedExams && message.completedExams.length > 0) {

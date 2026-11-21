@@ -165,9 +165,9 @@ def test_session_manager_invalidation():
 
 def test_source_clipped_fa24_re_q09_and_q59():
     """
-    FA 2024 RE Q9 and Q59: leading characters A./B./C. are clipped on the left edge
-    by the exam application window. Detection correctly identifies flat vertical cuts
-    and flags 'source_clipped'.
+    FA 2024 RE Q9 and Q59 (red_bar+white_panel, red bar at x ~ 809..811):
+    Text starts at x ~ 832 with full margin from container edge.
+    Accurate detector must produce clean crops with zero false source_clipped warnings.
     """
     q9_fixture = FIXTURES_DIR / "2024_ite302c_fa24_re_q09.webp"
     q59_fixture = FIXTURES_DIR / "2024_ite302c_fa24_re_q59.webp"
@@ -177,12 +177,12 @@ def test_source_clipped_fa24_re_q09_and_q59():
     res9 = crop_question_single(q9_fixture)
     assert res9.success, f"Q9 crop failed: {res9.warnings}"
     assert res9.cropped_image is not None
-    assert "source_clipped" in res9.warnings, f"Q9 expected source_clipped, got {res9.warnings}"
+    assert "source_clipped" not in res9.warnings, f"Q9 unexpected source_clipped: {res9.warnings}"
 
     res59 = crop_question_single(q59_fixture)
     assert res59.success, f"Q59 crop failed: {res59.warnings}"
     assert res59.cropped_image is not None
-    assert "source_clipped" in res59.warnings, f"Q59 expected source_clipped, got {res59.warnings}"
+    assert "source_clipped" not in res59.warnings, f"Q59 unexpected source_clipped: {res59.warnings}"
 
 
 def test_su26_fe_fixtures_no_missing_stem_no_clipping():

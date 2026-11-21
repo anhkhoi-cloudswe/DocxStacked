@@ -45,7 +45,7 @@ async function tryEnqueueViaExtension(
               url: e.url,
               exam_type: e.exam_type || examType,
               subject_code: subjectCode,
-              question_count: e.question_count || 40,
+              question_count: e.question_count || undefined,
               term: e.term || '',
             }))
           : [

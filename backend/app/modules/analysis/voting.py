@@ -45,7 +45,7 @@ def tally_votes(
     ai_votes: Optional[List[Dict[str, Any]]] = None,
     ai_disagreement_policy: str = "flag",
     multi_choice_n: Optional[int] = None,
-    max_option_letter: str = "D",
+    max_option_letter: str = "E",
     choice_hint_text: Optional[str] = None,
 ) -> VotingResult:
     """
@@ -57,6 +57,23 @@ def tally_votes(
     Ties within the top-N set are NOT a conflict.
     max_option_letter: Letters beyond this letter (default 'H') are discarded.
     """
+    # Check if comments or AI votes reference option E or higher
+    if max_option_letter < "E":
+        has_e_or_higher = False
+        if ai_votes:
+            for v in ai_votes:
+                if any(ans.upper() >= "E" for ans in v.get("answers", [])):
+                    has_e_or_higher = True
+                    break
+        if not has_e_or_higher and comments:
+            for c in comments:
+                txt = getattr(c, "raw_text", "") or ""
+                if re.search(r"(?:^|[\s,;+])([eE])(?:[\s,;+.:]|$)", txt):
+                    if not re.search(r"\b[eE]\s+(?:nghĩ|thấy|chon|chọn|nhé|nha|ạ|ơi|ko|không)\b", txt, re.IGNORECASE):
+                        has_e_or_higher = True
+                        break
+        if has_e_or_higher:
+            max_option_letter = "E"
     if choice_hint_text:
         hint_multi, hint_n = parse_choice_hint(choice_hint_text)
         if is_multi_override is None:
@@ -458,8 +475,10 @@ def tally_votes(
 
     # Rule: Negative-weight votes should not suppress real conflicts.
     # If removing negative-weight contributions would change the winner or cause a conflict, re-flag.
+    # Note: For multi-choice questions (is_multi=True), ties among winning options in the top-N set
+    # are completely expected and are NOT a conflict.
     neg_weight_contributions = [vc for vc in contributions if vc.upvotes < 0 and not vc.author_hash.startswith("ai_")]
-    if neg_weight_contributions and not conflict:
+    if neg_weight_contributions and not conflict and not is_multi:
         pos_contributions = [vc for vc in contributions if vc.upvotes >= 0 or vc.author_hash.startswith("ai_")]
         if pos_contributions:
             pos_weights: Dict[str, float] = {}

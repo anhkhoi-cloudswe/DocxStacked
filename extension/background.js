@@ -183,7 +183,7 @@ async function reconcileQueueState() {
       // Requirement 1: Phát hiện hàng đợi ma khi khởi động lại hoặc mở sidepanel
       const examTitle = cleanExamTitle(qState.currentExamTitle || (qState.items && qState.items[0]?.title) || "Đề thi");
       const qIdx = qState.currentQuestionIndex || 1;
-      const totQ = qState.totalQuestions || (qState.items && qState.items[0]?.question_count) || 40;
+      const totQ = qState.totalQuestions || (qState.items && qState.items[0]?.question_count) || "?";
       qState.isRunning = false;
       qState.isInterrupted = true;
       qState.interruptedAt = Date.now();
@@ -242,7 +242,7 @@ async function startQueueRun({ runId, items, subjectCode, force = false }) {
   }));
 
   const firstTitle = cleanExamTitle(taggedExams[0].title || "Đang soạn...");
-  const firstTotalQ = taggedExams[0].question_count || 40;
+  const firstTotalQ = taggedExams[0].question_count || null;
 
   // Single Writer: Atomically wipe old state and set initial state
   const initialQueueState = {
@@ -257,7 +257,7 @@ async function startQueueRun({ runId, items, subjectCode, force = false }) {
     currentQuestionIndex: 1,
     totalQuestions: firstTotalQ,
     progressPct: 0,
-    statusText: `Câu 1/${firstTotalQ}`,
+    statusText: firstTotalQ ? `Câu 1/${firstTotalQ}` : "Câu 1/?",
     completedExams: [],
     lastProgressAt: Date.now(),
     updatedAt: Date.now(),

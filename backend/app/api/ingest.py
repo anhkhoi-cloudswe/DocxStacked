@@ -491,7 +491,7 @@ async def _run_background_ai_refinement(
         return
 
     ai_weight = float(active_cfg.get("voting", {}).get("ai_weight", 1.0))
-    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "D")
+    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "E")
     ai_mode = active_cfg.get("ai", {}).get("mode", "only_uncertain")
 
     try:
@@ -577,11 +577,18 @@ async def _run_background_ai_refinement(
             for q_obj in db_questions:
                 ai_votes, ai_options = ai_results_by_qid.get(q_obj.id, ([], {}))
 
+                # Determine max_option_letter dynamically for this question
+                q_max_opt = max_opt_letter
+                if ai_options:
+                    valid_ai_opts = [k.upper() for k in ai_options.keys() if len(k) == 1 and "A" <= k.upper() <= "H"]
+                    if valid_ai_opts and max(valid_ai_opts) > q_max_opt:
+                        q_max_opt = max(valid_ai_opts)
+
                 voting_res = tally_votes(
                     q_obj.comments,
                     ai_votes=ai_votes if ai_votes else None,
                     ai_weight=ai_weight,
-                    max_option_letter=max_opt_letter,
+                    max_option_letter=q_max_opt,
                 )
 
                 breakdown = dict(voting_res.vote_breakdown)
@@ -964,17 +971,25 @@ async def ingest_exam(
     opt_cfg = payload.options or {}
     ai_enabled = opt_cfg.get("ai_enabled", active_cfg.get("ai", {}).get("enabled", True))
     ai_weight = float(active_cfg.get("voting", {}).get("ai_weight", 1.0))
-    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "D")
+    max_opt_letter = active_cfg.get("voting", {}).get("max_option_letter", "E")
     ai_service = get_ai_check_service()
 
     answers_map: Dict[int, Answer] = {}
     for q_obj in db_questions:
         await db.refresh(q_obj, ["comments", "answer"])
 
+        # Determine max_option_letter dynamically for this question
+        q_max_opt = max_opt_letter
+        if q_obj.answer and q_obj.answer.vote_breakdown and "_options" in q_obj.answer.vote_breakdown:
+            opts = q_obj.answer.vote_breakdown["_options"]
+            valid_opts = [k.upper() for k in opts.keys() if len(k) == 1 and "A" <= k.upper() <= "H"]
+            if valid_opts and max(valid_opts) > q_max_opt:
+                q_max_opt = max(valid_opts)
+
         voting_res = tally_votes(
             q_obj.comments,
             ai_weight=ai_weight,
-            max_option_letter=max_opt_letter,
+            max_option_letter=q_max_opt,
         )
 
         breakdown = dict(voting_res.vote_breakdown)

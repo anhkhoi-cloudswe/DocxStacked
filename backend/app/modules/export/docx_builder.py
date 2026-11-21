@@ -481,17 +481,33 @@ def _render_question_to_doc(
     run_ans.font.size = Pt(20)
     run_ans.font.color.rgb = RGBColor(0xEE, 0x00, 0x00)  # Teacher Red #EE0000
 
-    # Note run for low-confidence, conflict, missing options, or image crop quality warnings
-    if highlight_check_needed and (
+    # 1. Cờ phiếu (Vote consensus / uncertainty)
+    has_vote_flag = highlight_check_needed and (
         status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA)
         or ans_text.startswith("?")
-        or has_missing_options
-        or bool(raw_warnings)
-    ):
+    )
+    if has_vote_flag:
         run_note = ans_paragraph.add_run(" (cần kiểm tra lại)")
         run_note.bold = False
         run_note.font.size = Pt(11)
         run_note.font.color.rgb = RGBColor(0x7F, 0x7F, 0x7F)  # Muted grey 11pt
+
+    # 2. Cờ ảnh (Crop / image quality warnings on this specific question only)
+    image_note = ""
+    if has_content_clipping or "source_clipped_content" in raw_warnings:
+        image_note = " (ảnh có thể thiếu)"
+    elif has_missing_options or "missing_options" in raw_warnings:
+        image_note = " (ảnh thiếu phương án)"
+    elif "crop_too_large" in raw_warnings:
+        image_note = " (ảnh chưa cắt gọn)"
+    elif "no_text" in raw_warnings:
+        image_note = " (ảnh không có chữ)"
+
+    if image_note:
+        run_img_note = ans_paragraph.add_run(image_note)
+        run_img_note.bold = False
+        run_img_note.font.size = Pt(11)
+        run_img_note.font.color.rgb = RGBColor(0x7F, 0x7F, 0x7F)  # Muted grey 11pt
 
     # C. Horizontal Divider (Double Border '===')
     if add_divider:

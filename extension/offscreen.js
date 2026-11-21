@@ -292,7 +292,7 @@ async function executeFeExamCrawl(exam, runId) {
   if (mCode) subjectCode = mCode[1].toUpperCase();
 
   const attachmentItems = threadDoc.querySelectorAll("section.message-attachments ul.attachmentList li.file");
-  const totalQuestions = attachmentItems.length || exam.question_count || 40;
+  const totalQuestions = attachmentItems.length || exam.question_count || null;
 
   // Immediately update state with actual question count and "Câu 1/totalQuestions"
   await saveState({
@@ -301,7 +301,7 @@ async function executeFeExamCrawl(exam, runId) {
     currentQuestionIndex: 1,
     totalQuestions: totalQuestions,
     progressPct: 0,
-    statusText: `Câu 1/${totalQuestions}`,
+    statusText: totalQuestions ? `Câu 1/${totalQuestions}` : "Câu 1/?",
   });
 
   const questionsData = [];
@@ -396,7 +396,12 @@ async function executeFeExamCrawl(exam, runId) {
     totalQuestions: totalQuestions,
     progressPct: 90,
     statusText: "Backend đang xuất file Word...",
+    pendingPayload: payload,
   });
+
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.set({ lastIngestPayload: payload }).catch(() => {});
+  }
 
   if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
 
@@ -461,13 +466,13 @@ async function runOffscreenQueue(runId) {
     const item = queueItems[currentIndex];
     if (!item) break;
     item.status = "running";
-    const totalQ = item.question_count || 40;
+    const totalQ = item.question_count || null;
     await saveState({
       runId: runId,
       currentExamTitle: cleanExamTitle(item.title),
       currentQuestionIndex: 1,
       totalQuestions: totalQ,
-      statusText: `Câu 1/${totalQ}`,
+      statusText: totalQ ? `Câu 1/${totalQ}` : "Đang kiểm tra số câu...",
     });
 
     try {
