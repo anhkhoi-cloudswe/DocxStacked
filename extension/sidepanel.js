@@ -83,9 +83,13 @@ const elQueueResumeBanner = document.getElementById("queue-resume-banner");
 const elQueueResumeText = document.getElementById("queue-resume-text");
 const elBannerActionsRunning = document.getElementById("banner-actions-running");
 const elBannerActionsStopped = document.getElementById("banner-actions-stopped");
+const elBannerActionsInterrupted = document.getElementById("banner-actions-interrupted");
 const elBtnBannerView = document.getElementById("btn-banner-view");
 const elBtnBannerResume = document.getElementById("btn-banner-resume");
 const elBtnBannerCancel = document.getElementById("btn-banner-cancel");
+const elBtnBannerRestart = document.getElementById("btn-banner-restart");
+const elBtnBannerCancelInterrupted = document.getElementById("btn-banner-cancel-interrupted");
+let currentActiveRunId = null;
 const elThreadTitleDisplay = document.getElementById("thread-title-display");
 const elInputThreadUrl = document.getElementById("input-thread-url");
 const elBtnSyncTab = document.getElementById("btn-sync-tab");
@@ -554,8 +558,13 @@ async function fetchExamsForSelectedSubject(code) {
           term: e.term || "",
           post_date: e.post_date,
           question_count: e.question_count || 40,
-          compiled: false,
-          compiled_at: null,
+          compiled: e.compiled ?? false,
+          has_file: e.has_file ?? false,
+          missing_file: e.missing_file ?? false,
+          status: e.status,
+          download_url: e.download_url,
+          compiled_at_iso: e.compiled_at_iso,
+          compiled_at: e.compiled_at_iso || e.compiled_at,
           subject_code: code,
         }));
       }
@@ -826,24 +835,15 @@ if (elCheckSelectAllChonde) {
 // UNIFIED QUEUE ENGINE (Offscreen Worker & UI State Synchronization)
 // -------------------------------------------------------------
 function saveQueueProgress() {
-  try {
-    chrome.storage.local.set({
-      savedQueueState: {
-        items: queueEngine.items,
-        currentIndex: queueEngine.currentIndex,
-        isRunning: queueEngine.isRunning,
-        isPaused: queueEngine.isPaused,
-        updatedAt: Date.now(),
-      },
-    });
-  } catch (e) {}
+  // Requirement 3: Only background writes savedQueueState.
+  // Sidepanel never writes to chrome.storage.local savedQueueState directly.
 }
 
-function clearSavedQueueProgress() {
+async function clearSavedQueueProgress() {
   try {
-    chrome.storage.local.remove(["savedQueueState"]);
-    if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
+    await chrome.runtime.sendMessage({ type: "QUEUE_CANCEL_COMMAND" });
   } catch (e) {}
+  clearLocalQueueUi();
 }
 
 function renderCompletedExamsList(completedExams) {
@@ -954,6 +954,7 @@ async function startUnifiedQueue(items) {
   }
 
   const runId = "run_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+  currentActiveRunId = runId;
   const taggedItems = items.map(it => ({ ...it, runId }));
 
   queueEngine.items = taggedItems;
@@ -963,7 +964,7 @@ async function startUnifiedQueue(items) {
   queueEngine.isPaused = false;
   state.queueCompleted = false;
 
-  // Clear previous result card and completed list (Requirement 2)
+  // Clear previous result card and completed list atomically (Requirement 3)
   if (elResultCard) elResultCard.style.display = "none";
   if (elResultCompletedList) elResultCompletedList.innerHTML = "";
   if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
@@ -982,122 +983,169 @@ async function startUnifiedQueue(items) {
   }
   updateProgress(0, `Câu 1/${firstTotalQ}`);
 
-  // Register run with backend
+  // Dispatch queue start to background.js (Single Writer)
+  const subj = taggedItems[0].subject_code || chondeState.selectedSubject || "TEST";
   try {
-    const subj = taggedItems[0].subject_code || chondeState.selectedSubject || "TEST";
-    await fetch(`${BACKEND_URL}/api/ingest/register-run`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-DocxStacked-Ext": EXTENSION_ID,
-      },
-      body: JSON.stringify({
-        runId: runId,
-        subjectCode: subj,
-        examUrls: taggedItems.map(e => e.url),
-      }),
-    });
-  } catch (e) {}
-
-  // Ensure offscreen document is ready
-  try {
-    await chrome.runtime.sendMessage({ type: "SETUP_OFFSCREEN" });
-  } catch (e) {}
-
-  // Send start command to offscreen
-  try {
-    chrome.runtime.sendMessage({
-      type: "OFFSCREEN_START_QUEUE",
+    const res = await chrome.runtime.sendMessage({
+      type: "QUEUE_START_COMMAND",
       runId: runId,
       items: taggedItems,
-      currentIndex: 0,
-      completedExams: [],
+      subjectCode: subj,
+      force: true,
     });
-  } catch (e) {}
+    if (!res || !res.ok) {
+      log(`Không thể khởi động hàng đợi: ${res?.error || "Lỗi không xác định"}`, "error");
+    }
+  } catch (err) {
+    log(`Lỗi gửi lệnh khởi động: ${err.message}`, "error");
+  }
+}
+
+function clearLocalQueueUi() {
+  if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
+  if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
+  if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
+  if (elResultCard) elResultCard.style.display = "none";
+  if (elResultCompletedList) elResultCompletedList.innerHTML = "";
+  if (elProgressBar) elProgressBar.style.width = "0%";
+  if (elStatsSummaryLine) elStatsSummaryLine.innerText = "0/0 câu";
+  queueEngine.isRunning = false;
+  queueEngine.isPaused = false;
+  queueEngine.items = [];
+  queueEngine.runId = null;
+  currentActiveRunId = null;
+  state.queueCompleted = false;
 }
 
 if (elBtnBannerView) {
   elBtnBannerView.addEventListener("click", () => {
+    switchTab("soande");
     if (elQueueProgressCard) {
       elQueueProgressCard.style.display = "block";
       elQueueProgressCard.scrollIntoView({ behavior: "smooth" });
+      elQueueProgressCard.style.boxShadow = "0 0 10px rgba(96, 165, 250, 0.6)";
+      setTimeout(() => {
+        if (elQueueProgressCard) elQueueProgressCard.style.boxShadow = "";
+      }, 1500);
     }
   });
 }
 
 if (elBtnBannerResume) {
-  elBtnBannerResume.addEventListener("click", () => {
-    chrome.storage.local.get(["savedQueueState"], (data) => {
-      const qState = data.savedQueueState;
-      if (!qState || !qState.items) return;
-      if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
-
-      queueEngine.items = qState.items;
-      queueEngine.currentIndex = qState.currentIndex || 0;
-      queueEngine.isRunning = true;
-      queueEngine.isPaused = false;
-
-      if (elQueueProgressCard) elQueueProgressCard.style.display = "block";
-      if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
-      if (elBtnQueuePause) elBtnQueuePause.innerText = "Dừng";
-
-      chrome.runtime.sendMessage({ type: "OFFSCREEN_RESUME_QUEUE" }).catch(() => {});
+  elBtnBannerResume.addEventListener("click", async () => {
+    elBtnBannerResume.innerText = "Đang tiếp tục...";
+    try {
+      await chrome.runtime.sendMessage({ type: "QUEUE_RESUME_COMMAND" });
       log("Tiếp tục hàng đợi...", "info");
-      renderExamList();
-    });
+    } catch (e) {}
+    setTimeout(() => {
+      if (elBtnBannerResume) elBtnBannerResume.innerText = "Tiếp tục";
+    }, 800);
   });
 }
 
+async function handleCancelQueueClick(btnEl) {
+  if (btnEl) btnEl.innerText = "Đang huỷ...";
+  log("Đang huỷ hàng đợi...", "warn");
+  try {
+    await chrome.runtime.sendMessage({ type: "QUEUE_CANCEL_COMMAND" });
+  } catch (e) {}
+  clearLocalQueueUi();
+  log("Đã huỷ hàng đợi.", "info");
+}
+
 if (elBtnBannerCancel) {
-  elBtnBannerCancel.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "OFFSCREEN_STOP_QUEUE" }).catch(() => {});
-    clearSavedQueueProgress();
-    queueEngine.isRunning = false;
-    queueEngine.isPaused = false;
-    queueEngine.items = [];
-    if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
-    if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
-    log("Đã huỷ hàng đợi đã lưu.", "info");
+  elBtnBannerCancel.addEventListener("click", () => handleCancelQueueClick(elBtnBannerCancel));
+}
+if (elBtnBannerCancelInterrupted) {
+  elBtnBannerCancelInterrupted.addEventListener("click", () => handleCancelQueueClick(elBtnBannerCancelInterrupted));
+}
+
+if (elBtnBannerRestart) {
+  elBtnBannerRestart.addEventListener("click", async () => {
+    elBtnBannerRestart.innerText = "Đang nạp...";
+    const data = await chrome.storage.local.get(["savedQueueState"]);
+    const qState = data.savedQueueState;
+    if (qState && qState.items && qState.items.length > 0) {
+      log("Bắt đầu soạn lại hàng đợi từ đầu...", "info");
+      startUnifiedQueue(qState.items);
+    } else {
+      log("Không tìm thấy đề để soạn lại.", "warn");
+      clearSavedQueueProgress();
+    }
   });
 }
 
 if (elBtnQueuePause) {
-  elBtnQueuePause.addEventListener("click", () => {
+  elBtnQueuePause.addEventListener("click", async () => {
+    // Check if worker is running
+    const statusResp = await chrome.runtime.sendMessage({ type: "CHECK_WORKER_ALIVE" }).catch(() => null);
+    const isAlive = statusResp && statusResp.alive;
+
+    if (!isAlive) {
+      // Requirement 2: Khi không có worker thì Dừng/Huỷ phải xoá trạng thái cũ và đóng offscreen
+      elBtnQueuePause.innerText = "Đang huỷ...";
+      log("Không có worker đang chạy. Đang xoá trạng thái cũ...", "warn");
+      await clearSavedQueueProgress();
+      elBtnQueuePause.innerText = "Dừng";
+      return;
+    }
+
     if (queueEngine.isRunning && !queueEngine.isPaused) {
+      elBtnQueuePause.innerText = "Đang dừng...";
       queueEngine.isPaused = true;
       queueEngine.isRunning = false;
+      await chrome.runtime.sendMessage({ type: "QUEUE_PAUSE_COMMAND" }).catch(() => {});
       elBtnQueuePause.innerText = "Tiếp tục";
-      chrome.runtime.sendMessage({ type: "OFFSCREEN_PAUSE_QUEUE" }).catch(() => {});
       log("Đã tạm dừng hàng đợi.", "warn");
-    } else if (queueEngine.isPaused) {
+    } else {
+      elBtnQueuePause.innerText = "Đang tiếp tục...";
       queueEngine.isPaused = false;
       queueEngine.isRunning = true;
+      await chrome.runtime.sendMessage({ type: "QUEUE_RESUME_COMMAND" }).catch(() => {});
       elBtnQueuePause.innerText = "Dừng";
-      chrome.runtime.sendMessage({ type: "OFFSCREEN_RESUME_QUEUE" }).catch(() => {});
       log("Tiếp tục hàng đợi...", "info");
     }
   });
 }
 
 if (elBtnQueueSkip) {
-  elBtnQueueSkip.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "OFFSCREEN_SKIP_CURRENT" }).catch(() => {});
+  elBtnQueueSkip.addEventListener("click", async () => {
+    elBtnQueueSkip.innerText = "Đang bỏ qua...";
+    elBtnQueueSkip.disabled = true;
     log("Yêu cầu bỏ qua đề hiện tại...", "warn");
+    try {
+      await chrome.runtime.sendMessage({ type: "QUEUE_SKIP_COMMAND" });
+    } catch (e) {}
+    setTimeout(() => {
+      if (elBtnQueueSkip) {
+        elBtnQueueSkip.innerText = "Bỏ qua";
+        elBtnQueueSkip.disabled = false;
+      }
+    }, 1200);
   });
 }
 
 if (elBtnQueueRetry) {
-  elBtnQueueRetry.addEventListener("click", () => {
-    chrome.storage.local.get(["savedQueueState"], (data) => {
-      const qState = data.savedQueueState;
-      const items = (qState && qState.items) ? qState.items : queueEngine.items;
-      const failedItems = items.filter(it => it.status === "error");
-      if (failedItems.length > 0) {
-        startUnifiedQueue(failedItems);
-      } else {
-        log("Không có đề nào bị lỗi để thử lại.", "info");
+  elBtnQueueRetry.addEventListener("click", async () => {
+    elBtnQueueRetry.innerText = "Đang thử lại...";
+    elBtnQueueRetry.disabled = true;
+    const data = await chrome.storage.local.get(["savedQueueState"]);
+    const qState = data.savedQueueState;
+    const items = (qState && qState.items) ? qState.items : queueEngine.items;
+    const failedItems = items.filter(it => it.status === "error");
+    if (failedItems.length > 0) {
+      log(`Thử lại ${failedItems.length} đề bị lỗi...`, "info");
+      startUnifiedQueue(failedItems);
+    } else {
+      log("Không có đề nào bị lỗi để thử lại.", "info");
+    }
+    setTimeout(() => {
+      if (elBtnQueueRetry) {
+        elBtnQueueRetry.innerText = "Thử lại";
+        elBtnQueueRetry.disabled = false;
       }
-    });
+    }, 1000);
   });
 }
 
@@ -2188,7 +2236,24 @@ async function sleep(ms) {
 }
 
 function applyQueueStateToUi(qState) {
-  if (!qState || !qState.items || qState.items.length === 0) return;
+  if (!qState || !qState.items || qState.items.length === 0) {
+    clearLocalQueueUi();
+    return;
+  }
+
+  // Requirement 3: Side panel ignores any update with runId different from activeRunId
+  if (currentActiveRunId && qState.runId && qState.runId !== currentActiveRunId) {
+    if (qState.isRunning) {
+      // New run officially started by background, switch activeRunId
+      currentActiveRunId = qState.runId;
+    } else {
+      // Stale update from a past run, ignore!
+      return;
+    }
+  }
+  if (!currentActiveRunId && qState.runId) {
+    currentActiveRunId = qState.runId;
+  }
 
   queueEngine.items = qState.items;
   queueEngine.currentIndex = qState.currentIndex || 0;
@@ -2212,11 +2277,33 @@ function applyQueueStateToUi(qState) {
     if (elResultCard) elResultCard.style.display = "none";
   }
 
-  if (qState.isRunning) {
+  if (qState.isInterrupted) {
+    // Requirement 1: Interrupted Ghost Queue State
+    if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
+    if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
+
+    if (elQueueResumeBanner && elQueueResumeText) {
+      elQueueResumeText.innerText = qState.statusText || `Hàng đợi bị gián đoạn: ${curTitle}`;
+      elQueueResumeBanner.style.background = "rgba(245, 158, 11, 0.15)";
+      elQueueResumeBanner.style.borderColor = "#f59e0b";
+      elQueueResumeBanner.style.color = "#fcd34d";
+      if (elBannerActionsRunning) elBannerActionsRunning.style.display = "none";
+      if (elBannerActionsStopped) elBannerActionsStopped.style.display = "none";
+      if (elBannerActionsInterrupted) elBannerActionsInterrupted.style.display = "flex";
+      elQueueResumeBanner.style.display = "block";
+    }
+  } else if (qState.isRunning) {
+    // Restore blue resume banner styles
+    if (elQueueResumeBanner) {
+      elQueueResumeBanner.style.background = "rgba(59, 130, 246, 0.15)";
+      elQueueResumeBanner.style.borderColor = "#3b82f6";
+      elQueueResumeBanner.style.color = "#93c5fd";
+    }
+    if (elBannerActionsInterrupted) elBannerActionsInterrupted.style.display = "none";
+
     // 1. Show running progress card with current stats (DO NOT RESET TO 0/0)
     if (elQueueProgressCard) {
       elQueueProgressCard.style.display = "block";
-      // Ensure progress card is visible in view
       elQueueProgressCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
     if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
@@ -2245,6 +2332,13 @@ function applyQueueStateToUi(qState) {
       elQueueResumeBanner.style.display = "block";
     }
   } else if (qState.isPaused) {
+    if (elQueueResumeBanner) {
+      elQueueResumeBanner.style.background = "rgba(59, 130, 246, 0.15)";
+      elQueueResumeBanner.style.borderColor = "#3b82f6";
+      elQueueResumeBanner.style.color = "#93c5fd";
+    }
+    if (elBannerActionsInterrupted) elBannerActionsInterrupted.style.display = "none";
+
     if (elQueueProgressCard) elQueueProgressCard.style.display = "block";
     if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
     if (elBtnQueuePause) elBtnQueuePause.innerText = "Tiếp tục";
@@ -2267,6 +2361,9 @@ function applyQueueStateToUi(qState) {
     state.queueCompleted = true;
     if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
     if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
+  } else {
+    if (elQueueProgressCard) elQueueProgressCard.style.display = "none";
+    if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
   }
 
   renderExamList();
@@ -2274,12 +2371,19 @@ function applyQueueStateToUi(qState) {
 
 async function checkSavedQueueState() {
   try {
-    chrome.storage.local.get(["savedQueueState"], (data) => {
-      if (data && data.savedQueueState) {
-        applyQueueStateToUi(data.savedQueueState);
-      }
-    });
-  } catch (e) {}
+    const resp = await chrome.runtime.sendMessage({ type: "RECONCILE_QUEUE_STATE" }).catch(() => null);
+    const qState = (resp && resp.queueState)
+      ? resp.queueState
+      : (await chrome.storage.local.get(["savedQueueState"])).savedQueueState;
+    if (qState) {
+      if (qState.runId) currentActiveRunId = qState.runId;
+      applyQueueStateToUi(qState);
+    } else {
+      clearLocalQueueUi();
+    }
+  } catch (e) {
+    console.error("checkSavedQueueState error:", e);
+  }
 }
 
 async function checkExternalQueueRequest() {
@@ -2413,10 +2517,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "QUEUE_RESET") {
-    if (elResultCard) elResultCard.style.display = "none";
-    if (elResultCompletedList) elResultCompletedList.innerHTML = "";
-    if (elResultDownloadBtn) elResultDownloadBtn.style.display = "none";
-    if (elResultDownloadZipBtn) elResultDownloadZipBtn.style.display = "none";
+    currentActiveRunId = message.runId || null;
+    clearLocalQueueUi();
+    if (message.runId) currentActiveRunId = message.runId;
     sendResponse({ ok: true });
     return true;
   }

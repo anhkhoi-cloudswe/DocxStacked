@@ -13,6 +13,7 @@ let currentRunId = null;
 let queueItems = [];
 let currentIndex = 0;
 let completedExams = [];
+let lastProgressTimestamp = Date.now();
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -151,6 +152,7 @@ async function fetchWithCadence(url, maxRetries = 3) {
 async function saveState(extra = {}) {
   const currentItem = queueItems[currentIndex];
   const curExamTitle = extra.currentExamTitle || (currentItem ? cleanExamTitle(currentItem.title) : "");
+  lastProgressTimestamp = Date.now();
   const state = {
     runId: extra.runId || currentRunId || (currentItem ? currentItem.runId : null),
     items: queueItems,
@@ -164,13 +166,12 @@ async function saveState(extra = {}) {
     progressPct: extra.progressPct !== undefined ? extra.progressPct : 0,
     statusText: extra.statusText || "",
     completedExams: completedExams,
+    lastProgressAt: lastProgressTimestamp,
     updatedAt: Date.now(),
   };
 
-  try {
-    await chrome.storage.local.set({ savedQueueState: state });
-  } catch (e) {}
-
+  // Requirement 3: Only background writes savedQueueState.
+  // Offscreen dispatches QUEUE_PROGRESS_UPDATE message to background.
   try {
     chrome.runtime.sendMessage({
       type: "QUEUE_PROGRESS_UPDATE",
@@ -564,7 +565,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     queueItems = [];
     currentIndex = 0;
     completedExams = [];
-    chrome.storage.local.remove(["savedQueueState"]);
     sendResponse({ ok: true });
     return true;
   }
@@ -582,6 +582,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       totalExams: queueItems.length,
       currentExam: queueItems[currentIndex] || null,
       completedExams,
+      lastProgressAt: lastProgressTimestamp,
     });
     return true;
   }

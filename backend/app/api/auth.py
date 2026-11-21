@@ -193,6 +193,11 @@ async def extension_heartbeat(payload: ExtensionHeartbeatRequest):
         "username": payload.username,
     }
     logger.debug(f"Received extension heartbeat: logged_in={payload.logged_in}, user={payload.username}")
+    try:
+        from backend.app.api.ingest import touch_active_run_activity
+        touch_active_run_activity()
+    except Exception:
+        pass
     return {"status": "ok", "recorded": _latest_extension_heartbeat}
 
 

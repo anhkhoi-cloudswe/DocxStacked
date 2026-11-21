@@ -85,8 +85,41 @@ class IngestExamRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class CancelRunRequest(BaseModel):
+    run_id: Optional[str] = Field(default=None, alias="runId")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 # Active runs tracker for queue orchestration & consistency validation
+ACTIVE_RUN_TTL_SECONDS = 300  # 5 minutes expiration without activity/heartbeat
 _active_runs: Dict[str, Dict[str, Any]] = {}
+
+
+def _prune_expired_runs() -> None:
+    now = datetime.now(timezone.utc)
+    expired_ids = []
+    for r_id, run in _active_runs.items():
+        last_act = run.get("last_activity_at")
+        if isinstance(last_act, str):
+            try:
+                last_act = datetime.fromisoformat(last_act)
+            except Exception:
+                last_act = None
+        if last_act and (now - last_act).total_seconds() > ACTIVE_RUN_TTL_SECONDS:
+            expired_ids.append(r_id)
+    for r_id in expired_ids:
+        logger.info(f"Active run '{r_id}' expired after {ACTIVE_RUN_TTL_SECONDS}s of inactivity. Removing.")
+        _active_runs.pop(r_id, None)
+
+
+def touch_active_run_activity(run_id: Optional[str] = None) -> None:
+    now_utc = datetime.now(timezone.utc).isoformat()
+    if run_id and run_id in _active_runs:
+        _active_runs[run_id]["last_activity_at"] = now_utc
+    elif _active_runs:
+        latest_key = list(_active_runs.keys())[-1]
+        _active_runs[latest_key]["last_activity_at"] = now_utc
 
 
 def _verify_ingest_access(request: Request, token: Optional[str] = None) -> None:
@@ -237,14 +270,21 @@ async def register_queue_run(
     token = x_ingest_token or x_local_key
     _verify_ingest_access(request, token)
 
+    _prune_expired_runs()
+    # A new run registration supersedes and replaces any previous active runs
+    _active_runs.clear()
+
     canonical_urls = [canonical_thread_url(u) for u in payload.exam_urls if u]
+    now_iso = datetime.now(timezone.utc).isoformat()
     _active_runs[payload.run_id] = {
         "run_id": payload.run_id,
         "subject_code": payload.subject_code.upper().strip(),
         "exam_urls": canonical_urls,
         "raw_urls": list(payload.exam_urls),
-        "registered_at": datetime.now(timezone.utc).isoformat(),
+        "registered_at": now_iso,
+        "last_activity_at": now_iso,
         "completed_urls": [],
+        "status": "active",
     }
     logger.info(
         f"Registered active queue run: {payload.run_id} ({payload.subject_code}, {len(canonical_urls)} exams)"
@@ -260,6 +300,7 @@ async def register_queue_run(
 @router.get("/active-run")
 async def get_active_queue_run(run_id: Optional[str] = None):
     """Retrieve details of an active queue run."""
+    _prune_expired_runs()
     if run_id:
         run = _active_runs.get(run_id)
         if not run:
@@ -267,6 +308,32 @@ async def get_active_queue_run(run_id: Optional[str] = None):
         return {"ok": True, "run": run}
     latest = list(_active_runs.values())[-1] if _active_runs else None
     return {"ok": True, "active_run": latest}
+
+
+@router.post("/cancel-run")
+async def cancel_queue_run(
+    payload: Optional[CancelRunRequest] = None,
+    request: Request = None,
+    x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
+    x_local_key: Optional[str] = Header(None, alias="X-Local-Key"),
+):
+    """Cancel an active queue run and release locks."""
+    token = x_ingest_token or x_local_key
+    if request:
+        _verify_ingest_access(request, token)
+
+    cancelled_id = None
+    if payload and payload.run_id:
+        if payload.run_id in _active_runs:
+            cancelled_id = payload.run_id
+            _active_runs.pop(payload.run_id, None)
+    else:
+        if _active_runs:
+            cancelled_id = list(_active_runs.keys())[-1]
+            _active_runs.clear()
+
+    logger.info(f"Queue run cancelled: {cancelled_id}")
+    return {"ok": True, "cancelled_run_id": cancelled_id, "message": "Đã huỷ phiên hàng đợi."}
 
 
 @router.post("/clear-runs")
@@ -636,6 +703,8 @@ async def ingest_exam(
     tid = extract_thread_id(payload.exam_url)
 
     # 3. Verify consistency with active run if registered
+    _prune_expired_runs()
+    touch_active_run_activity(payload.run_id)
     if _active_runs:
         latest_run_id = list(_active_runs.keys())[-1]
         active_run = _active_runs.get(payload.run_id)

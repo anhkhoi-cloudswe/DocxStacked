@@ -253,3 +253,60 @@ def test_ingest_run_id_and_url_validation():
     res = client.post("/api/ingest", json=p_valid, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
     assert res.status_code == 200
 
+
+def test_ingest_run_cancel_and_expiration():
+    """Requirement 4: Verify active run cancellation, replacement and expiration TTL."""
+    from datetime import datetime, timezone, timedelta
+    import backend.app.api.ingest as ingest_mod
+
+    # 1. Clear runs
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+
+    # 2. Register run 1
+    reg1 = client.post(
+        "/api/ingest/register-run",
+        json={"runId": "run_001", "subjectCode": "PRM392", "examUrls": ["https://fuoverflow.com/threads/prm392.1/"]},
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN}
+    )
+    assert reg1.status_code == 200
+    active = client.get("/api/ingest/active-run", headers={"X-Ingest-Token": settings.INGEST_TOKEN}).json()
+    assert active["active_run"]["run_id"] == "run_001"
+
+    # 3. Register run 2 -> replaces run 1
+    reg2 = client.post(
+        "/api/ingest/register-run",
+        json={"runId": "run_002", "subjectCode": "PRM393", "examUrls": ["https://fuoverflow.com/threads/prm393.2/"]},
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN}
+    )
+    assert reg2.status_code == 200
+    active2 = client.get("/api/ingest/active-run", headers={"X-Ingest-Token": settings.INGEST_TOKEN}).json()
+    assert active2["active_run"]["run_id"] == "run_002"
+
+    # 4. Cancel run 2 via /api/ingest/cancel-run
+    cancel_res = client.post(
+        "/api/ingest/cancel-run",
+        json={"runId": "run_002"},
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN}
+    )
+    assert cancel_res.status_code == 200
+    assert cancel_res.json()["cancelled_run_id"] == "run_002"
+    active_post_cancel = client.get("/api/ingest/active-run", headers={"X-Ingest-Token": settings.INGEST_TOKEN}).json()
+    assert active_post_cancel["active_run"] is None
+
+    # 5. Expiration TTL test: register run 3, age it by 301 seconds
+    client.post(
+        "/api/ingest/register-run",
+        json={"runId": "run_003", "subjectCode": "PRN212", "examUrls": ["https://fuoverflow.com/threads/prn212.3/"]},
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN}
+    )
+    assert "run_003" in ingest_mod._active_runs
+    # Artificially age the activity timestamp
+    expired_time = (datetime.now(timezone.utc) - timedelta(seconds=350)).isoformat()
+    ingest_mod._active_runs["run_003"]["last_activity_at"] = expired_time
+
+    # active-run should prune and return None
+    active_expired = client.get("/api/ingest/active-run", headers={"X-Ingest-Token": settings.INGEST_TOKEN}).json()
+    assert active_expired["active_run"] is None
+    assert "run_003" not in ingest_mod._active_runs
+
+
