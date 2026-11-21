@@ -18,7 +18,12 @@ from backend.app.db.models import Answer, AnswerStatus, Exam, Question
 from backend.app.modules.export.image_cropper import crop_question_image, crop_question_single
 
 logger = get_logger(__name__)
-settings = get_settings()
+
+class SettingsProxy:
+    def __getattr__(self, name: str):
+        return getattr(get_settings(), name)
+
+settings = SettingsProxy()
 
 
 def format_exam_docx_filename(subject_code: str, exam: Exam) -> str:

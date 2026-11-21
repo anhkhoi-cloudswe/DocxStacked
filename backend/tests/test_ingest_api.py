@@ -3,7 +3,11 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 from backend.app.core.config import get_settings
 
-settings = get_settings()
+class SettingsProxy:
+    def __getattr__(self, name: str):
+        return getattr(get_settings(), name)
+
+settings = SettingsProxy()
 client = TestClient(app)
 
 def test_ingest_security_rejection():
@@ -57,7 +61,11 @@ def test_ingest_security_acceptance():
 
 def test_ingest_payload_flow():
     """Test standard ingest flow creating an exam with minimal dummy question."""
+    # Ensure active runs are cleared before test
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+
     payload = {
+        "run_id": "test_run_flow_01",
         "subject_code": "TEST101",
         "exam_title": "TEST101 - Ingest Unit Test",
         "exam_url": "https://fuoverflow.com/threads/test101-unit.9999/",
@@ -114,8 +122,10 @@ def test_ingest_payload_flow():
 def test_ingest_duplicate_thread_deduplication():
     """Verify that ingesting the same thread twice (even with /unread or notification prefix) results in exactly ONE exam."""
     import sqlite3
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
 
     payload1 = {
+        "run_id": "test_run_dedup_01",
         "subject_code": "TEST102",
         "exam_title": "(2) Đề Thi FE - TEST102 - Thread Dedup Test",
         "exam_url": "https://fuoverflow.com/threads/test-thread-dedup.7777/",
@@ -141,6 +151,7 @@ def test_ingest_duplicate_thread_deduplication():
 
     # Second ingest with /unread and different raw title
     payload2 = {
+        "run_id": "test_run_dedup_01",
         "subject_code": "TEST102",
         "exam_title": "[Đề Thi FE] TEST102 - Thread Dedup Test",
         "exam_url": "https://fuoverflow.com/threads/test-thread-dedup.7777/unread",
@@ -174,4 +185,71 @@ def test_ingest_duplicate_thread_deduplication():
     assert len(rows) == 1, f"Expected 1 exam for thread 7777, got {len(rows)}: {rows}"
     assert rows[0][1] == "TEST102 - Thread Dedup Test"
     assert rows[0][2] == "https://fuoverflow.com/threads/test-thread-dedup.7777/"
+
+
+def test_ingest_run_id_and_url_validation():
+    """Verify Requirement 3: Payload must carry valid runId and exam_url, matching active run."""
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+
+    base_payload = {
+        "subject_code": "PRM392",
+        "exam_title": "PRM392 - SU 2024 - RE",
+        "questions": [
+            {
+                "index": 1,
+                "file_name": "q001.png",
+                "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "comments": []
+            }
+        ],
+    }
+
+    # 1. Missing runId -> 422
+    p_no_run = dict(base_payload)
+    p_no_run["exam_url"] = "https://fuoverflow.com/threads/prm392-su24.5000/"
+    res = client.post("/api/ingest", json=p_no_run, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res.status_code == 422
+    assert "runId" in res.json()["detail"]
+
+    # 2. Missing exam_url -> 422
+    p_no_url = dict(base_payload)
+    p_no_url["run_id"] = "run_test_123"
+    res = client.post("/api/ingest", json=p_no_url, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res.status_code == 422
+    assert "url" in res.json()["detail"]
+
+    # 3. Register an active run for PRM392
+    reg_res = client.post(
+        "/api/ingest/register-run",
+        json={
+            "runId": "run_prm392_valid",
+            "subjectCode": "PRM392",
+            "examUrls": ["https://fuoverflow.com/threads/prm392-su24.5000/"]
+        },
+        headers={"X-Ingest-Token": settings.INGEST_TOKEN}
+    )
+    assert reg_res.status_code == 200
+
+    # 4. Old crawler sends payload with outdated runId (e.g. from PRN212) -> 409 Conflict
+    p_stale_run = dict(base_payload)
+    p_stale_run["run_id"] = "run_prn212_old"
+    p_stale_run["exam_url"] = "https://fuoverflow.com/threads/prn212-b5.4930/"
+    res = client.post("/api/ingest", json=p_stale_run, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res.status_code == 409
+    assert "runId" in res.json()["detail"]
+
+    # 5. Crawler sends active runId but mismatched URL (not in active run's exam list) -> 409 Conflict
+    p_mismatched_url = dict(base_payload)
+    p_mismatched_url["run_id"] = "run_prm392_valid"
+    p_mismatched_url["exam_url"] = "https://fuoverflow.com/threads/prn212-b5.4930/"
+    res = client.post("/api/ingest", json=p_mismatched_url, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res.status_code == 409
+    assert "không khớp" in res.json()["detail"]
+
+    # 6. Valid runId and matching URL -> 200 OK
+    p_valid = dict(base_payload)
+    p_valid["run_id"] = "run_prm392_valid"
+    p_valid["exam_url"] = "https://fuoverflow.com/threads/prm392-su24.5000/"
+    res = client.post("/api/ingest", json=p_valid, headers={"X-Ingest-Token": settings.INGEST_TOKEN})
+    assert res.status_code == 200
 

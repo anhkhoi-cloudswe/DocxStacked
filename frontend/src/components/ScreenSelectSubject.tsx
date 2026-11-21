@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import type { Subject, ExamItem } from '../types';
 import {
   ArrowRightIcon,
@@ -339,9 +339,18 @@ export const ScreenSelectSubject: React.FC<Props> = ({
     return sum + (chosen !== undefined ? chosen : Math.min(limit, exams.length || limit));
   }, 0);
 
+  const isSubmittingRef = useRef<boolean>(false);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading || isSubmittingRef.current) return;
     if (selectedCodes.length === 0) return;
+
+    isSubmittingRef.current = true;
+    setTimeout(() => {
+      isSubmittingRef.current = false;
+    }, 1200);
+
     const activeSubj = selectedCodes[0];
     const chosenIds = selectedExamIds[activeSubj];
     const examIds = chosenIds && chosenIds.length > 0 ? chosenIds : undefined;

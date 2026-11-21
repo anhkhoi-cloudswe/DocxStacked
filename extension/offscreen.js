@@ -8,6 +8,8 @@ const PE_CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB
 let isRunning = false;
 let isPaused = false;
 let skipRequested = false;
+let abortRequested = false;
+let currentRunId = null;
 let queueItems = [];
 let currentIndex = 0;
 let completedExams = [];
@@ -150,13 +152,14 @@ async function saveState(extra = {}) {
   const currentItem = queueItems[currentIndex];
   const curExamTitle = extra.currentExamTitle || (currentItem ? cleanExamTitle(currentItem.title) : "");
   const state = {
+    runId: extra.runId || currentRunId || (currentItem ? currentItem.runId : null),
     items: queueItems,
     currentIndex,
     isRunning,
     isPaused,
     isCompleted: extra.isCompleted !== undefined ? extra.isCompleted : (!isRunning && !isPaused && queueItems.length > 0 && currentIndex >= queueItems.length),
     currentExamTitle: curExamTitle,
-    currentQuestionIndex: extra.currentQuestionIndex !== undefined ? extra.currentQuestionIndex : 0,
+    currentQuestionIndex: extra.currentQuestionIndex !== undefined ? extra.currentQuestionIndex : 1,
     totalQuestions: extra.totalQuestions !== undefined ? extra.totalQuestions : 0,
     progressPct: extra.progressPct !== undefined ? extra.progressPct : 0,
     statusText: extra.statusText || "",
@@ -176,7 +179,8 @@ async function saveState(extra = {}) {
   } catch (e) {}
 }
 
-async function executePeExamUpload(exam) {
+async function executePeExamUpload(exam, runId) {
+  if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
   const threadUrl = exam.url;
   const resp = await fetchWithCadence(threadUrl);
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -186,7 +190,7 @@ async function executePeExamUpload(exam) {
   const doc = parser.parseFromString(html, "text/html");
 
   const titleEl = doc.querySelector("h1.p-title-value, title");
-  const examTitle = cleanExamTitle(titleEl ? titleEl.innerText : exam.title);
+  const examTitle = cleanExamTitle(exam.title || (titleEl ? titleEl.innerText : ""));
 
   let subjectCode = exam.subject_code || "TEST";
   const mCode = examTitle.match(/^([A-Za-z]{2,5}\d{3}[A-Za-z]?)/);
@@ -200,7 +204,7 @@ async function executePeExamUpload(exam) {
       skipRequested = false;
       throw new Error("USER_SKIPPED");
     }
-    if (!isRunning || isPaused) throw new Error("USER_STOPPED");
+    if (!isRunning || isPaused || abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
 
     const a = links[idx];
     const fileUrl = a.href;
@@ -218,7 +222,7 @@ async function executePeExamUpload(exam) {
         skipRequested = false;
         throw new Error("USER_SKIPPED");
       }
-      if (!isRunning || isPaused) throw new Error("USER_STOPPED");
+      if (!isRunning || isPaused || abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
 
       const start = cIdx * PE_CHUNK_SIZE;
       const end = Math.min(start + PE_CHUNK_SIZE, fileSize);
@@ -226,6 +230,7 @@ async function executePeExamUpload(exam) {
       const chunkB64 = await blobToBase64(chunkBlob);
 
       const chunkPayload = {
+        run_id: runId || exam.runId || currentRunId,
         subject_code: subjectCode,
         exam_title: examTitle,
         filename: fileName,
@@ -242,6 +247,7 @@ async function executePeExamUpload(exam) {
 
       const filePct = Math.round(((cIdx + 1) / totalChunks) * 100);
       await saveState({
+        runId: runId,
         currentExamTitle: examTitle,
         currentQuestionIndex: cIdx + 1,
         totalQuestions: totalChunks,
@@ -251,10 +257,12 @@ async function executePeExamUpload(exam) {
     }
   }
 
+  if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
   exam.status = "done";
   exam.compiled = true;
   completedExams.push({
     id: `pe_${Date.now()}`,
+    run_id: runId || exam.runId,
     title: examTitle,
     docx_filename: `${examTitle}.zip`,
     download_url: `/api/exports/bundle.zip?subject=${encodeURIComponent(subjectCode)}`,
@@ -263,7 +271,8 @@ async function executePeExamUpload(exam) {
   });
 }
 
-async function executeFeExamCrawl(exam) {
+async function executeFeExamCrawl(exam, runId) {
+  if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
   const url = exam.url;
   const isCommentUpdateOnly = exam.compiled && !exam.redownloadImages;
 
@@ -275,7 +284,7 @@ async function executeFeExamCrawl(exam) {
   const threadDoc = parser.parseFromString(html, "text/html");
 
   const titleEl = threadDoc.querySelector("h1.p-title-value, title");
-  const threadTitle = cleanExamTitle(titleEl ? titleEl.innerText : exam.title);
+  const threadTitle = cleanExamTitle(exam.title || (titleEl ? titleEl.innerText : ""));
 
   let subjectCode = exam.subject_code || "TEST";
   const mCode = threadTitle.match(/^([A-Za-z]{2,5}\d{3}[A-Za-z]?)/);
@@ -284,6 +293,16 @@ async function executeFeExamCrawl(exam) {
   const attachmentItems = threadDoc.querySelectorAll("section.message-attachments ul.attachmentList li.file");
   const totalQuestions = attachmentItems.length || exam.question_count || 40;
 
+  // Immediately update state with actual question count and "Câu 1/totalQuestions"
+  await saveState({
+    runId: runId,
+    currentExamTitle: threadTitle,
+    currentQuestionIndex: 1,
+    totalQuestions: totalQuestions,
+    progressPct: 0,
+    statusText: `Câu 1/${totalQuestions}`,
+  });
+
   const questionsData = [];
 
   for (let idx = 0; idx < attachmentItems.length; idx++) {
@@ -291,7 +310,9 @@ async function executeFeExamCrawl(exam) {
       skipRequested = false;
       throw new Error("USER_SKIPPED");
     }
-    if (!isRunning || isPaused) throw new Error("USER_STOPPED");
+    if (!isRunning || isPaused || abortRequested || (runId && currentRunId !== runId)) {
+      throw new Error("RUN_ABORTED");
+    }
 
     const item = attachmentItems[idx];
     const qIndex = idx + 1;
@@ -310,6 +331,7 @@ async function executeFeExamCrawl(exam) {
 
     if (mediaUrl) {
       await sleep(MIN_REQUEST_INTERVAL_MS);
+      if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
       const mediaRes = await fetchWithCadence(mediaUrl);
       if (mediaRes.ok) {
         const mediaHtml = await mediaRes.text();
@@ -320,6 +342,7 @@ async function executeFeExamCrawl(exam) {
           const rawSrc = fullImgEl.getAttribute("src");
           const fullImgUrl = rawSrc.startsWith("/") ? `https://fuoverflow.com${rawSrc}` : rawSrc;
           await sleep(500);
+          if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
           const imgRes = await fetchWithCadence(fullImgUrl);
           if (imgRes.ok) {
             const blob = await imgRes.blob();
@@ -340,6 +363,7 @@ async function executeFeExamCrawl(exam) {
 
     const pct = Math.round((qIndex / totalQuestions) * 85);
     await saveState({
+      runId: runId,
       currentExamTitle: threadTitle,
       currentQuestionIndex: qIndex,
       totalQuestions: totalQuestions,
@@ -348,8 +372,11 @@ async function executeFeExamCrawl(exam) {
     });
   }
 
-  // Send payload to backend
+  if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
+
+  // Send payload to backend with run_id and exam_url (Requirement 3)
   const payload = {
+    run_id: runId || exam.runId || currentRunId,
     subject_code: subjectCode,
     exam_title: threadTitle,
     exam_url: url,
@@ -362,12 +389,15 @@ async function executeFeExamCrawl(exam) {
   };
 
   await saveState({
+    runId: runId,
     currentExamTitle: threadTitle,
     currentQuestionIndex: totalQuestions,
     totalQuestions: totalQuestions,
     progressPct: 90,
     statusText: "Backend đang xuất file Word...",
   });
+
+  if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
 
   const res = await fetch(`${BACKEND_URL}/api/ingest`, {
     method: "POST",
@@ -384,6 +414,8 @@ async function executeFeExamCrawl(exam) {
   }
 
   const result = await res.json();
+  if (abortRequested || (runId && currentRunId !== runId)) throw new Error("RUN_ABORTED");
+
   exam.status = "done";
   exam.compiled = true;
   exam.download_url = result.download_url;
@@ -391,6 +423,7 @@ async function executeFeExamCrawl(exam) {
 
   const completedItem = {
     id: result.exam_id,
+    run_id: runId || exam.runId,
     title: threadTitle,
     docx_filename: result.docx_filename,
     download_url: result.download_url,
@@ -402,11 +435,13 @@ async function executeFeExamCrawl(exam) {
   try {
     chrome.runtime.sendMessage({
       type: "EXAM_COMPLETED",
+      runId: runId || exam.runId,
       exam: completedItem,
     }).catch(() => {});
   } catch (e) {}
 
   await saveState({
+    runId: runId,
     currentExamTitle: threadTitle,
     currentQuestionIndex: totalQuestions,
     totalQuestions: totalQuestions,
@@ -415,31 +450,40 @@ async function executeFeExamCrawl(exam) {
   });
 }
 
-async function runOffscreenQueue() {
+async function runOffscreenQueue(runId) {
   if (isRunning) return;
   isRunning = true;
   isPaused = false;
 
   while (isRunning && currentIndex < queueItems.length) {
-    if (isPaused) break;
+    if (isPaused || abortRequested || (runId && currentRunId !== runId)) break;
     const item = queueItems[currentIndex];
+    if (!item) break;
     item.status = "running";
-    await saveState();
+    const totalQ = item.question_count || 40;
+    await saveState({
+      runId: runId,
+      currentExamTitle: cleanExamTitle(item.title),
+      currentQuestionIndex: 1,
+      totalQuestions: totalQ,
+      statusText: `Câu 1/${totalQ}`,
+    });
 
     try {
       if (item.exam_type === "PE") {
-        await executePeExamUpload(item);
+        await executePeExamUpload(item, runId);
       } else {
-        await executeFeExamCrawl(item);
+        await executeFeExamCrawl(item, runId);
       }
+      if (abortRequested || (runId && currentRunId !== runId)) break;
       item.status = "done";
       item.compiled = true;
     } catch (err) {
       if (err.message === "USER_SKIPPED") {
         item.status = "skipped";
-      } else if (err.message === "USER_STOPPED") {
+      } else if (err.message === "USER_STOPPED" || err.message === "RUN_ABORTED") {
         item.status = "error";
-        item.errorMessage = "Đã dừng bởi người dùng";
+        item.errorMessage = "Đã dừng bởi lệnh mới hoặc người dùng";
         break;
       } else {
         item.status = "error";
@@ -447,15 +491,22 @@ async function runOffscreenQueue() {
       }
     }
 
+    if (abortRequested || (runId && currentRunId !== runId)) break;
     currentIndex++;
-    await saveState();
+    await saveState({ runId: runId });
     await sleep(MIN_REQUEST_INTERVAL_MS);
+  }
+
+  if (abortRequested || (runId && currentRunId !== runId)) {
+    // Current run was aborted or superseded
+    return;
   }
 
   if (currentIndex >= queueItems.length) {
     isRunning = false;
     isPaused = false;
     await saveState({
+      runId: runId,
       isCompleted: true,
       currentExamTitle: "Đã hoàn thành tất cả",
       progressPct: 100,
@@ -464,24 +515,32 @@ async function runOffscreenQueue() {
     try {
       chrome.runtime.sendMessage({
         type: "QUEUE_ALL_COMPLETED",
+        runId: runId,
         completedExams: completedExams,
       }).catch(() => {});
     } catch (e) {}
   } else {
     isRunning = false;
-    await saveState();
+    await saveState({ runId: runId });
   }
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "OFFSCREEN_START_QUEUE") {
-    queueItems = msg.items || [];
+    const newRunId = msg.runId || ("run_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6));
+    if (isRunning) {
+      abortRequested = true;
+      isRunning = false;
+    }
+    abortRequested = false;
+    currentRunId = newRunId;
+    queueItems = (msg.items || []).map((it) => ({ ...it, runId: newRunId }));
     currentIndex = msg.currentIndex || 0;
     completedExams = msg.completedExams || [];
     isPaused = false;
     skipRequested = false;
-    runOffscreenQueue();
-    sendResponse({ ok: true });
+    runOffscreenQueue(newRunId);
+    sendResponse({ ok: true, runId: newRunId });
     return true;
   }
   if (msg.type === "OFFSCREEN_PAUSE_QUEUE") {
@@ -493,13 +552,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "OFFSCREEN_RESUME_QUEUE") {
     isPaused = false;
-    runOffscreenQueue();
+    runOffscreenQueue(currentRunId);
     sendResponse({ ok: true });
     return true;
   }
   if (msg.type === "OFFSCREEN_STOP_QUEUE") {
+    abortRequested = true;
     isRunning = false;
     isPaused = false;
+    currentRunId = null;
     queueItems = [];
     currentIndex = 0;
     completedExams = [];
@@ -514,6 +575,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === "OFFSCREEN_GET_STATUS") {
     sendResponse({
+      runId: currentRunId,
       isRunning,
       isPaused,
       currentIndex,

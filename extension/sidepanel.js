@@ -853,6 +853,18 @@ function renderCompletedExamsList(completedExams) {
     return;
   }
 
+  const lastExam = completedExams[completedExams.length - 1];
+  if (elResultFilename && lastExam) {
+    const displayName = lastExam.docx_filename || lastExam.title;
+    elResultFilename.innerText = `Xuất file Word thành công! ${displayName}`;
+  }
+
+  if (elResultDownloadBtn && lastExam) {
+    elResultDownloadBtn.href = `${BACKEND_URL}${lastExam.download_url}`;
+    elResultDownloadBtn.innerText = "Tải file";
+    elResultDownloadBtn.style.display = "inline-flex";
+  }
+
   elResultCompletedList.innerHTML = "";
   completedExams.forEach((ex) => {
     const row = document.createElement("div");
@@ -875,6 +887,47 @@ function renderCompletedExamsList(completedExams) {
   }
 
   elResultCard.style.display = "block";
+}
+
+function navigateToCompletedDocInDasoan(exam) {
+  if (!exam) return;
+  const subjCode = (exam.subject_code || "KHAC").toUpperCase();
+  state.expandedSubjects.add(subjCode);
+  saveExpandedSubjects();
+
+  // Switch to "dasoan" tab
+  switchTab("dasoan");
+
+  // Load docs and scroll to item
+  loadDocuments(() => {
+    setTimeout(() => {
+      if (!elDocsContainer) return;
+      const targetFilename = exam.docx_filename || "";
+      const targetTitle = cleanExamTitle(exam.title || "");
+      let foundEl = null;
+      if (targetFilename) {
+        foundEl = elDocsContainer.querySelector(`[data-filename="${targetFilename}"]`);
+      }
+      if (!foundEl && targetTitle) {
+        const titleEls = elDocsContainer.querySelectorAll(".doc-item-title");
+        for (const tEl of titleEls) {
+          if (tEl.innerText.includes(targetTitle) || targetTitle.includes(tEl.innerText)) {
+            foundEl = tEl.closest(".doc-item");
+            break;
+          }
+        }
+      }
+      if (foundEl) {
+        const docItem = foundEl.closest(".doc-item") || foundEl;
+        docItem.scrollIntoView({ behavior: "smooth", block: "center" });
+        docItem.style.transition = "background-color 0.5s ease";
+        docItem.style.backgroundColor = "rgba(16, 185, 129, 0.2)";
+        setTimeout(() => {
+          docItem.style.backgroundColor = "";
+        }, 3000);
+      }
+    }, 150);
+  });
 }
 
 function markExamCompletedInList(completedExam) {
@@ -900,26 +953,51 @@ async function startUnifiedQueue(items) {
     return;
   }
 
-  queueEngine.items = items;
+  const runId = "run_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+  const taggedItems = items.map(it => ({ ...it, runId }));
+
+  queueEngine.items = taggedItems;
+  queueEngine.runId = runId;
   queueEngine.currentIndex = 0;
   queueEngine.isRunning = true;
   queueEngine.isPaused = false;
   state.queueCompleted = false;
 
+  // Clear previous result card and completed list (Requirement 2)
+  if (elResultCard) elResultCard.style.display = "none";
+  if (elResultCompletedList) elResultCompletedList.innerHTML = "";
   if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
   if (elQueueProgressCard) elQueueProgressCard.style.display = "block";
   if (elQueueControlsRow) elQueueControlsRow.style.display = "flex";
   if (elBtnQueuePause) elBtnQueuePause.innerText = "Dừng";
 
-  const totalItems = items.length;
-  const firstTitle = cleanExamTitle(items[0].title || "Đang soạn...");
+  const totalItems = taggedItems.length;
+  const firstTitle = cleanExamTitle(taggedItems[0].title || "Đang soạn...");
+  const firstTotalQ = taggedItems[0].question_count || 40;
   if (elQueueProgressTitle) {
     elQueueProgressTitle.innerText = `[1/${totalItems}] ${firstTitle}`;
   }
   if (elQueueOverallRatio) {
     elQueueOverallRatio.innerText = `1/${totalItems}`;
   }
-  updateProgress(0, "Đang kết nối tiến trình cào đề nền...");
+  updateProgress(0, `Câu 1/${firstTotalQ}`);
+
+  // Register run with backend
+  try {
+    const subj = taggedItems[0].subject_code || chondeState.selectedSubject || "TEST";
+    await fetch(`${BACKEND_URL}/api/ingest/register-run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-DocxStacked-Ext": EXTENSION_ID,
+      },
+      body: JSON.stringify({
+        runId: runId,
+        subjectCode: subj,
+        examUrls: taggedItems.map(e => e.url),
+      }),
+    });
+  } catch (e) {}
 
   // Ensure offscreen document is ready
   try {
@@ -930,7 +1008,8 @@ async function startUnifiedQueue(items) {
   try {
     chrome.runtime.sendMessage({
       type: "OFFSCREEN_START_QUEUE",
-      items: items,
+      runId: runId,
+      items: taggedItems,
       currentIndex: 0,
       completedExams: [],
     });
@@ -1727,7 +1806,7 @@ function formatSubjectGroupHeader(subjCode, rawName) {
   return { title: fullDisplay, display: fullDisplay, cleanName: name };
 }
 
-async function loadDocuments() {
+async function loadDocuments(onComplete) {
   if (!elDocsContainer) return;
   elDocsContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 12px;">Đang tải danh sách tài liệu...</div>';
   selectedDocs.clear();
@@ -1744,6 +1823,7 @@ async function loadDocuments() {
 
     if (!docs || docs.length === 0) {
       elDocsContainer.innerHTML = '<div style="text-align: center; color: var(--muted); font-size: 11px; padding: 16px;">Chưa có tài liệu nào được soạn.</div>';
+      if (typeof onComplete === "function") onComplete();
       return;
     }
 
@@ -1873,6 +1953,7 @@ async function loadDocuments() {
     });
 
     filterDasoanDocuments();
+    if (typeof onComplete === "function") onComplete();
 
   } catch (err) {
     elDocsContainer.innerHTML = `<div style="color: #fca5a5; font-size: 11px; padding: 8px;">Lỗi: ${err.message}</div>`;
@@ -2113,6 +2194,7 @@ function applyQueueStateToUi(qState) {
   queueEngine.currentIndex = qState.currentIndex || 0;
   queueEngine.isRunning = !!qState.isRunning;
   queueEngine.isPaused = !!qState.isPaused;
+  if (qState.runId) queueEngine.runId = qState.runId;
 
   const total = qState.items.length;
   const cur = Math.min((qState.currentIndex || 0) + 1, total);
@@ -2126,6 +2208,8 @@ function applyQueueStateToUi(qState) {
   // Render completed list if present
   if (qState.completedExams && qState.completedExams.length > 0) {
     renderCompletedExamsList(qState.completedExams);
+  } else if (qState.isRunning) {
+    if (elResultCard) elResultCard.style.display = "none";
   }
 
   if (qState.isRunning) {
@@ -2141,14 +2225,21 @@ function applyQueueStateToUi(qState) {
     if (elQueueProgressTitle) elQueueProgressTitle.innerText = `[${cur}/${total}] ${curTitle}`;
     if (elQueueOverallRatio) elQueueOverallRatio.innerText = `${cur}/${total}`;
     if (elProgressBar && qState.progressPct !== undefined) elProgressBar.style.width = `${qState.progressPct}%`;
+
+    // Requirement 4: Ensure progress bar shows real "Câu x/y" from start, never "Đã nhận 1 đề..."
+    const curQ = qState.currentQuestionIndex || 1;
+    const totalQ = qState.totalQuestions || (qState.items[qState.currentIndex]?.question_count || 40);
+    const progressStatus = (qState.statusText && !qState.statusText.includes("Đã nhận"))
+      ? qState.statusText
+      : `Câu ${curQ}/${totalQ}`;
+
     if (elStatsSummaryLine) {
-      elStatsSummaryLine.innerText = qState.statusText || `Câu ${qState.currentQuestionIndex || 0}/${qState.totalQuestions || 0}`;
+      elStatsSummaryLine.innerText = progressStatus;
     }
 
     // 2. Banner: Show ONLY "Xem tiến trình"
     if (elQueueResumeBanner && elQueueResumeText) {
-      const qText = qState.statusText || `Câu ${qState.currentQuestionIndex || 0}/${qState.totalQuestions || 0}`;
-      elQueueResumeText.innerText = `Đang soạn: ${curTitle} (${qText})`;
+      elQueueResumeText.innerText = `Đang soạn: ${curTitle} (${progressStatus})`;
       if (elBannerActionsRunning) elBannerActionsRunning.style.display = "block";
       if (elBannerActionsStopped) elBannerActionsStopped.style.display = "none";
       elQueueResumeBanner.style.display = "block";
@@ -2321,6 +2412,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "QUEUE_RESET") {
+    if (elResultCard) elResultCard.style.display = "none";
+    if (elResultCompletedList) elResultCompletedList.innerHTML = "";
+    if (elResultDownloadBtn) elResultDownloadBtn.style.display = "none";
+    if (elResultDownloadZipBtn) elResultDownloadZipBtn.style.display = "none";
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message.type === "QUEUE_PROGRESS_UPDATE" && message.data) {
     applyQueueStateToUi(message.data);
     sendResponse({ ok: true });
@@ -2334,6 +2434,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         renderCompletedExamsList(d.savedQueueState.completedExams);
       }
     });
+    // Requirement 5: Auto switch to "Đã soạn" tab and navigate/scroll to newly compiled exam
+    navigateToCompletedDocInDasoan(message.exam);
     sendResponse({ ok: true });
     return true;
   }
@@ -2344,8 +2446,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     queueEngine.isPaused = false;
     if (elQueueControlsRow) elQueueControlsRow.style.display = "none";
     if (elQueueResumeBanner) elQueueResumeBanner.style.display = "none";
-    if (message.completedExams) {
+    if (message.completedExams && message.completedExams.length > 0) {
       renderCompletedExamsList(message.completedExams);
+      const lastEx = message.completedExams[message.completedExams.length - 1];
+      navigateToCompletedDocInDasoan(lastEx);
     }
     renderExamList();
     sendResponse({ ok: true });

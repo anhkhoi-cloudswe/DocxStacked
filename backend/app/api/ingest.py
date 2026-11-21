@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,12 @@ from backend.app.modules.jobs.orchestrator import compute_doc_settings_hash
 from backend.app.modules.settings.service import get_active_settings
 
 logger = get_logger(__name__)
-settings = get_settings()
+
+class SettingsProxy:
+    def __getattr__(self, name: str):
+        return getattr(get_settings(), name)
+
+settings = SettingsProxy()
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 
@@ -59,14 +64,29 @@ class IngestQuestion(BaseModel):
     comments: List[IngestComment] = Field(default_factory=list)
 
 
+class RegisterRunRequest(BaseModel):
+    run_id: str = Field(..., alias="runId")
+    subject_code: str = Field(..., alias="subjectCode")
+    exam_urls: List[str] = Field(default_factory=list, alias="examUrls")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class IngestExamRequest(BaseModel):
     subject_code: str
     exam_title: str
-    exam_url: Optional[str] = None
+    run_id: Optional[str] = Field(default=None, alias="runId")
+    exam_url: Optional[str] = Field(default=None, alias="examUrl")
     term: Optional[str] = None
     exam_type: Optional[str] = "FE"
     questions: List[IngestQuestion]
     options: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+# Active runs tracker for queue orchestration & consistency validation
+_active_runs: Dict[str, Dict[str, Any]] = {}
 
 
 def _verify_ingest_access(request: Request, token: Optional[str] = None) -> None:
@@ -204,6 +224,62 @@ def canonical_thread_url(url: Optional[str], fallback_title: str = "") -> str:
     if clean.endswith("/unread"):
         clean = clean[:-7]
     return clean.rstrip("/") + "/"
+
+
+@router.post("/register-run")
+async def register_queue_run(
+    payload: RegisterRunRequest,
+    request: Request,
+    x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
+    x_local_key: Optional[str] = Header(None, alias="X-Local-Key"),
+):
+    """Register an active queue run from dashboard or extension."""
+    token = x_ingest_token or x_local_key
+    _verify_ingest_access(request, token)
+
+    canonical_urls = [canonical_thread_url(u) for u in payload.exam_urls if u]
+    _active_runs[payload.run_id] = {
+        "run_id": payload.run_id,
+        "subject_code": payload.subject_code.upper().strip(),
+        "exam_urls": canonical_urls,
+        "raw_urls": list(payload.exam_urls),
+        "registered_at": datetime.now(timezone.utc).isoformat(),
+        "completed_urls": [],
+    }
+    logger.info(
+        f"Registered active queue run: {payload.run_id} ({payload.subject_code}, {len(canonical_urls)} exams)"
+    )
+    return {
+        "ok": True,
+        "run_id": payload.run_id,
+        "subject_code": payload.subject_code,
+        "registered_exams": len(canonical_urls),
+    }
+
+
+@router.get("/active-run")
+async def get_active_queue_run(run_id: Optional[str] = None):
+    """Retrieve details of an active queue run."""
+    if run_id:
+        run = _active_runs.get(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Không tìm thấy runId '{run_id}'.")
+        return {"ok": True, "run": run}
+    latest = list(_active_runs.values())[-1] if _active_runs else None
+    return {"ok": True, "active_run": latest}
+
+
+@router.post("/clear-runs")
+async def clear_queue_runs(
+    request: Request,
+    x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
+    x_local_key: Optional[str] = Header(None, alias="X-Local-Key"),
+):
+    """Clear active runs (for test isolation and cancellation)."""
+    token = x_ingest_token or x_local_key
+    _verify_ingest_access(request, token)
+    _active_runs.clear()
+    return {"ok": True, "message": "Đã xoá danh sách phiên hàng đợi."}
 
 
 @router.get("/check-exam")
@@ -543,8 +619,52 @@ async def ingest_exam(
     code = payload.subject_code.upper().strip()
     incoming_title = payload.exam_title.strip()
     cleaned_incoming_title = clean_exam_title(incoming_title)
+
+    # 2. Validate run_id and exam_url presence (Requirement 3)
+    if not payload.run_id or not payload.run_id.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Payload ingest phải mang runId hợp lệ.",
+        )
+    if not payload.exam_url or not payload.exam_url.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="Payload ingest phải mang url đề hợp lệ.",
+        )
+
     canonical_url = canonical_thread_url(payload.exam_url, cleaned_incoming_title)
     tid = extract_thread_id(payload.exam_url)
+
+    # 3. Verify consistency with active run if registered
+    if _active_runs:
+        latest_run_id = list(_active_runs.keys())[-1]
+        active_run = _active_runs.get(payload.run_id)
+        if not active_run:
+            raise HTTPException(
+                status_code=409,
+                detail=f"runId '{payload.run_id}' không tồn tại hoặc đã bị hủy/thay thế bởi phiên mới.",
+            )
+        if payload.run_id != latest_run_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"runId '{payload.run_id}' đã lỗi thời (phiên hiện tại: '{latest_run_id}').",
+            )
+        allowed_urls = active_run.get("exam_urls", [])
+        raw_urls = active_run.get("raw_urls", [])
+        url_matched = False
+        if canonical_url in allowed_urls:
+            url_matched = True
+        else:
+            for raw_u in raw_urls:
+                if raw_u and (canonical_url == canonical_thread_url(raw_u) or raw_u in payload.exam_url or payload.exam_url in raw_u):
+                    url_matched = True
+                    break
+        if not url_matched and allowed_urls:
+            raise HTTPException(
+                status_code=409,
+                detail=f"URL đề '{payload.exam_url}' không khớp với danh sách đề của phiên runId '{payload.run_id}'.",
+            )
+        active_run.setdefault("completed_urls", []).append(canonical_url)
 
     # 1. Get or create Subject
     stmt = select(Subject).where(Subject.code == code)
@@ -646,11 +766,13 @@ async def ingest_exam(
             except Exception as b64_err:
                 logger.warning(f"Error decoding image for Q{idx}: {b64_err}")
 
-        rel_img_path = (
-            str(local_img_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
-            if local_img_path.exists()
-            else None
-        )
+        if local_img_path.exists():
+            try:
+                rel_img_path = str(local_img_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
+            except ValueError:
+                rel_img_path = str(local_img_path.resolve()).replace("\\", "/")
+        else:
+            rel_img_path = None
 
         # Upsert Question
         stmt = select(Question).where(Question.exam_id == exam.id, Question.index == idx)
@@ -950,11 +1072,15 @@ async def upload_pe_chunk(
         shutil.rmtree(temp_chunk_dir, ignore_errors=True)
 
         logger.info(f"PE file successfully reassembled: {final_file} ({final_file.stat().st_size} bytes)")
+        try:
+            saved_path_str = str(final_file.relative_to(settings.BASE_DIR)).replace("\\", "/")
+        except ValueError:
+            saved_path_str = str(final_file).replace("\\", "/")
         return {
             "status": "completed",
             "file_name": safe_filename,
             "size_bytes": final_file.stat().st_size,
-            "saved_path": str(final_file.relative_to(settings.BASE_DIR)).replace("\\", "/"),
+            "saved_path": saved_path_str,
         }
 
     return {

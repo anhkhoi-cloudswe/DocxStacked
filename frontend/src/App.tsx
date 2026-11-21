@@ -5,7 +5,7 @@ import { ScreenResult } from './components/ScreenResult';
 import { ScreenSelectSubject } from './components/ScreenSelectSubject';
 import { ScreenSettings } from './components/ScreenSettings';
 import { ScreenUserDocuments } from './components/ScreenUserDocuments';
-import { GlobalModalHost, alertModal } from './components/ModalDialog';
+import { GlobalModalHost, alertModal, confirmModal } from './components/ModalDialog';
 import type { JobDetails, JobFile, JobStatusResponse } from './types';
 
 const EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
@@ -16,12 +16,16 @@ interface EnqueueResult {
   queuedCount?: number;
   message?: string;
   error?: string;
+  isBusy?: boolean;
+  currentExamTitle?: string;
+  runId?: string;
 }
 
 async function tryEnqueueViaExtension(
   subjectCode: string,
   examType: string,
-  examIds?: number[]
+  examIds?: number[],
+  forceReplace: boolean = false
 ): Promise<EnqueueResult> {
   if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
     try {
@@ -53,6 +57,24 @@ async function tryEnqueueViaExtension(
               },
             ];
 
+      // Unique runId for this batch command
+      const runId = 'run_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+
+      // Register run with backend for end-to-end verification
+      try {
+        await fetch('/api/ingest/register-run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            runId,
+            subjectCode,
+            examUrls: payloadExams.map((e: any) => e.url),
+          }),
+        });
+      } catch (e) {
+        // Ignore backend offline if using extension independently
+      }
+
       return new Promise<EnqueueResult>((resolve) => {
         let timedOut = false;
         const timer = setTimeout(() => {
@@ -69,8 +91,10 @@ async function tryEnqueueViaExtension(
             {
               type: 'ENQUEUE_EXAMS',
               payload: {
+                runId,
                 subjectCode,
                 exams: payloadExams,
+                force: forceReplace,
               },
             },
             (res: any) => {
@@ -82,11 +106,18 @@ async function tryEnqueueViaExtension(
                   'Không thể kết nối đến Extension DocxStacked.';
                 resolve({ success: false, error: errMsg });
               } else if (!res.ok) {
-                resolve({ success: false, error: res.error || 'Extension từ chối nhận đề.' });
+                resolve({
+                  success: false,
+                  error: res.error || 'Extension từ chối nhận đề.',
+                  isBusy: res.error === 'QUEUE_RUNNING',
+                  currentExamTitle: res.currentExamTitle,
+                  message: res.message,
+                });
               } else {
                 resolve({
                   success: true,
                   ack: Boolean(res.ack),
+                  runId,
                   queuedCount: res.queued_count || payloadExams.length,
                   message: res.message || `Đã nhận ${res.queued_count || payloadExams.length} đề, đang soạn`,
                 });
@@ -522,6 +553,42 @@ export const App: React.FC = () => {
         type: 'success',
       });
       return;
+    }
+
+    // If extension is busy running another queue, ask user whether to replace or keep
+    if (extResult.isBusy) {
+      const busyTitle = extResult.currentExamTitle || 'Một đề thi khác';
+      const shouldReplace = await confirmModal({
+        title: 'Hàng đợi Extension đang chạy',
+        message: `Extension đang soạn: "${busyTitle}".\n\nBạn có muốn THAY THẾ hoàn toàn bằng đề mới không?`,
+        confirmText: 'Thay thế hoàn toàn',
+        cancelText: 'Giữ hàng đợi cũ',
+        isDanger: true,
+      });
+
+      if (shouldReplace) {
+        const replaceResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds, true);
+        if (replaceResult.success) {
+          setIsLoading(false);
+          await alertModal({
+            title: 'Đã thay thế hàng đợi',
+            message: replaceResult.message || `Đã thay thế và bắt đầu soạn ${replaceResult.queuedCount || 1} đề mới!`,
+            type: 'success',
+          });
+          return;
+        } else {
+          setIsLoading(false);
+          await alertModal({
+            title: 'Lỗi thay thế',
+            message: replaceResult.error || 'Không thể thay thế hàng đợi Extension.',
+            type: 'error',
+          });
+          return;
+        }
+      } else {
+        setIsLoading(false);
+        return;
+      }
     }
 
     // If extension returned explicit failure or timeout

@@ -141,6 +141,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+function cleanExamTitle(rawTitle) {
+  if (!rawTitle) return "";
+  let t = rawTitle.trim();
+  t = t.replace(/^\(\d+\)\s*/, "");
+  t = t.replace(/\s*\|\s*FuOverflow\s*Community.*$/i, "");
+  const badgeRegex = /^(?:\[?(?:Đề\s*Thi\s*FE|Đề\s*Thi\s*PE|Đề\s*thi\s*FE|Đề\s*thi\s*PE|Tài\s*Liệu|Tài\s*liệu)\]?[\s\-_:]*)+/i;
+  t = t.replace(badgeRegex, "");
+  return t.trim();
+}
+
+// In-memory processed runIds to deduplicate dashboard commands
+const processedRunIds = new Set();
+
 // External messages from web dashboard (http://127.0.0.1:8000, http://localhost:5173, etc.)
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
   const allowedOrigins = [
@@ -173,33 +186,88 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
     const payload = message.payload || {};
     const exams = payload.exams || [];
     const subjectCode = payload.subjectCode || "TEST";
+    const runId = payload.runId || ("run_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6));
+    const force = Boolean(payload.force);
 
     if (!Array.isArray(exams) || exams.length === 0) {
       sendResponse({ ok: false, error: "Danh sách đề trống" });
       return;
     }
 
+    // 1. Chống trùng theo runId: nếu runId đã xử lý, trả ack trùng ngay lập tức, không chạy lại
+    if (processedRunIds.has(runId)) {
+      sendResponse({
+        ok: true,
+        ack: true,
+        duplicate: true,
+        runId: runId,
+        queued_count: exams.length,
+        message: `Lệnh trùng (${runId}) đã được tiếp nhận, bỏ qua không xử lý lại.`,
+      });
+      return;
+    }
+
     (async () => {
       try {
-        // Ghi log ngay khi nhận lệnh từ Dashboard
-        await appendLogToStorage(`[Dashboard] Nhận lệnh ${exams.length} đề`, "info");
+        const storageData = await chrome.storage.local.get(["savedQueueState"]);
+        const prevQueue = storageData.savedQueueState;
 
-        // 1. Ensure Offscreen document is created and ready
+        // 2. Nếu hàng đợi cũ ĐANG CHẠY mà không có cờ force -> từ chối kèm lý do rõ ràng
+        if (prevQueue && prevQueue.isRunning && !force) {
+          const busyTitle = prevQueue.currentExamTitle || "Đang soạn đề";
+          sendResponse({
+            ok: false,
+            error: "QUEUE_RUNNING",
+            currentExamTitle: busyTitle,
+            runId: prevQueue.runId,
+            message: `Hàng đợi đang soạn đề: "${busyTitle}". Vui lòng đợi hoàn tất hoặc chọn thay thế.`,
+          });
+          return;
+        }
+
+        // Đánh dấu đã nhận runId để chống trùng
+        processedRunIds.add(runId);
+        if (processedRunIds.size > 200) {
+          const first = processedRunIds.values().next().value;
+          processedRunIds.delete(first);
+        }
+
+        // 3. Nếu đang chạy mà force=true: dừng hàng đợi cũ và abort ngay lập tức
+        if (prevQueue && prevQueue.isRunning && force) {
+          await appendLogToStorage(`[Dashboard] Dừng và thay thế hàng đợi cũ bằng phiên mới (${runId})`, "warn");
+          try {
+            await chrome.runtime.sendMessage({ type: "OFFSCREEN_STOP_QUEUE" });
+          } catch (e) {}
+        } else {
+          await appendLogToStorage(`[Dashboard] Nhận lệnh ${exams.length} đề (runId: ${runId})`, "info");
+        }
+
+        // Ensure Offscreen document is ready
         await ensureOffscreenDocument();
 
-        // 2. Clear previous queue state and save initial queue state directly in storage
+        // Gắn runId vào từng đề để đồng bộ xuyên suốt
+        const taggedExams = exams.map((ex) => ({
+          ...ex,
+          runId: runId,
+        }));
+
+        const firstTitle = cleanExamTitle(taggedExams[0].title || "Đang soạn...");
+        const firstTotalQ = taggedExams[0].question_count || 40;
+
+        // 4. THAY THẾ hoàn toàn: xoá mục cũ, xoá thẻ kết quả cũ, bắt đầu từ Câu 1/y thật
         const initialQueueState = {
-          items: exams,
+          runId: runId,
+          items: taggedExams,
           currentIndex: 0,
           isRunning: true,
           isPaused: false,
           isCompleted: false,
-          currentExamTitle: exams[0].title || "Đang soạn...",
-          currentQuestionIndex: 0,
-          totalQuestions: exams[0].question_count || 40,
+          currentExamTitle: firstTitle,
+          currentQuestionIndex: 1, // Hiển thị "Câu 1/y" thật từ khi bắt đầu (Requirement 4)
+          totalQuestions: firstTotalQ,
           progressPct: 0,
-          statusText: `Đã nhận ${exams.length} đề, đang soạn...`,
-          completedExams: [],
+          statusText: `Câu 1/${firstTotalQ}`, // Không để "Đã nhận 1 đề..."
+          completedExams: [], // Xoá danh sách kết quả cũ (Requirement 2)
           updatedAt: Date.now(),
         };
 
@@ -207,13 +275,38 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
           savedQueueState: initialQueueState,
         });
 
-        // 3. Immediately kick off offscreen queue with retry confirmation
+        // Báo sidepanel reset thẻ kết quả cũ
+        try {
+          chrome.runtime.sendMessage({
+            type: "QUEUE_RESET",
+            runId: runId,
+          }).catch(() => {});
+        } catch (e) {}
+
+        // Đăng ký active run trên backend (nếu backend đang chạy)
+        try {
+          await fetch("http://127.0.0.1:8000/api/ingest/register-run", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-DocxStacked-Ext": chrome.runtime.id,
+            },
+            body: JSON.stringify({
+              runId: runId,
+              subjectCode: subjectCode,
+              examUrls: taggedExams.map((e) => e.url),
+            }),
+          });
+        } catch (e) {}
+
+        // 5. Khởi động offscreen queue với runId đồng bộ
         let offscreenStarted = false;
         for (let attempt = 1; attempt <= 5; attempt++) {
           try {
             const resp = await chrome.runtime.sendMessage({
               type: "OFFSCREEN_START_QUEUE",
-              items: exams,
+              runId: runId,
+              items: taggedExams,
               currentIndex: 0,
               completedExams: [],
             });
@@ -221,9 +314,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
               offscreenStarted = true;
               break;
             }
-          } catch (e) {
-            // Offscreen listener might still be mounting
-          }
+          } catch (e) {}
           await new Promise((r) => setTimeout(r, 150));
         }
 
@@ -231,7 +322,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
           throw new Error("Offscreen scraper không phản hồi sau 5 lần thử");
         }
 
-        // 4. Try opening side panel in active tab
+        // 6. Mở sidepanel
         try {
           const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
           if (tabs && tabs[0]) {
@@ -244,12 +335,13 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
         sendResponse({
           ok: true,
           ack: true,
+          runId: runId,
           queued_count: exams.length,
           message: `Đã nhận ${exams.length} đề, đang soạn`,
         });
       } catch (err) {
         console.error("Error enqueuing exams:", err);
-        await appendLogToStorage(`[Lỗi] Không thể khởi động offscreen: ${err.message}`, "error");
+        await appendLogToStorage(`[Lỗi] Không thể khởi động hàng đợi: ${err.message}`, "error");
         sendResponse({ ok: false, error: err.message || "Lỗi khởi động hàng đợi" });
       }
     })();

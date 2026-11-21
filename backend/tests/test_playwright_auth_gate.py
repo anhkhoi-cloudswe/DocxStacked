@@ -2,6 +2,7 @@ import functools
 import http.server
 import json
 import socket
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -41,6 +42,18 @@ def dist_server():
     srv.stop()
 
 
+def create_isolated_page(context):
+    """Creates a page with all global background endpoints intercepted to strictly prevent leakage to port 8000."""
+    page = context.new_page()
+    page.route("**/api/auth/extension-heartbeat", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"ok": True})
+    ))
+    page.route("**/api/health", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"status": "healthy"})
+    ))
+    return page
+
+
 def test_auth_gate_tab_switching_20_times_stable(dist_server):
     """
     Simulate switching tabs 20 times consecutively:
@@ -49,7 +62,7 @@ def test_auth_gate_tab_switching_20_times_stable(dist_server):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
-        page = context.new_page()
+        page = create_isolated_page(context)
 
         # Intercept backend auth status: always authenticated
         page.route("**/api/auth/status", lambda route: route.fulfill(
@@ -105,7 +118,7 @@ def test_auth_gate_extension_sleep_20s_no_transition(dist_server):
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
-        page = context.new_page()
+        page = create_isolated_page(context)
 
         is_extension_alive = {"val": True}
 
@@ -184,7 +197,7 @@ def test_auth_gate_navbar_hidden_in_non_logged_in_states(dist_server):
         context = browser.new_context()
 
         # 1. State: checking (backend hanging / delayed)
-        page1 = context.new_page()
+        page1 = create_isolated_page(context)
         # Abort/hang auth endpoint
         page1.route("**/api/auth/status", lambda route: None)  # Never responds
         page1.goto(dist_server)
@@ -195,7 +208,7 @@ def test_auth_gate_navbar_hidden_in_non_logged_in_states(dist_server):
         page1.close()
 
         # 2. State: no_extension (after >= 3 failures over >= 30s)
-        page2 = context.new_page()
+        page2 = create_isolated_page(context)
         page2.route("**/api/auth/status", lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -226,7 +239,7 @@ def test_auth_gate_navbar_hidden_in_non_logged_in_states(dist_server):
         page2.close()
 
         # 3. State: logged_in - navbar MUST appear
-        page3 = context.new_page()
+        page3 = create_isolated_page(context)
         page3.route("**/api/auth/status", lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -252,15 +265,14 @@ def test_extension_logged_in_backend_logged_out_flow_and_screenshots(dist_server
     2. Start button MUST say 'Bắt đầu soạn đề' and be clickable.
     3. Capture full-page screenshots for all 3 states: logged_in, logged_out, no_extension.
     """
-    screenshot_dir = Path(__file__).resolve().parent.parent.parent / "data" / "screenshots"
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_dir = Path(tempfile.mkdtemp(prefix="docxstacked_test_ss_"))
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(viewport={"width": 1280, "height": 900})
 
         # --- 1. STATE: LOGGED_IN (Extension logged_in, backend Playwright logged_out) ---
-        page_in = context.new_page()
+        page_in = create_isolated_page(context)
 
         # Backend Playwright reports NOT logged in
         page_in.route("**/api/auth/status", lambda route: route.fulfill(
@@ -350,7 +362,7 @@ def test_extension_logged_in_backend_logged_out_flow_and_screenshots(dist_server
         page_in.close()
 
         # --- 2. STATE: LOGGED_OUT (Extension detected but not logged in to FUOverflow) ---
-        page_out = context.new_page()
+        page_out = create_isolated_page(context)
         page_out.route("**/api/auth/status", lambda route: route.fulfill(
             status=200,
             content_type="application/json",
@@ -384,7 +396,7 @@ def test_extension_logged_in_backend_logged_out_flow_and_screenshots(dist_server
         page_out.close()
 
         # --- 3. STATE: NO_EXTENSION (Extension not detected on browser) ---
-        page_noext = context.new_page()
+        page_noext = create_isolated_page(context)
         page_noext.route("**/api/auth/status", lambda route: route.fulfill(
             status=200,
             content_type="application/json",

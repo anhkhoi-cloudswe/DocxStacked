@@ -16,7 +16,11 @@ from backend.app.db.models import Job
 from backend.app.db.session import get_db
 
 logger = get_logger(__name__)
-settings = get_settings()
+class SettingsProxy:
+    def __getattr__(self, name: str):
+        return getattr(get_settings(), name)
+
+settings = SettingsProxy()
 
 router = APIRouter(prefix="/api/exports", tags=["exports"])
 

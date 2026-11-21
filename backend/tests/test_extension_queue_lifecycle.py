@@ -390,3 +390,346 @@ def test_backend_offline_preserves_completion_state():
     assert panel.notice_box_text == ""
     # Action buttons disabled to block new actions
     assert panel.action_buttons_enabled is False
+
+
+class MockExtensionBackgroundService:
+    """
+    Simulates background.js queue dispatch, runId deduplication,
+    and active queue replacement/force logic.
+    """
+    def __init__(self, storage: MockChromeStorage, worker: 'MockOffscreenQueueWorkerV2'):
+        self.storage = storage
+        self.worker = worker
+        self.processed_run_ids = set()
+
+    def handle_enqueue_command(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        run_id = message.get("runId")
+        if run_id:
+            if run_id in self.processed_run_ids:
+                return {"status": "ignored", "reason": "duplicate_run_id", "runId": run_id}
+            self.processed_run_ids.add(run_id)
+
+        items = message.get("items", [])
+        if not items:
+            return {"status": "error", "message": "No items provided"}
+
+        force = message.get("force", False)
+
+        # Check existing queue
+        existing_data = self.storage.get(["savedQueueState"])
+        existing_state = existing_data.get("savedQueueState")
+        if existing_state and existing_state.get("isRunning") and not force:
+            return {"status": "error", "code": "QUEUE_RUNNING", "message": "Queue is currently running"}
+
+        # If running and force is True, stop active queue first
+        if existing_state and existing_state.get("isRunning") and force:
+            self.worker.abort_current_run()
+
+        # Wipe stale completed results and replace storage completely
+        first_title = items[0].get("title", "")
+        total_q = items[0].get("totalQuestions", 50)
+
+        initial_state = {
+            "runId": run_id,
+            "items": items,
+            "currentIndex": 0,
+            "isRunning": True,
+            "isPaused": False,
+            "isCompleted": False,
+            "currentExamTitle": first_title,
+            "currentQuestionIndex": 1,
+            "totalQuestions": total_q,
+            "progressPct": 1,
+            "statusText": f"Câu 1/{total_q}",
+            "completedExams": [],
+            "updatedAt": time.time(),
+        }
+        self.storage.set({"savedQueueState": initial_state})
+        self.worker.start_queue_with_run_id(items, run_id=run_id, total_questions=total_q)
+        return {"status": "success", "runId": run_id}
+
+
+class MockOffscreenQueueWorkerV2:
+    """
+    Extended offscreen queue worker supporting runId tagging, cooperative abort,
+    and single-source exam processing.
+    """
+    def __init__(self, storage: MockChromeStorage):
+        self.storage = storage
+        self.is_running = False
+        self.current_run_id = None
+        self.abort_requested = False
+        self.items = []
+        self.current_index = 0
+        self.current_question = 1
+        self.total_questions = 50
+        self.completed_exams = []
+        self.ingested_payloads = []
+
+    def start_queue_with_run_id(self, items: List[Dict[str, Any]], run_id: str, total_questions: int = 50):
+        self.abort_current_run()
+        self.items = list(items)
+        self.current_run_id = run_id
+        self.current_index = 0
+        self.current_question = 1
+        self.total_questions = total_questions
+        self.is_running = True
+        self.abort_requested = False
+        self.completed_exams = []
+        self._save_state()
+
+    def abort_current_run(self):
+        self.abort_requested = True
+        self.is_running = False
+
+    def advance_time(self, seconds: float, cadence_sec: float = 2.0):
+        if not self.is_running or self.abort_requested:
+            return
+
+        steps = int(seconds / cadence_sec)
+        for _ in range(steps):
+            if self.abort_requested or not self.is_running:
+                break
+
+            if self.current_index >= len(self.items):
+                self.is_running = False
+                self._save_state(is_completed=True)
+                break
+
+            cur_item = self.items[self.current_index]
+
+            if self.current_question >= self.total_questions:
+                # Ingest payload from active item and runId
+                payload = {
+                    "run_id": self.current_run_id,
+                    "exam_title": cur_item["title"],
+                    "exam_url": cur_item["url"],
+                    "total_questions": self.total_questions,
+                }
+                self.ingested_payloads.append(payload)
+
+                self.completed_exams.append({
+                    "id": f"exam_{self.current_index + 1}",
+                    "title": cur_item["title"],
+                    "docx_filename": f"{cur_item['title']}.docx",
+                    "download_url": f"/api/exports/{self.current_index + 1}/download",
+                    "run_id": self.current_run_id,
+                })
+                self.current_index += 1
+                self.current_question = 1
+                if self.current_index >= len(self.items):
+                    self.is_running = False
+                    self._save_state(is_completed=True)
+                    break
+            else:
+                self.current_question += 1
+
+            self._save_state()
+
+    def _save_state(self, is_completed: bool = False):
+        cur_title = ""
+        if self.current_index < len(self.items):
+            cur_title = self.items[self.current_index]["title"]
+        pct = int((self.current_question / self.total_questions) * 100) if self.total_questions else 0
+
+        self.storage.set({
+            "savedQueueState": {
+                "runId": self.current_run_id,
+                "items": self.items,
+                "currentIndex": self.current_index,
+                "isRunning": self.is_running,
+                "isCompleted": is_completed,
+                "currentExamTitle": cur_title,
+                "currentQuestionIndex": self.current_question,
+                "totalQuestions": self.total_questions,
+                "progressPct": pct,
+                "statusText": f"Câu {self.current_question}/{self.total_questions}",
+                "completedExams": list(self.completed_exams),
+                "updatedAt": time.time(),
+            }
+        })
+
+
+def test_new_command_replaces_old_queue_in_storage():
+    """
+    Requirement 7 Test:
+    - Old queue exists in storage (e.g. PRN212 with stale completed result cards).
+    - New command arrives with new runId (PRM392).
+    - Old queue items and stale completed result cards are completely wiped.
+    - Only the new exam (PRM392) is compiled and ingested.
+    """
+    storage = MockChromeStorage()
+    worker = MockOffscreenQueueWorkerV2(storage)
+    bg = MockExtensionBackgroundService(storage, worker)
+
+    # 1. Old state left in storage from past session
+    storage.set({
+        "savedQueueState": {
+            "runId": "old-run-prn212",
+            "items": [{"title": "PRN212 - SU25 - B5 - 1", "url": "https://fuoverflow.com/threads/fe.212/"}],
+            "currentIndex": 0,
+            "isRunning": False,
+            "isCompleted": True,
+            "currentExamTitle": "PRN212 - SU25 - B5 - 1",
+            "completedExams": [{
+                "title": "PRN212 - SU25 - B5 - 1",
+                "docx_filename": "PRN212 - SU25 - B5 - 1.docx",
+                "download_url": "/api/exports/old/download"
+            }],
+        }
+    })
+
+    # Verify old state is in storage
+    old_state = storage.get(["savedQueueState"])["savedQueueState"]
+    assert old_state["currentExamTitle"] == "PRN212 - SU25 - B5 - 1"
+    assert len(old_state["completedExams"]) == 1
+
+    # 2. Dashboard sends new command for PRM392
+    new_cmd = {
+        "runId": "run-prm392-uuid-001",
+        "items": [{
+            "title": "PRM392 - SU 2024 - RE",
+            "url": "https://fuoverflow.com/threads/fe.392/",
+            "totalQuestions": 50,
+        }],
+        "force": False,
+    }
+    res = bg.handle_enqueue_command(new_cmd)
+    assert res["status"] == "success"
+
+    # 3. Check storage immediately: old items and completed cards MUST be cleared!
+    cur_state = storage.get(["savedQueueState"])["savedQueueState"]
+    assert cur_state["runId"] == "run-prm392-uuid-001"
+    assert cur_state["currentExamTitle"] == "PRM392 - SU 2024 - RE"
+    assert cur_state["statusText"] == "Câu 1/50"
+    assert cur_state["completedExams"] == []
+    assert len(cur_state["items"]) == 1
+    assert cur_state["items"][0]["title"] == "PRM392 - SU 2024 - RE"
+
+    # 4. Advance worker to completion
+    worker.advance_time(100.0, cadence_sec=2.0)
+    assert worker.is_running is False
+    assert len(worker.completed_exams) == 1
+    assert worker.completed_exams[0]["title"] == "PRM392 - SU 2024 - RE"
+    assert worker.completed_exams[0]["docx_filename"] == "PRM392 - SU 2024 - RE.docx"
+
+    # Ingestion strictly took PRM392 with matching run_id and url
+    assert len(worker.ingested_payloads) == 1
+    assert worker.ingested_payloads[0]["exam_title"] == "PRM392 - SU 2024 - RE"
+    assert worker.ingested_payloads[0]["exam_url"] == "https://fuoverflow.com/threads/fe.392/"
+    assert worker.ingested_payloads[0]["run_id"] == "run-prm392-uuid-001"
+
+    # Sidepanel UI also reflects only the new exam
+    panel = MockSidepanelUI(storage)
+    panel.open_panel()
+    assert len(panel.completed_items) == 1
+    assert panel.completed_items[0]["title"] == "PRM392 - SU 2024 - RE"
+
+
+def test_duplicate_command_with_same_run_id_runs_only_once():
+    """
+    Requirement 7 Test:
+    - Dashboard sends a command with runId = "dup-run-999".
+    - A duplicate command with the exact same runId arrives (double click or message replay).
+    - Extension deduplicates and processes the command ONLY ONCE.
+    """
+    storage = MockChromeStorage()
+    worker = MockOffscreenQueueWorkerV2(storage)
+    bg = MockExtensionBackgroundService(storage, worker)
+
+    cmd = {
+        "runId": "dup-run-999",
+        "items": [{
+            "title": "PRM392 - SU 2024 - RE",
+            "url": "https://fuoverflow.com/threads/fe.392/",
+            "totalQuestions": 50,
+        }],
+    }
+
+    # 1. First command
+    res1 = bg.handle_enqueue_command(cmd)
+    assert res1["status"] == "success"
+
+    # 2. Second command with same runId
+    res2 = bg.handle_enqueue_command(cmd)
+    assert res2["status"] == "ignored"
+    assert res2["reason"] == "duplicate_run_id"
+
+    # Advance worker to complete
+    worker.advance_time(100.0, cadence_sec=2.0)
+
+    # Ingestion happened exactly once
+    assert len(worker.ingested_payloads) == 1
+    assert len(worker.completed_exams) == 1
+
+
+def test_active_running_queue_rejects_without_force_and_aborts_with_force():
+    """
+    Requirement 7 & Requirement 2 Test:
+    - Queue is actively crawling PRN212.
+    - New command PRM392 arrives without force -> rejected with QUEUE_RUNNING.
+    - New command PRM392 arrives with force=True -> aborts PRN212 crawl immediately,
+      replaces queue with PRM392, and PRN212 is NEVER ingested.
+    """
+    storage = MockChromeStorage()
+    worker = MockOffscreenQueueWorkerV2(storage)
+    bg = MockExtensionBackgroundService(storage, worker)
+
+    # 1. Start PRN212
+    cmd1 = {
+        "runId": "run-prn212-active",
+        "items": [{
+            "title": "PRN212 - SU25 - B5 - 1",
+            "url": "https://fuoverflow.com/threads/fe.212/",
+            "totalQuestions": 50,
+        }],
+    }
+    bg.handle_enqueue_command(cmd1)
+
+    # Crawl 10 questions of PRN212
+    worker.advance_time(20.0, cadence_sec=2.0)
+    assert worker.current_question == 11
+    assert worker.is_running is True
+
+    # 2. Try enqueuing PRM392 without force -> rejected
+    cmd2_no_force = {
+        "runId": "run-prm392-no-force",
+        "items": [{
+            "title": "PRM392 - SU 2024 - RE",
+            "url": "https://fuoverflow.com/threads/fe.392/",
+            "totalQuestions": 50,
+        }],
+        "force": False,
+    }
+    res_rejected = bg.handle_enqueue_command(cmd2_no_force)
+    assert res_rejected["status"] == "error"
+    assert res_rejected["code"] == "QUEUE_RUNNING"
+    # Worker is still on PRN212
+    assert worker.current_run_id == "run-prn212-active"
+
+    # 3. User confirms replacement: send with force=True
+    cmd2_force = {
+        "runId": "run-prm392-forced",
+        "items": [{
+            "title": "PRM392 - SU 2024 - RE",
+            "url": "https://fuoverflow.com/threads/fe.392/",
+            "totalQuestions": 50,
+        }],
+        "force": True,
+    }
+    res_forced = bg.handle_enqueue_command(cmd2_force)
+    assert res_forced["status"] == "success"
+
+    # Old run aborted; new run active
+    assert worker.current_run_id == "run-prm392-forced"
+    assert worker.current_question == 1
+    assert worker.completed_exams == []
+
+    # Advance to completion
+    worker.advance_time(100.0, cadence_sec=2.0)
+
+    # PRN212 was NEVER ingested; only PRM392 was ingested!
+    assert len(worker.ingested_payloads) == 1
+    assert worker.ingested_payloads[0]["exam_title"] == "PRM392 - SU 2024 - RE"
+    assert worker.ingested_payloads[0]["run_id"] == "run-prm392-forced"
+
