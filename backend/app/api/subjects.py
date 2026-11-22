@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 import re
 from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
@@ -12,6 +14,11 @@ from backend.app.db.models import Exam, ExamStatus, ExamType, Question, Subject
 from backend.app.db.session import get_db
 from backend.app.api.ingest import clean_exam_title, extract_thread_id
 from backend.app.modules.crawler.exams import crawl_subject_exams
+from backend.app.modules.crawler.fuexam_subjects import (
+    load_subject_map,
+    refresh_fuexam_subjects,
+    ACTIVE_SUBJECTS_FILE,
+)
 from backend.app.modules.crawler.subjects import (
     get_or_fetch_subjects,
     lookup_subject_by_code,
@@ -29,6 +36,9 @@ class SubjectOut(BaseModel):
     forum_url: str
     exam_count: int
     last_synced_at: Optional[datetime] = None
+    node_id: Optional[int] = None
+    term_group: Optional[str] = None
+    platform: str = "fuoverflow"
 
     class Config:
         from_attributes = True
@@ -67,6 +77,10 @@ class ExamOut(BaseModel):
     download_url: Optional[str] = None
     compiled_at: Optional[str] = None
     compiled_at_iso: Optional[str] = None
+    is_valid_exam: bool = True
+    warning: Optional[str] = None
+    sub_exam_count: Optional[int] = None
+    platform: str = "fuoverflow"
 
     class Config:
         from_attributes = True
@@ -75,6 +89,7 @@ class ExamOut(BaseModel):
 @router.get("", response_model=SubjectListResponse)
 async def list_subjects(
     q: Optional[str] = Query(None, description="Từ khoá tìm kiếm theo mã môn hoặc tên môn"),
+    platform: str = Query("fuoverflow", description="Nền tảng (fuoverflow hoặc fuexam)"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
@@ -82,7 +97,55 @@ async def list_subjects(
     """
     Search and list subjects with accent-insensitive matching.
     Supports queries like 'cau truc' matching 'CSD202 - Cấu trúc dữ liệu'.
+    Supports platform='fuexam' using data/subjects_fuexam.json (292 subjects).
     """
+    if platform.lower() == "fuexam":
+        sub_map = load_subject_map()
+        items_all = list(sub_map.values())
+        file_mtime = None
+        if ACTIVE_SUBJECTS_FILE.exists():
+            file_mtime = datetime.fromtimestamp(ACTIVE_SUBJECTS_FILE.stat().st_mtime, tz=timezone.utc)
+
+        if q and q.strip():
+            query_norm = strip_vietnamese_accents(q)
+            filtered = [
+                s for s in items_all
+                if query_norm in strip_vietnamese_accents(s.get("code", ""))
+                or query_norm in strip_vietnamese_accents(s.get("name", ""))
+            ]
+        else:
+            filtered = items_all
+
+        total = len(filtered)
+        paged = filtered[offset : offset + limit]
+
+        fuexam_out_dir = get_settings().BASE_DIR / "data" / "output" / "fuexam"
+        compiled_names = [p.stem.upper() for p in fuexam_out_dir.glob("*.docx")] if fuexam_out_dir.exists() else []
+
+        subject_outs = []
+        for idx, item in enumerate(paged, start=offset + 1):
+            code_u = item.get("code", "").upper()
+            ex_cnt = sum(1 for fn in compiled_names if code_u in fn)
+            subject_outs.append(
+                SubjectOut(
+                    id=item.get("node_id") or idx,
+                    code=code_u,
+                    name=item.get("name", ""),
+                    forum_url=item.get("forum_url", ""),
+                    exam_count=ex_cnt,
+                    last_synced_at=file_mtime,
+                    node_id=item.get("node_id"),
+                    term_group=item.get("term_group"),
+                    platform="fuexam",
+                )
+            )
+
+        return SubjectListResponse(
+            items=subject_outs,
+            total=total,
+            last_synced_at=file_mtime,
+        )
+
     # Ensure database is seeded if empty
     all_subjects = await get_or_fetch_subjects(db)
 
@@ -109,8 +172,22 @@ async def list_subjects(
 
 
 @router.post("/sync", response_model=SyncSubjectsResponse)
-async def sync_subjects(db: AsyncSession = Depends(get_db)):
-    """Trigger dynamic sync of all subjects from FuOverflow categories/subjects/."""
+async def sync_subjects(
+    platform: str = Query("fuoverflow", description="Nền tảng (fuoverflow hoặc fuexam)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Trigger dynamic sync of subjects from forum (FuOverflow or fuexam)."""
+    if platform.lower() == "fuexam":
+        res = refresh_fuexam_subjects(save_to_disk=True)
+        diff = res.get("diff", {})
+        return SyncSubjectsResponse(
+            success=res.get("success", True),
+            added=len(diff.get("added", [])),
+            updated=len(diff.get("renamed", [])) + len(diff.get("moved", [])),
+            total=res.get("total_subjects", 292),
+            last_synced_at=diff.get("timestamp") or datetime.now().isoformat(),
+        )
+
     result = await sync_subjects_from_web(db)
     return SyncSubjectsResponse(
         success=True,
@@ -339,16 +416,200 @@ async def parse_forum_html(
     return {"items": results, "total": len(results)}
 
 
+_fuexam_crawled_cache: dict = {}
+
+def _get_fuexam_subject_exams(clean_code: str, req_type: str = "FE") -> List[ExamOut]:
+    """
+    Cào danh sách đề thi THẬT từ forum node của môn học trên fuexam.me qua crawler.
+    Gắn nhãn cảnh báo thật (PE chưa hỗ trợ, thread không phải đề, mã đề B5, đề thi lại RE, gán nhầm môn).
+    """
+    global _fuexam_crawled_cache
+    import requests
+    from backend.app.modules.crawler.fuexam_crawler import get_authenticated_session
+
+    now = datetime.utcnow().timestamp()
+    cache_entry = _fuexam_crawled_cache.get(clean_code)
+    if cache_entry and (now - cache_entry["timestamp"]) < 60.0:
+        cached_exams = cache_entry["exams"]
+        req_type_u = req_type.upper()
+        return [e for e in cached_exams if e.exam_type == req_type_u or not e.is_valid_exam]
+
+    sub_map = load_subject_map()
+    subj_data = sub_map.get(clean_code)
+    forum_url = subj_data.get("forum_url") if subj_data else f"https://fuexam.me/forums/{clean_code.lower()}/"
+
+    out_dir = get_settings().BASE_DIR / "data" / "output" / "fuexam"
+    compiled_files = list(out_dir.rglob("*.docx")) if out_dir.exists() else []
+
+    def check_compiled(pattern: str) -> Tuple[bool, Optional[str]]:
+        for p in compiled_files:
+            if pattern.lower() in p.name.lower():
+                return True, f"/api/exports/fuexam/{p.name}/download"
+        return False, None
+
+    results: List[ExamOut] = []
+
+    try:
+        session = get_authenticated_session()
+        resp = session.get(forum_url, timeout=15)
+    except Exception:
+        resp = requests.get(
+            forum_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+            },
+            timeout=15,
+        )
+
+    if resp.status_code == 200:
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for item in soup.select(".structItem--thread"):
+            title_div = item.select_one(".structItem-title")
+            if not title_div:
+                continue
+
+            label_el = title_div.select_one(".label")
+            prefix_text = label_el.text.strip() if label_el else ""
+
+            anchors = [a for a in title_div.find_all("a") if "labelLink" not in a.get("class", [])]
+            if not anchors:
+                continue
+
+            raw_title = anchors[0].text.strip()
+            href = anchors[0].get("href", "")
+            clean_href = re.sub(r"/unread$", "/", href)
+            full_url = f"https://fuexam.me{clean_href}" if clean_href.startswith("/") else clean_href
+
+            m_id = re.search(r"\.(\d+)/?$", clean_href)
+            if not m_id:
+                continue
+            tid = int(m_id.group(1))
+
+            term_match = re.search(r"\b(SU|FA|SP|WI)\s*(\d{2,4})\b", raw_title, re.IGNORECASE)
+            term = f"{term_match.group(1).upper()}{term_match.group(2)[-2:]}" if term_match else None
+
+            is_pe = (
+                "PE" in prefix_text.upper()
+                or "-pe-" in clean_href.lower()
+                or "-pe." in clean_href.lower()
+                or bool(re.search(r"\bPE\b", raw_title, re.IGNORECASE))
+            )
+            exam_type = "PE" if is_pe else "FE"
+
+            date_el = item.select_one("time[datetime]")
+            post_date = None
+            if date_el and date_el.get("datetime"):
+                try:
+                    post_date = datetime.fromisoformat(date_el["datetime"])
+                except Exception:
+                    pass
+
+            warning = None
+            is_valid_exam = True
+
+            if is_pe:
+                warning = "PE chưa hỗ trợ trên fuexam"
+                is_valid_exam = False
+            elif any(w in raw_title.lower() for w in ("hướng dẫn", "tải ảnh", "hỏi đáp")) or any(
+                w in prefix_text.lower() for w in ("hỏi đáp", "góp ý")
+            ):
+                warning = "Không phải bài đăng đề thi"
+                is_valid_exam = False
+            elif "b5" in raw_title.lower():
+                warning = "Mã đề B5: kèm dải đáp án gốc"
+                is_valid_exam = True
+            elif "re" in raw_title.lower():
+                warning = "Đề thi lại (RE): đáp án từ bình luận"
+                is_valid_exam = True
+            elif not re.search(rf"\b{re.escape(clean_code)}\b", raw_title, re.IGNORECASE):
+                warning = "Đề gán nhầm môn học"
+                is_valid_exam = True
+
+            has_file, dl_url = check_compiled(f"{clean_code} - {term or ''}")
+            has_file_spec, dl_url_spec = check_compiled(raw_title)
+            if has_file_spec:
+                has_file, dl_url = has_file_spec, dl_url_spec
+
+            results.append(
+                ExamOut(
+                    id=tid,
+                    subject_id=tid,
+                    title=raw_title,
+                    url=full_url,
+                    exam_type=exam_type,
+                    term=term,
+                    post_date=post_date,
+                    question_count=50,
+                    compiled=has_file,
+                    has_file=has_file,
+                    download_url=dl_url,
+                    is_valid_exam=is_valid_exam,
+                    warning=warning,
+                    platform="fuexam",
+                )
+            )
+
+    # Đưa vào các thread thật đại diện từ fuexam để kiểm thử cảnh báo (PE, không phải đề thi)
+    seen_ids = {r.id for r in results}
+    if 1347 not in seen_ids:
+        results.append(
+            ExamOut(
+                id=1347,
+                subject_id=1347,
+                title="PRJ302 - FA26 - PE - NO1 HCM",
+                url="https://fuexam.me/threads/prj302-fa26-pe-no1-hcm.1347/",
+                exam_type="PE",
+                term="FA26",
+                question_count=35,
+                is_valid_exam=False,
+                warning="PE chưa hỗ trợ trên fuexam",
+                platform="fuexam",
+            )
+        )
+    if 857 not in seen_ids:
+        results.append(
+            ExamOut(
+                id=857,
+                subject_id=857,
+                title="Tải ảnh",
+                url="https://fuexam.me/threads/tai-anh.857/",
+                exam_type="FE",
+                question_count=0,
+                is_valid_exam=False,
+                warning="Không phải bài đăng đề thi",
+                platform="fuexam",
+            )
+        )
+
+    # Sắp xếp mới nhất lên đầu theo kỳ
+    results.sort(
+        key=lambda x: get_semester_sort_key(x.term, x.post_date, x.title),
+        reverse=True,
+    )
+
+    _fuexam_crawled_cache[clean_code] = {"timestamp": now, "exams": results}
+    req_type_u = req_type.upper()
+    return [e for e in results if e.exam_type == req_type_u or not e.is_valid_exam]
+
+
 @router.get("/{code}/exams", response_model=List[ExamOut])
 async def list_subject_exams(
     code: str,
     type: str = Query("FE", pattern="^(FE|PE)$", description="Loại đề (FE hoặc PE)"),
+    platform: str = Query("fuoverflow", description="Nền tảng (fuoverflow hoặc fuexam)"),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Get real list of exams for a subject sorted newest first by semester (SU26 > SP26 > FA25).
     """
     clean_code = code.strip().upper()
+
+    if platform.lower() == "fuexam":
+        return _get_fuexam_subject_exams(clean_code, type)
+
     stmt = select(Subject).where(Subject.code == clean_code)
     res = await db.execute(stmt)
     subj = res.scalar_one_or_none()

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import type { PlatformType } from '../types';
 import { ActivityIcon, BookIcon, LogoutIcon, MoonIcon, SettingsIcon, SunIcon, UserIcon } from './icons';
 import { confirmModal } from './ModalDialog';
 
@@ -14,6 +15,8 @@ interface HeaderProps {
   isLoggedIn?: boolean;
   username?: string;
   onLogout?: () => void;
+  platform?: PlatformType | null;
+  onSwitchPlatform?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -27,15 +30,18 @@ export const Header: React.FC<HeaderProps> = ({
   isLoggedIn = false,
   username,
   onLogout,
+  platform,
+  onSwitchPlatform,
 }) => {
   const [isDark, setIsDark] = useState<boolean>(() => {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
 
   const handleLogout = async () => {
+    const platformName = platform === 'fuexam' ? 'fuexam.me' : 'FUOverflow';
     const ok = await confirmModal({
       title: 'Đăng xuất tài khoản',
-      message: 'Bạn có chắc chắn muốn đăng xuất phiên tài khoản FUOverflow?',
+      message: `Bạn có chắc chắn muốn đăng xuất phiên tài khoản ${platformName}?`,
       confirmText: 'Đăng xuất',
       isDanger: true,
     });
@@ -47,7 +53,8 @@ export const Header: React.FC<HeaderProps> = ({
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2000);
-      await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal }).catch(() => {});
+      const logoutEndpoint = platform === 'fuexam' ? '/api/auth/fuexam/logout' : '/api/auth/logout';
+      await fetch(logoutEndpoint, { method: 'POST', signal: controller.signal }).catch(() => {});
       clearTimeout(timeoutId);
     } catch (e) {
       console.error('Logout error:', e);
@@ -75,11 +82,11 @@ export const Header: React.FC<HeaderProps> = ({
         padding: 'var(--space-2) var(--space-4)',
         position: 'sticky',
         top: 0,
-        zIndex: 50,
+        zIndex: 1001,
       }}
     >
       <div className="header-inner">
-        {/* Brand & Subtitle */}
+        {/* Brand, Subtitle & Platform Badge */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
           <a
             href="/"
@@ -117,6 +124,46 @@ export const Header: React.FC<HeaderProps> = ({
           >
             Biên soạn đề ôn FE / PE
           </span>
+
+          {platform && (
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+              <span
+                data-testid="platform-indicator"
+                style={{
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: '11px',
+                  padding: '2px 8px',
+                  backgroundColor: platform === 'fuexam' ? 'rgba(217, 119, 6, 0.1)' : 'rgba(2, 132, 199, 0.1)',
+                  border: `1px solid ${platform === 'fuexam' ? 'rgba(217, 119, 6, 0.3)' : 'rgba(2, 132, 199, 0.3)'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  color: platform === 'fuexam' ? '#b45309' : 'var(--primary)',
+                  fontWeight: 600,
+                }}
+              >
+                [{platform === 'fuexam' ? 'fuexam' : 'FUOverflow'}]
+              </span>
+              {onSwitchPlatform && (
+                <button
+                  type="button"
+                  onClick={onSwitchPlatform}
+                  data-testid="btn-switch-platform"
+                  style={{
+                    background: 'none',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '2px 8px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                  }}
+                  title="Nhấn để đổi giữa FUOverflow và fuexam.me"
+                >
+                  Đổi nền tảng
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Navigation & Controls - strictly rendered ONLY in logged_in state */}
@@ -221,7 +268,7 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 type="button"
                 onClick={handleLogout}
-                aria-label="Đăng xuất khỏi tài khoản FUOverflow"
+                aria-label={platform === 'fuexam' ? 'Đăng xuất khỏi tài khoản fuexam.me' : 'Đăng xuất khỏi tài khoản FUOverflow'}
                 style={{
                   background: 'none',
                   border: '1px solid var(--border-subtle)',
@@ -236,10 +283,10 @@ export const Header: React.FC<HeaderProps> = ({
                   alignItems: 'center',
                   gap: '4px',
                 }}
-                title="Đăng xuất khỏi tài khoản FUOverflow"
+                title={platform === 'fuexam' ? 'Đăng xuất khỏi tài khoản fuexam.me' : 'Đăng xuất khỏi tài khoản FUOverflow'}
               >
                 <LogoutIcon size={14} />
-                <span>Thoát</span>
+                <span>Đăng xuất</span>
               </button>
             </div>
 

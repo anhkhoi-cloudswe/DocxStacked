@@ -18,7 +18,7 @@ app_settings = get_settings()
 
 
 def get_invalid_key_providers_file() -> Path:
-    return app_settings.STORAGE_DIR / "cache" / "ai_invalid_providers.json"
+    return get_settings().STORAGE_DIR / "cache" / "ai_invalid_providers.json"
 
 
 def get_invalid_key_providers() -> Set[str]:

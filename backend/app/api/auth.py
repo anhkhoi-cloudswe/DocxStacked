@@ -599,3 +599,240 @@ async def login_with_account(req: AccountLoginRequest):
         logged_in=success,
         message=message,
     )
+
+
+# =====================================================================
+# FUEXAM.ME AUTHENTICATION ENDPOINTS
+# =====================================================================
+
+FUEXAM_AUTH_FILE = settings.DATA_DIR / "auth" / "fuexam_storage_state.json"
+
+
+class FuexamAuthStatusResponse(BaseModel):
+    logged_in: bool
+    status_code: str  # "logged_in", "expired", "not_logged_in"
+    username: Optional[str] = None
+    detail: str = ""
+
+
+class FuexamLoginSessionResponse(BaseModel):
+    state: str  # "idle", "waiting", "authenticated", "timeout", "error", "cancelled"
+    message: str = ""
+    error: Optional[str] = None
+    started_at: Optional[float] = None
+
+
+_fuexam_session_state: dict = {
+    "state": "idle",
+    "pid": None,
+    "started_at": 0.0,
+    "message": "Chưa có phiên đăng nhập nào đang chạy.",
+    "error": None,
+}
+
+
+def _check_fuexam_auth_file() -> Tuple[bool, str, Optional[str]]:
+    """Check if fuexam_storage_state.json exists and has valid cookies."""
+    if not FUEXAM_AUTH_FILE.exists():
+        return False, "not_logged_in", None
+    try:
+        data = json.loads(FUEXAM_AUTH_FILE.read_text(encoding="utf-8"))
+        cookies = data.get("cookies", [])
+        has_auth = any(
+            c.get("name") in ("xf_user", "xf_session", "xf_user_session") and c.get("value")
+            for c in cookies
+        )
+        if has_auth:
+            return True, "logged_in", "fuexam_member"
+        return False, "expired", None
+    except Exception as e:
+        logger.warning(f"Error reading fuexam auth file: {e}")
+        return False, "not_logged_in", None
+
+
+@router.get("/fuexam/status", response_model=FuexamAuthStatusResponse)
+async def get_fuexam_auth_status():
+    """Kiểm tra trạng thái phiên đăng nhập của nền tảng fuexam.me."""
+    logged_in, status_code, username = _check_fuexam_auth_file()
+    detail = "Đã đăng nhập fuexam.me." if logged_in else "Chưa đăng nhập fuexam.me."
+    return FuexamAuthStatusResponse(
+        logged_in=logged_in,
+        status_code=status_code,
+        username=username,
+        detail=detail,
+    )
+
+
+@router.post("/fuexam/login/start", response_model=FuexamLoginSessionResponse)
+async def start_fuexam_login():
+    """
+    Khởi động cửa sổ Chromium headed để người dùng đăng nhập fuexam.me.
+    Lưu ý vận hành (Requirement 0): Chỉ hoạt động khi backend chạy trong phiên
+    Windows tương tác của người dùng (PowerShell hoặc IDE).
+    Nếu không thể mở Chromium, trả lỗi rõ ràng kèm hướng dẫn khắc phục.
+    """
+    global _fuexam_session_state
+
+    # 1. Nếu đã đăng nhập rồi
+    logged_in, _, _ = _check_fuexam_auth_file()
+    if logged_in:
+        _fuexam_session_state = {
+            "state": "authenticated",
+            "pid": None,
+            "started_at": time.time(),
+            "message": "Đã có phiên đăng nhập fuexam.me hợp lệ.",
+            "error": None,
+        }
+        return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+    # 2. Kiểm tra nếu phiên trước đang chạy
+    pid = _fuexam_session_state.get("pid")
+    if pid and _fuexam_session_state.get("state") == "waiting":
+        if psutil.pid_exists(pid):
+            return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+    # 3. Khởi chạy scripts/fuexam_login.py với browser chromium
+    login_script = settings.BASE_DIR / "scripts" / "fuexam_login.py"
+    if not login_script.exists():
+        _fuexam_session_state = {
+            "state": "error",
+            "pid": None,
+            "started_at": time.time(),
+            "message": "Không tìm thấy tệp scripts/fuexam_login.py",
+            "error": "Tệp scripts/fuexam_login.py không tồn tại.",
+        }
+        return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+    try:
+        flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        proc = subprocess.Popen(
+            [sys.executable, str(login_script), "--browser", "chromium"],
+            cwd=str(settings.BASE_DIR),
+            creationflags=flags,
+        )
+
+        # Allow process to start or detect immediate failure
+        await asyncio.sleep(0.8)
+        poll_res = proc.poll()
+        if poll_res is not None and poll_res != 0:
+            # Process failed immediately
+            err_msg = (
+                "Không thể mở cửa sổ trình duyệt Chromium từ môi trường ngầm hoặc phiên không tương tác. "
+                "Vui lòng chạy backend từ PowerShell trên máy thật (python run_dev.py) để hiển thị cửa sổ Chromium."
+            )
+            _fuexam_session_state = {
+                "state": "error",
+                "pid": None,
+                "started_at": time.time(),
+                "message": "Không thể mở cửa sổ trình duyệt",
+                "error": err_msg,
+            }
+            return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+        _fuexam_session_state = {
+            "state": "waiting",
+            "pid": proc.pid,
+            "started_at": time.time(),
+            "message": "Hãy đăng nhập trong cửa sổ trình duyệt vừa mở.",
+            "error": None,
+        }
+        return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+    except Exception as e:
+        logger.error(f"Error launching fuexam login: {e}")
+        err_msg = (
+            f"Lỗi khởi chạy Chromium: {e}. "
+            "Khắc phục: Chạy backend từ cửa sổ PowerShell trên máy thật (python run_dev.py) để hiển thị cửa sổ Chromium."
+        )
+        _fuexam_session_state = {
+            "state": "error",
+            "pid": None,
+            "started_at": time.time(),
+            "message": "Lỗi khởi chạy trình duyệt",
+            "error": err_msg,
+        }
+        return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+
+@router.get("/fuexam/login/status", response_model=FuexamLoginSessionResponse)
+async def get_fuexam_login_status():
+    """Theo dõi tiến độ đăng nhập fuexam.me."""
+    global _fuexam_session_state
+
+    # 1. Kiểm tra nếu file storage_state đã xuất hiện phiên hợp lệ
+    logged_in, _, _ = _check_fuexam_auth_file()
+    if logged_in:
+        _fuexam_session_state["state"] = "authenticated"
+        _fuexam_session_state["message"] = "Đăng nhập fuexam.me thành công!"
+        _fuexam_session_state["error"] = None
+        return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+    # 2. Nếu đang ở trạng thái waiting, kiểm tra thời gian timeout 5 phút (300 giây)
+    if _fuexam_session_state.get("state") == "waiting":
+        started = _fuexam_session_state.get("started_at", 0.0)
+        if time.time() - started > 300:
+            pid = _fuexam_session_state.get("pid")
+            if pid and psutil.pid_exists(pid):
+                try:
+                    psutil.Process(pid).kill()
+                except Exception:
+                    pass
+            _fuexam_session_state["state"] = "timeout"
+            _fuexam_session_state["message"] = "Quá thời hạn chờ 5 phút mà chưa hoàn tất đăng nhập."
+            _fuexam_session_state["error"] = "Hết thời gian chờ (5 phút)."
+            return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+        # Kiểm tra xem tiến trình trình duyệt còn sống không
+        pid = _fuexam_session_state.get("pid")
+        if pid:
+            try:
+                proc = psutil.Process(pid)
+                if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                    _fuexam_session_state["state"] = "error"
+                    _fuexam_session_state["message"] = "Cửa sổ trình duyệt đã bị đóng."
+                    _fuexam_session_state["error"] = "Cửa sổ trình duyệt đã bị đóng trước khi hoàn tất đăng nhập."
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                _fuexam_session_state["state"] = "error"
+                _fuexam_session_state["message"] = "Tiến trình trình duyệt đã kết thúc."
+                _fuexam_session_state["error"] = "Cửa sổ trình duyệt đã bị đóng trước khi hoàn tất đăng nhập."
+
+    return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+
+@router.post("/fuexam/login/cancel")
+async def cancel_fuexam_login():
+    """Huỷ phiên đăng nhập fuexam.me và đóng tiến trình."""
+    global _fuexam_session_state
+    pid = _fuexam_session_state.get("pid")
+    if pid and psutil.pid_exists(pid):
+        try:
+            psutil.Process(pid).kill()
+        except Exception:
+            pass
+    _fuexam_session_state = {
+        "state": "cancelled",
+        "pid": None,
+        "started_at": 0.0,
+        "message": "Người dùng đã huỷ phiên đăng nhập.",
+        "error": None,
+    }
+    return {"success": True, "message": "Đã huỷ phiên đăng nhập."}
+
+
+@router.post("/fuexam/logout")
+async def logout_fuexam():
+    """Đăng xuất fuexam.me bằng cách xoá data/auth/fuexam_storage_state.json."""
+    global _fuexam_session_state
+    if FUEXAM_AUTH_FILE.exists():
+        try:
+            FUEXAM_AUTH_FILE.unlink()
+        except Exception as e:
+            logger.warning(f"Error deleting fuexam storage state: {e}")
+    _fuexam_session_state = {
+        "state": "idle",
+        "pid": None,
+        "started_at": 0.0,
+        "message": "Chưa có phiên đăng nhập nào đang chạy.",
+        "error": None,
+    }
+    return {"success": True, "message": "Đã đăng xuất fuexam.me thành công."}

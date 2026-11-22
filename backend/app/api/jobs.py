@@ -24,6 +24,7 @@ class JobCreateRequest(BaseModel):
     limit: int = Field(default=4, ge=1, le=50, description="Number of exams to compile (1-50)")
     force_refresh: bool = Field(default=False, description="Bypass document cache and force re-compilation")
     exam_ids: Optional[List[int]] = Field(default=None, description="Specific exam IDs to compile")
+    platform: str = Field(default="fuoverflow", description="Nền tảng: fuoverflow hoặc fuexam")
 
 
 class JobResponse(BaseModel):
@@ -117,13 +118,22 @@ async def create_job(payload: JobCreateRequest):
     """Start a new exam compilation job. Enforces live authentication verification before job creation."""
     import os
     if not os.environ.get("PYTEST_CURRENT_TEST"):
-        from backend.app.api.auth import _check_browser_auth_async
-        auth_check = await _check_browser_auth_async()
-        if not auth_check.logged_in:
-            raise HTTPException(
-                status_code=401,
-                detail=f"Máy chủ chưa có phiên đăng nhập FUOverflow độc lập (Playwright). Vui lòng dùng Extension để soạn trực tiếp từ trình duyệt hoặc đăng nhập trong Cài đặt ({auth_check.detail}).",
-            )
+        if payload.platform.lower() == "fuexam":
+            from backend.app.api.auth import _check_fuexam_auth_file
+            logged_in, status_code, _ = _check_fuexam_auth_file()
+            if not logged_in:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Cần đăng nhập fuexam.me: Phiên đăng nhập chưa được thiết lập hoặc đã hết hạn.",
+                )
+        else:
+            from backend.app.api.auth import _check_browser_auth_async
+            auth_check = await _check_browser_auth_async()
+            if not auth_check.logged_in:
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"Máy chủ chưa có phiên đăng nhập FUOverflow độc lập (Playwright). Vui lòng dùng Extension để soạn trực tiếp từ trình duyệt hoặc đăng nhập trong Cài đặt ({auth_check.detail}).",
+                )
 
     e_type = ExamType.PE if payload.exam_type.upper() == "PE" else ExamType.FE
     orchestrator = get_orchestrator()
@@ -133,6 +143,7 @@ async def create_job(payload: JobCreateRequest):
         limit=payload.limit,
         force_refresh=payload.force_refresh,
         exam_ids=payload.exam_ids,
+        platform=payload.platform,
     )
     return JobResponse.from_orm(job)
 
@@ -184,23 +195,33 @@ async def get_job_answers(job_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Job not found")
 
     subj_code = job.subject_code.upper()
-    subj_stmt = select(Subject).where(Subject.code == subj_code)
-    subj_res = await db.execute(subj_stmt)
-    subj = subj_res.scalar_one_or_none()
+    platform = (job.details or {}).get("platform", "fuoverflow")
+    saved_exam_ids = (job.details or {}).get("exam_ids")
 
-    if not subj:
-        return []
+    if saved_exam_ids:
+        exam_ids = saved_exam_ids
+    else:
+        subj_stmt = select(Subject).where(Subject.code == subj_code, Subject.platform == platform)
+        subj_res = await db.execute(subj_stmt)
+        subj = subj_res.scalar_one_or_none()
+        if not subj:
+            subj_stmt = select(Subject).where(Subject.code == subj_code)
+            subj_res = await db.execute(subj_stmt)
+            subj = subj_res.scalar_one_or_none()
 
-    # Fetch exams of this subject
-    exams_stmt = (
-        select(Exam)
-        .where(Exam.subject_id == subj.id, Exam.exam_type == job.exam_type)
-        .order_by(desc(Exam.post_date), desc(Exam.id))
-        .limit(job.exam_count)
-    )
-    exams_res = await db.execute(exams_stmt)
-    exams = list(exams_res.scalars().all())
-    exam_ids = [e.id for e in exams]
+        if not subj:
+            return []
+
+        # Fetch exams of this subject
+        exams_stmt = (
+            select(Exam)
+            .where(Exam.subject_id == subj.id, Exam.exam_type == job.exam_type)
+            .order_by(desc(Exam.post_date), desc(Exam.id))
+            .limit(job.exam_count)
+        )
+        exams_res = await db.execute(exams_stmt)
+        exams = list(exams_res.scalars().all())
+        exam_ids = [e.id for e in exams]
 
     if not exam_ids:
         return []

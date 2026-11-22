@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { JobDetails, JobFile, SSEEvent } from '../types';
+import type { AnswerSourceSummary, JobDetails, JobFile, SSEEvent } from '../types';
+import { FuexamLoginModal } from './FuexamLoginModal';
 import { confirmModal } from './ModalDialog';
 import {
   CheckIcon,
@@ -24,6 +25,7 @@ interface Props {
   limit: number;
   onComplete: (files: JobFile[], details: JobDetails) => void;
   onCancel: () => void;
+  platform?: 'fuoverflow' | 'fuexam';
 }
 
 interface LogEntry {
@@ -40,6 +42,7 @@ export const ScreenProgress: React.FC<Props> = ({
   limit,
   onComplete,
   onCancel,
+  platform = 'fuoverflow',
 }) => {
   const [progress, setProgress] = useState<number>(0);
   const [currentStep, setCurrentStep] = useState<string>('Khởi tạo tiến trình...');
@@ -52,6 +55,9 @@ export const ScreenProgress: React.FC<Props> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isResuming, setIsResuming] = useState<boolean>(false);
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0);
+  const [isRateLimiting, setIsRateLimiting] = useState<boolean>(false);
+  const [answerSources, setAnswerSources] = useState<AnswerSourceSummary | null>(null);
+  const [showFuexamModal, setShowFuexamModal] = useState<boolean>(false);
 
   // Re-login Modal State
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
@@ -71,6 +77,20 @@ export const ScreenProgress: React.FC<Props> = ({
   const [isLoadingAnswers, setIsLoadingAnswers] = useState<boolean>(false);
   const [savingAnswerId, setSavingAnswerId] = useState<number | null>(null);
   const [editChoiceMap, setEditChoiceMap] = useState<Record<number, string>>({});
+
+  // Computed overall progress percentage based on completed questions / total estimated questions
+  const computedProgress = React.useMemo(() => {
+    if (progress >= 100) return 100;
+    const totQ = totalQuestions > 0 ? totalQuestions : 50;
+    const totE = totalExams > 0 ? totalExams : 1;
+    const currE = currentExam > 0 ? currentExam - 1 : 0;
+    if (totQ > 0 && totE > 0 && currentQuestion > 0) {
+      const qDone = currE * totQ + currentQuestion;
+      const totalEstimated = totE * totQ;
+      return Math.min(99, Math.max(progress, Math.round((qDone / totalEstimated) * 100)));
+    }
+    return progress;
+  }, [progress, currentQuestion, totalQuestions, currentExam, totalExams]);
 
   const handleOpenAnswerReview = async () => {
     setShowAnswerReview(true);
@@ -242,6 +262,28 @@ export const ScreenProgress: React.FC<Props> = ({
         if (j.details?.files && Array.isArray(j.details.files) && j.details.files.length > 0) {
           setCompletedFiles(j.details.files);
         }
+        if (j.details?.total_questions !== undefined && j.details.total_questions > 0) {
+          setTotalQuestions(j.details.total_questions);
+        }
+        if (j.details?.current_question !== undefined) {
+          setCurrentQuestion(j.details.current_question);
+        }
+        if (j.details?.current_step) {
+          setCurrentStep(j.details.current_step);
+          if (
+            j.details.is_rate_limiting ||
+            j.details.current_step.includes('1.6') ||
+            j.details.current_step.includes('1,6') ||
+            j.details.current_step.includes('giãn cách')
+          ) {
+            setIsRateLimiting(true);
+          }
+        } else if (j.details?.is_rate_limiting) {
+          setIsRateLimiting(true);
+        }
+        if (j.details?.answer_sources) {
+          setAnswerSources(j.details.answer_sources);
+        }
         if (j.status === 'failed') {
           setErrorMessage(j.error_message || 'Tiến trình đã bị dừng do sự cố hoặc ngắt kết nối.');
         } else if (j.status === 'completed' && j.details?.files) {
@@ -288,31 +330,50 @@ export const ScreenProgress: React.FC<Props> = ({
                 : [...prev, data.completed_file!]
             );
           }
+          if ((data as any).answer_sources) {
+            setAnswerSources((data as any).answer_sources);
+          }
           if (data.progress !== undefined) setProgress(data.progress);
           if (data.total_exams !== undefined) setTotalExams(data.total_exams);
           if (data.current_exam !== undefined) setCurrentExam(data.current_exam);
         } else if (data.type === 'log') {
           if (data.message) {
+            if (data.message.includes('1.6') || data.message.includes('giãn cách') || data.step === 'rate_limit') {
+              setIsRateLimiting(true);
+            } else if (!data.message.includes('giãn cách')) {
+              setIsRateLimiting(false);
+            }
             setLogs((prev) => [
               ...prev,
               { id: Math.random().toString(), time: timeStr, text: data.message!, step: data.step },
             ]);
             setCurrentStep(data.message);
           }
+          if ((data as any).answer_sources) {
+            setAnswerSources((data as any).answer_sources);
+          }
           if (data.progress !== undefined) setProgress(data.progress);
           if (data.total_exams !== undefined) setTotalExams(data.total_exams);
           if (data.current_exam !== undefined) setCurrentExam(data.current_exam);
         } else if (data.type === 'progress') {
+          if ((data as any).answer_sources) {
+            setAnswerSources((data as any).answer_sources);
+          }
           if (data.progress !== undefined) setProgress(data.progress);
           if (data.current_question !== undefined) setCurrentQuestion(data.current_question);
           if (data.total_questions !== undefined) setTotalQuestions(data.total_questions);
           if (data.message) setCurrentStep(data.message);
         } else if (data.type === 'completed') {
           setProgress(100);
+          setIsRateLimiting(false);
           eventSource.close();
           const files = data.files || [];
           if (files.length > 0) {
             setCompletedFiles(files);
+          }
+          // Set answer sources summary from server if provided
+          if ((data as any).answer_sources) {
+            setAnswerSources((data as any).answer_sources);
           }
           onComplete(files, {
             subject_code: subjectCode,
@@ -322,10 +383,20 @@ export const ScreenProgress: React.FC<Props> = ({
             files: files,
           });
         } else if (data.type === 'error') {
+          setIsRateLimiting(false);
           if (data.files && data.files.length > 0) {
             setCompletedFiles(data.files);
           }
-          setErrorMessage(data.message || 'Xảy ra lỗi trong quá trình biên soạn.');
+          const msg = data.message || 'Xảy ra lỗi trong quá trình biên soạn.';
+          setErrorMessage(msg);
+          const isAuthExp = msg.includes('hết hạn') || msg.includes('auth_required') || msg.includes('đăng nhập');
+          if (isAuthExp) {
+            if (platform === 'fuexam') {
+              setShowFuexamModal(true);
+            } else {
+              setShowLoginModal(true);
+            }
+          }
           eventSource.close();
         }
       } catch (err) {
@@ -335,8 +406,7 @@ export const ScreenProgress: React.FC<Props> = ({
 
     eventSource.onerror = (err) => {
       console.warn('SSE connection error:', err);
-      setErrorMessage('Mất kết nối với máy chủ (backend đã tắt hoặc đường truyền mạng bị gián đoạn).');
-      eventSource.close();
+      // Không ghi đè lỗi dừng khi đang giãn cách 1.6s hoặc tiến trình còn đang chạy
     };
 
     return () => {
@@ -463,7 +533,7 @@ export const ScreenProgress: React.FC<Props> = ({
                 color: 'var(--text-primary)',
               }}
             >
-              {Math.round(progress)}%
+              {Math.round(computedProgress)}%
             </div>
             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
               Tiến độ tổng thể
@@ -503,8 +573,11 @@ export const ScreenProgress: React.FC<Props> = ({
             }}
           >
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>Câu hỏi hiện tại</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', fontWeight: 600 }}>
-              {totalQuestions > 0 ? `${currentQuestion} / ${totalQuestions}` : 'Đang chờ...'}
+            <div
+              data-testid="question-counter"
+              style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', fontWeight: 600 }}
+            >
+              {totalQuestions > 0 ? `Câu ${currentQuestion} / ${totalQuestions}` : 'Đang chờ...'}
             </div>
           </div>
 
@@ -528,10 +601,67 @@ export const ScreenProgress: React.FC<Props> = ({
                 textOverflow: 'ellipsis',
               }}
             >
-              {errorMessage ? 'Lỗi dừng' : currentStep}
+              {errorMessage && !isRateLimiting ? 'Lỗi dừng' : currentStep}
             </div>
           </div>
         </div>
+
+        {/* Rate Limiting Waiting Indicator */}
+        {isRateLimiting && (
+          <div
+            data-testid="rate-limit-indicator"
+            style={{
+              marginBottom: 'var(--space-4)',
+              padding: '8px 12px',
+              backgroundColor: 'rgba(217, 119, 6, 0.08)',
+              border: '1px solid rgba(217, 119, 6, 0.25)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '12px',
+              color: '#b45309',
+              fontWeight: 600,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            <span
+              style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                backgroundColor: '#b45309',
+                display: 'inline-block',
+              }}
+            />
+            <span>Đang chờ giãn cách 1,6s giữa các lượt tải trang theo quy định fuexam...</span>
+          </div>
+        )}
+
+        {/* Answer Sources Breakdown Summary */}
+        {answerSources && (
+          <div
+            data-testid="answer-sources-summary"
+            style={{
+              marginBottom: 'var(--space-4)',
+              padding: '10px 14px',
+              backgroundColor: 'var(--bg-subtle)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '16px',
+              flexWrap: 'wrap',
+            }}
+          >
+            <strong style={{ color: 'var(--text-primary)' }}>Thống kê nguồn đáp án:</strong>
+            <span>Ảnh: <strong>{(answerSources as any).image ?? (answerSources as any).from_photo ?? 0}</strong></span>
+            <span>Bình luận: <strong>{(answerSources as any).comments ?? (answerSources as any).from_comments ?? 0}</strong></span>
+            <span>AI: <strong>{(answerSources as any).ai ?? (answerSources as any).from_ai ?? 0}</strong></span>
+            <span>Tổng: <strong>{answerSources.total ?? 0}</strong></span>
+          </div>
+        )}
 
         {/* Live Completed Files Section (Downloadable & Reviewable Per Exam) */}
         {completedFiles.length > 0 && (
@@ -677,7 +807,7 @@ export const ScreenProgress: React.FC<Props> = ({
         )}
 
         {/* Error Alert Box */}
-        {errorMessage && (
+        {errorMessage && !isRateLimiting && (
           <div
             style={{
               padding: 'var(--space-4)',
@@ -1517,6 +1647,17 @@ export const ScreenProgress: React.FC<Props> = ({
           </div>
         </div>
       )}
+
+      {/* Mid-Job fuexam Login Modal */}
+      <FuexamLoginModal
+        isOpen={showFuexamModal}
+        onClose={() => setShowFuexamModal(false)}
+        onSuccess={() => {
+          setShowFuexamModal(false);
+          handleResume();
+        }}
+        isMidJob={true}
+      />
     </div>
   );
 };

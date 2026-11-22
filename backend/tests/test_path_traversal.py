@@ -68,7 +68,8 @@ async def test_delete_prevents_path_traversal():
 @pytest.mark.asyncio
 async def test_download_and_delete_allowed_inside_output_dir(tmp_path):
     """Files legitimately created inside data/output can be safely downloaded and deleted."""
-    out_dir = settings.OUTPUT_DIR / "TEST_SEC"
+    curr_settings = get_settings()
+    out_dir = curr_settings.OUTPUT_DIR / "TEST_SEC"
     out_dir.mkdir(parents=True, exist_ok=True)
     test_file = out_dir / "safe_document.docx"
     test_file.write_bytes(b"PK\x03\x04test_safe_docx_content")

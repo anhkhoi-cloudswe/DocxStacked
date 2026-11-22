@@ -5,8 +5,11 @@ import { ScreenResult } from './components/ScreenResult';
 import { ScreenSelectSubject } from './components/ScreenSelectSubject';
 import { ScreenSettings } from './components/ScreenSettings';
 import { ScreenUserDocuments } from './components/ScreenUserDocuments';
+import { ScreenSelectPlatform } from './components/ScreenSelectPlatform';
+import { FuexamLoginModal } from './components/FuexamLoginModal';
+import { FuoverflowLoginModal } from './components/FuoverflowLoginModal';
 import { GlobalModalHost, alertModal, confirmModal } from './components/ModalDialog';
-import type { JobDetails, JobFile, JobStatusResponse } from './types';
+import type { JobDetails, JobFile, JobStatusResponse, PlatformType } from './types';
 
 const EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
 
@@ -138,9 +141,33 @@ async function tryEnqueueViaExtension(
   return { success: false, error: 'Extension chưa được cài đặt hoặc không khả dụng trên trình duyệt này.' };
 }
 
+function getInitialPlatform(): PlatformType | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get('platform');
+    if (p === 'fuoverflow' || p === 'fuexam') {
+      return p as PlatformType;
+    }
+    if (params.get('source') === 'extension' || params.get('ext') === '1') {
+      return 'fuoverflow';
+    }
+    const saved = localStorage.getItem('docxstacked_platform');
+    if (saved === 'fuoverflow' || saved === 'fuexam') {
+      return saved as PlatformType;
+    }
+  } catch (e) {
+    console.warn('Error reading initial platform from localStorage:', e);
+  }
+  return null;
+}
+
 type ScreenType = 'select' | 'progress' | 'result' | 'settings' | 'documents';
 
 export const App: React.FC = () => {
+  const [platform, setPlatform] = useState<PlatformType | null>(getInitialPlatform);
+  const [isFuexamLoggedIn, setIsFuexamLoggedIn] = useState<boolean>(false);
+  const [isFuexamChecking, setIsFuexamChecking] = useState<boolean>(false);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('select');
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeRunningJobId, setActiveRunningJobId] = useState<string | null>(null);
@@ -159,8 +186,6 @@ export const App: React.FC = () => {
 
   // Diagnostics info for status card
   const [lastFailureReason, setLastFailureReason] = useState<string>('Đang khởi tạo kết nối...');
-  const [lastCheckTime, setLastCheckTime] = useState<string>('');
-  const [consecutiveFailures, setConsecutiveFailures] = useState<number>(0);
 
   const gateStateRef = React.useRef<AuthGateState>('checking');
   const consecutiveFailuresRef = React.useRef<number>(0);
@@ -266,7 +291,6 @@ export const App: React.FC = () => {
       if (isExtLoggedIn || isServerLoggedIn) {
         consecutiveFailuresRef.current = 0;
         firstFailureTimeRef.current = null;
-        setConsecutiveFailures(0);
         const resolvedUser = (authData && authData.username) || extAuthUsername || 'Extension User';
         setAuthUsername(resolvedUser);
         const resolvedSource = isExtLoggedIn ? 'Extension (FUOverflow)' : (authData?.auth_source || 'server');
@@ -289,13 +313,12 @@ export const App: React.FC = () => {
         targetDegradedState = 'logged_out';
       }
 
-      const nowTimeStr = new Date().toLocaleTimeString();
-      setLastCheckTime(nowTimeStr);
       setLastFailureReason(failureReason);
-
       consecutiveFailuresRef.current += 1;
-      const count = consecutiveFailuresRef.current;
-      setConsecutiveFailures(count);
+      const count =
+        typeof (window as any).__mockFailureCount === 'number'
+          ? (window as any).__mockFailureCount
+          : consecutiveFailuresRef.current;
 
       const now = Date.now();
       if (firstFailureTimeRef.current === null) {
@@ -324,24 +347,73 @@ export const App: React.FC = () => {
     }
   }, [transitionTo]);
 
+  const checkFuexamAuth = useCallback(async () => {
+    setIsFuexamChecking(true);
+    try {
+      const res = await fetch('/api/auth/fuexam/status');
+      if (res.ok) {
+        const data = await res.json();
+        setIsFuexamLoggedIn(Boolean(data && data.logged_in));
+      } else {
+        setIsFuexamLoggedIn(false);
+      }
+    } catch {
+      setIsFuexamLoggedIn(false);
+    } finally {
+      setIsFuexamChecking(false);
+    }
+  }, []);
+
+  const handleSelectPlatform = useCallback((selected: PlatformType) => {
+    setPlatform(selected);
+    try {
+      localStorage.setItem('docxstacked_platform', selected);
+    } catch (e) {
+      console.warn('Error saving platform to localStorage:', e);
+    }
+    if (selected === 'fuexam') {
+      checkFuexamAuth();
+    } else {
+      checkAuthStatus(true);
+    }
+  }, [checkFuexamAuth, checkAuthStatus]);
+
   useEffect(() => {
-    checkAuthStatus(true);
+    if (platform === 'fuexam') {
+      checkFuexamAuth();
+    } else if (platform === 'fuoverflow') {
+      checkAuthStatus(true);
+    }
+
     // Poll auth status at most once every 30 seconds, paused when tab is hidden
     const authTimer = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
-      checkAuthStatus();
+      if (platform === 'fuexam') {
+        checkFuexamAuth();
+      } else if (platform === 'fuoverflow') {
+        checkAuthStatus();
+      }
     }, 30000);
 
     if (typeof window !== 'undefined') {
-      (window as any).__triggerCheckAuth = () => checkAuthStatus(true);
+      (window as any).__triggerCheckAuth = () => {
+        if (platform === 'fuexam') {
+          checkFuexamAuth();
+        } else {
+          checkAuthStatus(true);
+        }
+      };
     }
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         // Tab became visible: background check if at least 30s has passed since last check
         const elapsed = Date.now() - lastAuthCheckTimeRef.current;
         if (elapsed >= 30000) {
-          console.log('[AuthGate] Tab trở lại (visible): Kiểm tra ngầm trạng thái phiên...');
-          checkAuthStatus(true);
+          if (platform === 'fuexam') {
+            checkFuexamAuth();
+          } else {
+            checkAuthStatus(true);
+          }
         }
       }
     };
@@ -351,23 +423,28 @@ export const App: React.FC = () => {
       clearInterval(authTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [checkAuthStatus]);
+  }, [platform, checkAuthStatus, checkFuexamAuth]);
 
   const handleLogout = useCallback(async () => {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
-      await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal }).catch(() => {});
-      clearTimeout(timeoutId);
+      if (platform === 'fuexam') {
+        await fetch('/api/auth/fuexam/logout', { method: 'POST' }).catch(() => {});
+        setIsFuexamLoggedIn(false);
+      } else {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        await fetch('/api/auth/logout', { method: 'POST', signal: controller.signal }).catch(() => {});
+        clearTimeout(timeoutId);
+        consecutiveFailuresRef.current = 3;
+        firstFailureTimeRef.current = Date.now() - 31000;
+        transitionTo('logged_out', 'Người dùng chủ động nhấn Đăng xuất');
+      }
     } catch (e) {
       console.error('Logout error:', e);
-    } finally {
-      consecutiveFailuresRef.current = 3;
-      firstFailureTimeRef.current = Date.now() - 31000;
-      transitionTo('logged_out', 'Người dùng chủ động nhấn Đăng xuất');
-      window.location.reload();
     }
-  }, [transitionTo]);
+  }, [platform, transitionTo]);
+
+  const isPlatformLoggedIn = platform === 'fuexam' ? isFuexamLoggedIn : gateState === 'logged_in';
 
   const handleOpenLogin = () => {
     setCurrentScreen('select');
@@ -475,7 +552,30 @@ export const App: React.FC = () => {
     } else {
       setCurrentScreen('select');
     }
+
+    const pPlatform = params.get('platform') as PlatformType | null;
+    if (pPlatform === 'fuoverflow' || pPlatform === 'fuexam') {
+      setPlatform(pPlatform);
+      try {
+        localStorage.setItem('docxstacked_platform', pPlatform);
+      } catch (e) {}
+    } else if (params.get('source') === 'extension' || params.get('ext') === '1') {
+      setPlatform('fuoverflow');
+      try {
+        localStorage.setItem('docxstacked_platform', 'fuoverflow');
+      } catch (e) {}
+    }
   }, []);
+
+  const handleSwitchPlatform = useCallback(() => {
+    setPlatform(null);
+    try {
+      localStorage.removeItem('docxstacked_platform');
+    } catch (e) {
+      console.warn('Error clearing platform from localStorage:', e);
+    }
+    navigateTo('select', null);
+  }, [navigateTo]);
 
   useEffect(() => {
     syncFromUrl();
@@ -542,6 +642,41 @@ export const App: React.FC = () => {
     setSubjectCode(selectedSubject);
     setExamType(selectedExamType);
     setLimit(selectedLimit);
+
+    if (platform === 'fuexam') {
+      try {
+        const resp = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            platform: 'fuexam',
+            subject_code: selectedSubject,
+            exam_type: selectedExamType,
+            limit: selectedLimit,
+            exam_ids: selectedExamIds && selectedExamIds.length > 0 ? selectedExamIds : undefined,
+          }),
+        });
+
+        if (!resp.ok) {
+          throw new Error(`Tạo tiến trình fuexam thất bại: HTTP ${resp.status}`);
+        }
+
+        const data: JobStatusResponse = await resp.json();
+        sessionStorage.setItem('docxstacked_active_job_id', data.job_id);
+        setJobId(data.job_id);
+        setActiveRunningJobId(data.job_id);
+        navigateTo('progress', data.job_id);
+      } catch (err: any) {
+        await alertModal({
+          title: 'Lỗi tạo tiến trình fuexam',
+          message: err.message || 'Lỗi kết nối tới máy chủ API',
+          type: 'error',
+        });
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
 
     // Option 1: Send selected exams to Chrome extension via externally_connectable
     const extResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds);
@@ -688,185 +823,33 @@ export const App: React.FC = () => {
           if (target) navigateTo('progress', target);
         }}
         onOpenLogin={handleOpenLogin}
-        isBlocked={gateState !== 'logged_in'}
-        isLoggedIn={gateState === 'logged_in'}
-        username={authUsername}
+        isBlocked={!isPlatformLoggedIn}
+        isLoggedIn={isPlatformLoggedIn}
+        username={platform === 'fuexam' ? 'Thành viên fuexam' : authUsername}
         onLogout={handleLogout}
+        platform={platform}
+        onSwitchPlatform={handleSwitchPlatform}
       />
 
       <main style={{ flex: 1, padding: 'var(--space-6) var(--space-4)' }}>
         <div style={{ maxWidth: '1080px', margin: '0 auto' }}>
-          {gateState !== 'logged_in' ? (
-            /* Blocking Login Gate Modal / Card with exactly 3 non-logged-in states */
-            <div
-              style={{
-                backgroundColor: 'var(--bg-surface)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-lg)',
-                padding: 'var(--space-8)',
-                textAlign: 'center',
-                maxWidth: '560px',
-                margin: 'var(--space-12) auto',
-                boxShadow: 'var(--shadow-lg, 0 10px 25px rgba(0,0,0,0.3))',
-              }}
-            >
-              <div
-                style={{
-                  width: '56px',
-                  height: '56px',
-                  margin: '0 auto var(--space-4)',
-                  borderRadius: '50%',
-                  backgroundColor: 'rgba(99, 102, 241, 0.15)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: 'var(--primary, #6366f1)',
-                }}
-              >
-                {gateState === 'checking' && (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: 'spin 1.5s linear infinite' }}>
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
-                  </svg>
-                )}
-                {gateState === 'no_extension' && (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-                    <line x1="12" y1="22.08" x2="12" y2="12"></line>
-                  </svg>
-                )}
-                {gateState === 'logged_out' && (
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                  </svg>
-                )}
-              </div>
-
-              {gateState === 'checking' && (
-                <>
-                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
-                    Đang kiểm tra
-                  </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-6)' }}>
-                    Đang kết nối backend và kiểm tra trạng thái phiên làm việc...
-                  </p>
-                </>
-              )}
-
-              {gateState === 'no_extension' && (
-                <>
-                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
-                    Chưa thấy extension trên trình duyệt này
-                  </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-4)' }}>
-                    Mở bằng trình duyệt đã cài extension DocxStacked để tiếp tục.
-                  </p>
-                  <div
-                    style={{
-                      margin: '0 auto var(--space-6)',
-                      padding: 'var(--space-3) var(--space-4)',
-                      backgroundColor: 'var(--bg-subtle, rgba(0,0,0,0.03))',
-                      borderRadius: 'var(--radius-md)',
-                      border: '1px solid var(--border-subtle)',
-                      fontSize: 'var(--text-xs)',
-                      textAlign: 'left',
-                      color: 'var(--text-secondary)',
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    <div><strong style={{ color: 'var(--text-primary)' }}>Chẩn đoán kết nối:</strong></div>
-                    <div>• Lý do lỗi cuối cùng: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastFailureReason || 'Không có'}</span></div>
-                    <div>• Thời điểm kiểm tra cuối: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastCheckTime || 'Chưa kiểm tra'}</span></div>
-                    <div>• Số lần thất bại liên tiếp: <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{consecutiveFailures}</span></div>
-                  </div>
-                </>
-              )}
-
-              {gateState === 'logged_out' && (
-                <>
-                  <h2 style={{ fontSize: 'var(--text-xl)', fontWeight: 700, marginBottom: 'var(--space-2)' }}>
-                    Chưa đăng nhập FUOverflow
-                  </h2>
-                  <p style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', marginBottom: 'var(--space-4)' }}>
-                    Vui lòng đăng nhập tài khoản FUOverflow để sử dụng hệ thống.
-                  </p>
-                  <div
-                    style={{
-                      margin: '0 auto var(--space-6)',
-                      padding: 'var(--space-3) var(--space-4)',
-                      backgroundColor: 'var(--bg-subtle, rgba(0,0,0,0.03))',
-                      borderRadius: 'var(--radius-md)',
-                      border: '1px solid var(--border-subtle)',
-                      fontSize: 'var(--text-xs)',
-                      textAlign: 'left',
-                      color: 'var(--text-secondary)',
-                      lineHeight: 1.6,
-                    }}
-                  >
-                    <div><strong style={{ color: 'var(--text-primary)' }}>Chẩn đoán kết nối:</strong></div>
-                    <div>• Nguồn kiểm tra: <span style={{ fontFamily: 'var(--font-mono)' }}>Extension PING & Backend API</span></div>
-                    <div>• Lý do lỗi cuối cùng: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastFailureReason || 'Chưa đăng nhập tài khoản FUOverflow'}</span></div>
-                    <div>• Thời điểm kiểm tra cuối: <span style={{ fontFamily: 'var(--font-mono)' }}>{lastCheckTime || 'Chưa kiểm tra'}</span></div>
-                    <div>• Số lần thất bại liên tiếp: <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{consecutiveFailures}</span></div>
-                  </div>
-                </>
-              )}
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-                {gateState === 'logged_out' && (
-                  <a
-                    href="https://fuoverflow.com/login"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: 'var(--space-2)',
-                      padding: 'var(--space-3) var(--space-6)',
-                      backgroundColor: 'var(--primary, #6366f1)',
-                      color: '#fff',
-                      borderRadius: 'var(--radius-md)',
-                      fontWeight: 600,
-                      fontSize: 'var(--text-sm)',
-                      textDecoration: 'none',
-                      transition: 'background-color 0.15s ease',
-                    }}
-                  >
-                    Mở fuoverflow.com để đăng nhập
-                  </a>
-                )}
-
-                <button
-                  type="button"
-                  onClick={() => checkAuthStatus(true)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 'var(--space-2)',
-                    padding: 'var(--space-2) var(--space-4)',
-                    backgroundColor: 'transparent',
-                    border: '1px solid var(--border-subtle)',
-                    color: 'var(--text-muted)',
-                    borderRadius: 'var(--radius-md)',
-                    fontSize: 'var(--text-xs)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Kiểm tra lại
-                </button>
-              </div>
-            </div>
+          {!platform ? (
+            <ScreenSelectPlatform onSelectPlatform={handleSelectPlatform} />
           ) : (
             <>
               {currentScreen === 'settings' && (
-                <ScreenSettings onBack={handleCloseSettings} />
+                <ScreenSettings
+                  onBack={handleCloseSettings}
+                  platform={platform}
+                  onFuexamLogout={() => setIsFuexamLoggedIn(false)}
+                />
               )}
 
               {currentScreen === 'documents' && (
-                <ScreenUserDocuments onBack={() => navigateTo('select', null)} />
+                <ScreenUserDocuments
+                  onBack={() => navigateTo('select', null)}
+                  platform={platform}
+                />
               )}
 
               {currentScreen === 'select' && (
@@ -875,8 +858,9 @@ export const App: React.FC = () => {
                   isLoading={isLoading}
                   initialOpenLogin={initialOpenLogin}
                   loginTrigger={loginTrigger}
-                  isLoggedIn={gateState === 'logged_in'}
-                  forumLoggedIn={gateState === 'logged_in'}
+                  isLoggedIn={isPlatformLoggedIn}
+                  forumLoggedIn={isPlatformLoggedIn}
+                  platform={platform}
                 />
               )}
 
@@ -888,6 +872,7 @@ export const App: React.FC = () => {
                   limit={limit}
                   onComplete={handleComplete}
                   onCancel={handleRestart}
+                  platform={platform}
                 />
               )}
 
@@ -897,6 +882,24 @@ export const App: React.FC = () => {
                   files={completedFiles}
                   details={completedDetails}
                   onRestart={handleRestart}
+                />
+              )}
+
+              {/* Modals for unauthenticated states */}
+              {platform === 'fuoverflow' && (
+                <FuoverflowLoginModal
+                  isOpen={gateState !== 'logged_in'}
+                  gateState={gateState}
+                  onCheckAgain={() => checkAuthStatus(true)}
+                  lastFailureReason={lastFailureReason}
+                />
+              )}
+
+              {platform === 'fuexam' && (
+                <FuexamLoginModal
+                  isOpen={!isFuexamLoggedIn && !isFuexamChecking}
+                  onClose={handleSwitchPlatform}
+                  onSuccess={() => setIsFuexamLoggedIn(true)}
                 />
               )}
             </>

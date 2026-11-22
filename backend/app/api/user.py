@@ -29,6 +29,7 @@ class DocumentItem(BaseModel):
     download_url: str
     created_at: Optional[str] = None
     is_cached: bool = True
+    platform: str = "fuoverflow"
 
 
 class UserProfileResponse(BaseModel):
@@ -73,10 +74,13 @@ async def get_my_profile(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/documents", response_model=List[DocumentItem])
-async def get_my_documents(db: AsyncSession = Depends(get_db)):
+async def get_my_documents(
+    platform: Optional[str] = Query(None, description="fuoverflow hoặc fuexam"),
+    db: AsyncSession = Depends(get_db),
+):
     """
     List all generated Word documents for user review and 1-click download
-    without re-crawling.
+    without re-crawling. Supports platform separation.
     """
     out_dir = settings.STORAGE_DIR / "output"
     if not out_dir.exists():
@@ -109,8 +113,8 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
         if not subj_dir.is_dir():
             continue
         subj_code = subj_dir.name.upper()
-        # Hide test subject folders
-        if "TEST" in subj_code or subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code):
+        # Separate fuexam and hide test subject folders
+        if subj_code == "FUEXAM" or "TEST" in subj_code or (subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code)):
             continue
 
         for doc_file in subj_dir.glob("*.docx"):
@@ -239,8 +243,39 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
                 download_url=download_url,
                 created_at=created_str,
                 is_cached=True,
+                platform="fuoverflow",
             )
         )
+
+    # Scan fuexam documents
+    fuexam_dir = settings.STORAGE_DIR / "output" / "fuexam"
+    if fuexam_dir.exists():
+        for doc_file in fuexam_dir.glob("*.docx"):
+            if not doc_file.is_file() or doc_file.stat().st_size < 50:
+                continue
+            fn = doc_file.name
+            m = re.match(r"^([A-Za-z0-9]+)", fn)
+            sc = m.group(1).upper() if m else "FUEXAM"
+            size_b = doc_file.stat().st_size
+            created_str = datetime.fromtimestamp(doc_file.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
+            documents.append(
+                DocumentItem(
+                    filename=fn,
+                    subject_code=sc,
+                    exam_title=fn.replace(".docx", ""),
+                    questions_count=50,
+                    size_bytes=size_b,
+                    size_formatted=_format_size(size_b),
+                    download_url=f"/api/exports/fuexam/{fn}/download",
+                    created_at=created_str,
+                    is_cached=True,
+                    platform="fuexam",
+                )
+            )
+
+    if platform and platform.strip():
+        req_p = platform.strip().lower()
+        documents = [d for d in documents if d.platform == req_p]
 
     return documents
 
@@ -249,11 +284,13 @@ async def get_my_documents(db: AsyncSession = Depends(get_db)):
 async def delete_document(file: str = Query(..., description="File path or filename to delete")):
     """Delete an exported document safely, strictly restricted to output directory."""
     try:
-        out_resolved = (settings.STORAGE_DIR / "output").resolve()
-        target_str = file.replace("\\", "/")
-
-        if target_str.startswith("data/") or ".." in target_str or target_str.startswith("/"):
-            resolved = (settings.BASE_DIR / target_str.lstrip("/")).resolve()
+        out_resolved = get_settings().OUTPUT_DIR.resolve()
+        target_norm = file.replace("\\", "/").strip()
+        if target_norm.startswith("data/output/"):
+            rel_sub = target_norm[len("data/output/"):]
+            resolved = (out_resolved / rel_sub).resolve()
+        elif target_norm.startswith("data/") or ".." in target_norm or target_norm.startswith("/"):
+            resolved = (settings.BASE_DIR / target_norm.lstrip("/")).resolve()
         else:
             resolved = (out_resolved / file).resolve()
 

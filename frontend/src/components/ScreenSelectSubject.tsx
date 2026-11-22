@@ -9,7 +9,6 @@ import {
   FileTextIcon,
   FolderIcon,
   GlobeIcon,
-  KeyIcon,
   RefreshIcon,
   SearchIcon,
   UserIcon,
@@ -23,6 +22,7 @@ interface Props {
   loginTrigger?: number;
   isLoggedIn?: boolean;
   forumLoggedIn?: boolean;
+  platform?: 'fuoverflow' | 'fuexam';
 }
 
 export const ScreenSelectSubject: React.FC<Props> = ({
@@ -32,6 +32,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
   loginTrigger,
   isLoggedIn = true,
   forumLoggedIn: propForumLoggedIn,
+  platform = 'fuoverflow',
 }) => {
   // Single source of truth for forum auth state
   const forumLoggedIn = Boolean(propForumLoggedIn !== undefined ? propForumLoggedIn : isLoggedIn);
@@ -100,13 +101,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({
     return () => clearTimeout(handler);
   }, [searchQuery]);
 
-  // Fetch subjects list when debouncedQuery changes
+  // Fetch subjects list when debouncedQuery or platform changes
   useEffect(() => {
     setIsSearching(true);
     setLookupMessage(null);
     const url = debouncedQuery
-      ? `/api/subjects?q=${encodeURIComponent(debouncedQuery)}&limit=100`
-      : `/api/subjects?limit=100`;
+      ? `/api/subjects?platform=${platform}&q=${encodeURIComponent(debouncedQuery)}&limit=350`
+      : `/api/subjects?platform=${platform}&limit=350`;
 
     fetch(url)
       .then((res) => {
@@ -126,13 +127,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({
       .finally(() => {
         setIsSearching(false);
       });
-  }, [debouncedQuery]);
+  }, [debouncedQuery, platform]);
 
   // Fetch exams for activeCode
   useEffect(() => {
     if (!activeCode) return;
     setIsLoadingExams(true);
-    fetch(`/api/subjects/${activeCode}/exams?type=${examType}`)
+    fetch(`/api/subjects/${activeCode}/exams?platform=${platform}&type=${examType}`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -162,7 +163,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
       .finally(() => {
         setIsLoadingExams(false);
       });
-  }, [activeCode, examType]);
+  }, [activeCode, examType, platform]);
 
   // Sync cookie modal state with login status from Extension
   useEffect(() => {
@@ -176,13 +177,13 @@ export const ScreenSelectSubject: React.FC<Props> = ({
     setIsSyncing(true);
     setSyncMessage(null);
     try {
-      const res = await fetch('/api/subjects/sync', { method: 'POST' });
+      const res = await fetch(`/api/subjects/sync?platform=${platform}`, { method: 'POST' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSyncMessage(`Đã cập nhật danh sách môn: ${data.total} môn (thêm ${data.added}, cập nhật ${data.updated}).`);
       if (data.last_synced_at) setLastSyncedAt(data.last_synced_at);
       // Refresh list
-      const ref = await fetch('/api/subjects?limit=100');
+      const ref = await fetch(`/api/subjects?platform=${platform}&limit=100`);
       const refData = await ref.json();
       setSubjects(refData.items || []);
       setTotalSubjects(refData.total || 0);
@@ -263,13 +264,6 @@ export const ScreenSelectSubject: React.FC<Props> = ({
       }
       return { ...prev, [subjectCode]: updated };
     });
-  };
-
-  // Open FUOverflow in a new tab so user can log in with their existing browser
-  const handleOpenFuOverflow = () => {
-    window.open('https://fuoverflow.com/login/', '_blank', 'noopener,noreferrer');
-    // Show cookie modal after a short delay so user knows what to do next
-    setTimeout(() => setShowCookieModal(true), 800);
   };
 
   // Login with account credentials (username & password) directly
@@ -378,48 +372,6 @@ export const ScreenSelectSubject: React.FC<Props> = ({
 
   return (
     <div className="select-subject-layout">
-      {/* Session Authentication Warning Banner - strictly reflects extension login state */}
-      {!effectiveLoggedIn && (
-        <div
-          style={{
-            gridColumn: '1 / -1',
-            backgroundColor: 'var(--status-weak-bg, #FEF3C7)',
-            border: '1px solid var(--status-weak-border, #F59E0B)',
-            color: 'var(--status-weak-text, #92400E)',
-            padding: 'var(--space-3) var(--space-4)',
-            borderRadius: 'var(--radius-md)',
-            marginBottom: 'var(--space-2)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 'var(--space-3)',
-            boxShadow: 'var(--shadow-sm)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: 'var(--text-sm)', fontWeight: 600 }}>
-            <WarningIcon size={18} />
-            <span>Chưa đăng nhập FUOverflow hoặc phiên đã hết hạn. Bạn cần đăng nhập để cào đề và tải tài nguyên.</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => { setShowCookieModal(true); setLoginModalMode('account'); }}
-            style={{
-              padding: '6px 14px',
-              fontSize: 'var(--text-xs)',
-              fontWeight: 700,
-              backgroundColor: '#9A3412',
-              color: '#FFFFFF',
-              border: 'none',
-              borderRadius: 'var(--radius-sm)',
-              cursor: 'pointer',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Đăng nhập ngay
-          </button>
-        </div>
-      )}
-
       {/* Left Column: Subjects and Exams List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}>
         {/* Card: Danh sách môn học */}
@@ -427,10 +379,22 @@ export const ScreenSelectSubject: React.FC<Props> = ({
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 'var(--space-4)', flexWrap: 'wrap', gap: 'var(--space-3)' }}>
             <div>
               <h2 className="serif-title" style={{ fontSize: 'var(--text-2xl)', marginBottom: 'var(--space-1)', display: 'flex', alignItems: 'center' }}>
-                <span className="step-badge">1</span> Chọn môn học cần biên soạn
+                <span className="step-badge">1</span> Chọn môn học cần biên soạn{' '}
+                <span
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    marginLeft: '8px',
+                    color: platform === 'fuexam' ? '#b45309' : 'var(--primary)',
+                  }}
+                >
+                  [{platform === 'fuexam' ? 'fuexam' : 'FUOverflow'}]
+                </span>
               </h2>
               <p style={{ color: 'var(--text-secondary)', fontSize: 'var(--text-sm)' }}>
-                Dữ liệu tổng hợp từ diễn đàn FUOverflow. Chọn môn để quét danh sách đề do sinh viên đăng trên diễn đàn.
+                {platform === 'fuexam'
+                  ? 'Dữ liệu 292 môn học từ fuexam.me. Chọn môn để quét đề thi trắc nghiệm.'
+                  : 'Dữ liệu tổng hợp từ diễn đàn FUOverflow. Chọn môn để quét danh sách đề do sinh viên đăng trên diễn đàn.'}
               </p>
             </div>
 
@@ -756,10 +720,21 @@ export const ScreenSelectSubject: React.FC<Props> = ({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
               <div>
                 <h3 className="serif-title" style={{ fontSize: 'var(--text-lg)' }}>
-                  Danh sách đề {examType} của môn {activeCode}
+                  Danh sách đề {examType} của môn {activeCode}{' '}
+                  <span
+                    style={{
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: platform === 'fuexam' ? '#b45309' : 'var(--primary)',
+                    }}
+                  >
+                    [{platform === 'fuexam' ? 'fuexam' : 'FUOverflow'}]
+                  </span>
                 </h3>
                 <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-                  Đề thực tế được đồng bộ từ diễn đàn FUOverflow. Tích chọn các đề bạn muốn biên soạn.
+                  {platform === 'fuexam'
+                    ? 'Đề thực tế được đồng bộ từ ngân hàng fuexam.me. Tích chọn các đề bạn muốn biên soạn.'
+                    : 'Đề thực tế được đồng bộ từ diễn đàn FUOverflow. Tích chọn các đề bạn muốn biên soạn.'}
                 </p>
               </div>
 
@@ -786,11 +761,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({
 
             {isLoadingExams ? (
               <div style={{ padding: 'var(--space-4)', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
-                Đang quét danh sách đề từ diễn đàn...
+                Đang quét danh sách đề từ {platform === 'fuexam' ? 'fuexam.me' : 'diễn đàn'}...
               </div>
             ) : exams.length === 0 ? (
               <div style={{ padding: 'var(--space-4)', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
-                Chưa tìm thấy đề {examType} nào cho môn {activeCode} trên diễn đàn.
+                Chưa tìm thấy đề {examType} nào cho môn {activeCode} trên {platform === 'fuexam' ? 'fuexam.me' : 'diễn đàn'}.
               </div>
             ) : (
               <div
@@ -804,6 +779,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
               >
                 {exams.map((exam, index) => {
                   const isExamSelected = (selectedExamIds[activeCode] || []).includes(exam.id);
+                  const isInvalid = exam.is_valid_exam === false;
                   return (
                     <label
                       key={exam.id}
@@ -815,20 +791,42 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                         border: '1px solid var(--border-subtle)',
                         borderRadius: 'var(--radius-sm)',
                         backgroundColor: isExamSelected ? 'var(--bg-subtle)' : 'var(--bg-canvas)',
-                        cursor: 'pointer',
+                        cursor: isInvalid ? 'not-allowed' : 'pointer',
+                        opacity: isInvalid ? 0.65 : 1,
                         fontSize: 'var(--text-sm)',
                       }}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
                         <input
                           type="checkbox"
-                          checked={isExamSelected}
-                          onChange={() => toggleExam(activeCode, exam.id)}
-                          style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          value={String(exam.id)}
+                          data-testid={`checkbox-exam-${exam.id}`}
+                          checked={isExamSelected && !isInvalid}
+                          disabled={isInvalid}
+                          onChange={() => {
+                            if (!isInvalid) toggleExam(activeCode, exam.id);
+                          }}
+                          style={{ accentColor: 'var(--primary)', cursor: isInvalid ? 'not-allowed' : 'pointer' }}
                         />
                         <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                           #{index + 1} {exam.title}
                         </span>
+                        {exam.warning && (
+                          <span
+                            data-testid={`warning-badge-${exam.id}`}
+                            style={{
+                              fontSize: '11px',
+                              fontWeight: 600,
+                              color: isInvalid ? '#b91c1c' : '#b45309',
+                              backgroundColor: isInvalid ? 'rgba(239, 68, 68, 0.08)' : 'rgba(217, 119, 6, 0.08)',
+                              border: `1px solid ${isInvalid ? 'rgba(239, 68, 68, 0.25)' : 'rgba(217, 119, 6, 0.25)'}`,
+                              padding: '1px 6px',
+                              borderRadius: '3px',
+                            }}
+                          >
+                            {exam.warning}
+                          </span>
+                        )}
                       </div>
 
                       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
@@ -1140,28 +1138,12 @@ export const ScreenSelectSubject: React.FC<Props> = ({
               {effectiveLoggedIn ? (
                 <span style={{ fontSize: '11px', color: 'var(--status-confident-text)', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                   <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: '#2D6A4F', display: 'inline-block' }} />
-                  <span>Đã kết nối FUOverflow</span>
+                  <span>Đã kết nối {platform === 'fuexam' ? 'fuexam.me' : 'FUOverflow'}</span>
                 </span>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => { setShowCookieModal(true); setLoginModalMode('account'); }}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    color: 'var(--primary)',
-                    cursor: 'pointer',
-                    textDecoration: 'underline',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                  }}
-                >
-                  <KeyIcon size={12} />
-                  <span>Đăng nhập</span>
-                </button>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500 }}>
+                  Chưa kết nối phiên
+                </span>
               )}
             </div>
 
@@ -1232,32 +1214,20 @@ export const ScreenSelectSubject: React.FC<Props> = ({
               <div>
                 <button
                   type="button"
-                  onClick={() => { setShowCookieModal(true); setLoginModalMode('account'); }}
+                  disabled
                   className="btn-primary"
                   style={{
                     width: '100%',
                     padding: 'var(--space-3)',
                     fontSize: 'var(--text-sm)',
-                    backgroundColor: '#9A3412',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
+                    cursor: 'not-allowed',
+                    opacity: 0.6,
                   }}
                 >
-                  <KeyIcon size={15} />
-                  <span>Đăng nhập để bắt đầu biên soạn</span>
+                  Cần phiên đăng nhập để biên soạn
                 </button>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', fontSize: '11px' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Cần tài khoản FUOverflow để tải đề</span>
-                  <button
-                    type="button"
-                    onClick={handleOpenFuOverflow}
-                    style={{ background: 'none', border: 'none', color: 'var(--ink-blue)', cursor: 'pointer', textDecoration: 'underline' }}
-                  >
-                    Mở trang chủ FUOverflow
-                  </button>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '6px' }}>
+                  Vui lòng đăng nhập phiên {platform === 'fuexam' ? 'fuexam.me' : 'FUOverflow'} để tiếp tục
                 </div>
               </div>
             ) : (

@@ -1,3 +1,5 @@
+export type PlatformType = 'fuoverflow' | 'fuexam';
+
 export interface Subject {
   id: number;
   code: string;
@@ -5,6 +7,9 @@ export interface Subject {
   forum_url: string;
   exam_count: number;
   last_synced_at?: string | null;
+  node_id?: number | null;
+  term_group?: string | null;
+  platform?: PlatformType;
 }
 
 export interface SubjectListResponse {
@@ -22,6 +27,16 @@ export interface ExamItem {
   term?: string | null;
   post_date?: string | null;
   question_count: number;
+  compiled?: boolean;
+  has_file?: boolean;
+  missing_file?: boolean;
+  download_url?: string | null;
+  compiled_at?: string | null;
+  compiled_at_iso?: string | null;
+  is_valid_exam?: boolean;
+  warning?: string | null;
+  sub_exam_count?: number | null;
+  platform?: PlatformType;
 }
 
 export interface AuthStatus {
@@ -31,6 +46,29 @@ export interface AuthStatus {
   detail?: string;
   username?: string | null;
   expires_at?: string | null;
+}
+
+export interface FuexamAuthStatus {
+  logged_in: boolean;
+  status_code: 'logged_in' | 'expired' | 'not_logged_in';
+  username?: string | null;
+  detail?: string;
+}
+
+export type FuexamLoginStatus = 'idle' | 'waiting' | 'authenticated' | 'timeout' | 'error' | 'cancelled';
+
+export interface FuexamLoginSession {
+  state: FuexamLoginStatus;
+  message: string;
+  error?: string | null;
+  started_at?: number | null;
+}
+
+export interface AnswerSourceSummary {
+  image: number;
+  comments: number;
+  ai: number;
+  total: number;
 }
 
 export interface LoginSession {

@@ -154,6 +154,14 @@ async def init_db() -> None:
         except Exception:
             pass  # Already exists
         try:
+            await conn.execute(text("ALTER TABLE subjects ADD COLUMN platform VARCHAR(50) DEFAULT 'fuoverflow'"))
+        except Exception:
+            pass  # Already exists
+        try:
+            await conn.execute(text("ALTER TABLE exams ADD COLUMN platform VARCHAR(50) DEFAULT 'fuoverflow'"))
+        except Exception:
+            pass  # Already exists
+        try:
             await conn.execute(text("ALTER TABLE jobs ADD COLUMN username VARCHAR(100)"))
         except Exception:
             pass  # Already exists
@@ -190,4 +198,40 @@ async def init_db() -> None:
         except Exception:
             pass
     logger.info("Database tables initialized successfully.")
+
+
+def init_db_sync() -> None:
+    """Initialize DB schema synchronously using sync_engine (ideal for test fixtures and utilities)."""
+    from sqlalchemy import text
+    from backend.app.db.models import Subject, Exam, Question, Comment, Answer, Job, Setting, User  # noqa
+
+    with sync_engine.begin() as conn:
+        if "sqlite" in settings.SYNC_DATABASE_URL:
+            try:
+                conn.execute(text("PRAGMA journal_mode=WAL;"))
+                conn.execute(text("PRAGMA busy_timeout=30000;"))
+            except Exception:
+                pass
+        Base.metadata.create_all(conn)
+        alter_statements = [
+            "ALTER TABLE jobs ADD COLUMN config_snapshot JSON DEFAULT '{}'",
+            "ALTER TABLE subjects ADD COLUMN last_synced_at DATETIME",
+            "ALTER TABLE subjects ADD COLUMN platform VARCHAR(50) DEFAULT 'fuoverflow'",
+            "ALTER TABLE exams ADD COLUMN platform VARCHAR(50) DEFAULT 'fuoverflow'",
+            "ALTER TABLE jobs ADD COLUMN username VARCHAR(100)",
+            "ALTER TABLE jobs ADD COLUMN user_id INTEGER",
+            "ALTER TABLE exams ADD COLUMN crop_layout VARCHAR(50)",
+            "ALTER TABLE questions ADD COLUMN crop_layout VARCHAR(50)",
+            "ALTER TABLE questions ADD COLUMN crop_warnings JSON DEFAULT '[]'",
+            "ALTER TABLE questions ADD COLUMN cropped_image_path VARCHAR(500)",
+            "ALTER TABLE questions ADD COLUMN choice_hint_path VARCHAR(500)",
+            "ALTER TABLE questions ADD COLUMN choice_hint_width_px INTEGER",
+            "DELETE FROM subjects WHERE UPPER(code) = 'RSS' OR UPPER(name) = 'RSS' OR code = '-'",
+        ]
+        for stmt in alter_statements:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass
+
 

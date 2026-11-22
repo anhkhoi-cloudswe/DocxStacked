@@ -297,26 +297,17 @@ Chạy kiểm tra tự động trên tập 10 ảnh phân bố đều (indices: 
    - Trên đề B5, nền bên ngoài màu xanh nhạt `#E8F0EA`, thẻ trắng bắt đầu từ `y ~ 340`, góc `(0, 0)` là màu xanh nhạt nên `find_top_left_white_panel()` từ chối xử lý ngay từ đầu.
 3. **Nguy cơ làm mất dòng đáp án sẵn (Yêu cầu mới):**
    - Nếu chỉ crop tight quanh khung câu hỏi chính:
-     - Với đề B5: Dòng `Đáp án tham khảo: C` nằm **bên trên** hộp câu hỏi con.
-     - Với đề MAE101: Dòng `Đáp án: E` nằm **bên dưới** khung trắng.
-     - Cropper cũ chắc chắn sẽ cắt cụt mất dòng đáp án quan trọng này.
+     - Với đề B5 (Thread 1174): Dải đáp án chữ xanh `The correct answer is: [A-D]` nằm **ở phía đáy** (`y > 900px`, sát đáy thẻ).
+     - Với đề MAE101 (Thread 1587): Dòng `Đáp án: E` cũng nằm **bên dưới** khung trắng.
+     - Dải tiêu đề trên cùng (`y < 70px`) chứa banner `Question N | Mã đề`.
+     - Cropper cũ nếu crop theo panel hoặc tight-box sẽ dễ cắt cụt dải đáp án xanh ở đáy hoặc để sót banner tiêu đề thừa ở trên.
 
-### 8.2. Đề xuất kiến trúc cropper mới (`layout="fuexam_2026"`)
-Thuật toán cắt đề xuất gồm 4 bước:
-```mermaid
-flowchart TD
-    A["Ảnh gốc WebP (fuexam.me)"] --> B["Bước 1: Quét dải màu xanh (Green Answer Mask)"]
-    B --> C{"Có đáp án sẵn?"}
-    C -- "Có (Top)" --> D1["Lưu tọa độ y_ans_top"]
-    C -- "Có (Bottom)" --> D2["Lưu tọa độ y_ans_bot"]
-    C -- "Không" --> D3["Không có dòng đáp án"]
-    D1 & D2 & D3 --> E["Bước 2: Tìm khung thẻ nội dung chính (White Card Box)"]
-    E --> F["Bước 3: Mở rộng Bounding Box"]
-    F --> G["Nếu có y_ans_bot: kéo y1 xuống bao trọn đáp án + padding 10px"]
-    F --> H["Nếu có y_ans_top: kéo y0 lên bao trọn đáp án + padding 10px"]
-    F --> I["Loại bỏ dải tiêu đề đen trên cùng (Question Header)"]
-    G & H & I --> J["Bước 4: Cắt ảnh sạch & Lưu kết quả"]
-```
+### 8.2. Thuật toán cropper thực tế (`layout="fuexam_2026"`)
+Thuật toán cắt thực tế hoạt động như sau:
+1. **Cắt đỉnh (`y0`)**: Quét lược đồ mật độ pixel dòng (`row_counts`) ở `y < 320`. Nhận diện khoảng trống giữa dải tiêu đề `Question N | PRM393 - SU26 - B5 - FE` (Band 0) và dòng `(Choose 1 answer)` (Band 1). Thiết lập `y0 = b1_start - 12` để cắt bỏ dải tiêu đề banner phía trên, bắt đầu từ dòng `(Choose 1 answer)`.
+2. **Cắt đáy (`y1`)**: Kết hợp mặt nạ chữ đậm (`dark_mask`) và mặt nạ chữ xanh (`green_mask`). Do dải đáp án `The correct answer is: [A-D]` nằm sát đáy (`H - last_y <= 110px`), thuật toán giữ nguyên đáy `y1 = H` để bảo toàn trọn vẹn dải đáp án màu xanh lá và đường viền thẻ phía dưới.
+3. **Cắt biên ngang (`x0, x1`)**: Phát hiện biên của khung thẻ (card container) dựa trên độ lệch màu so với nền ngoài canvas (`diff > 25`), thêm lề đệm 16px mỗi bên (`x0 = frame_cols.min() - 16`, `x1 = frame_cols.max() + 16`). Kích thước sau crop đạt ~1700-1760 x 980-1010 px.
+4. **Bảo toàn watermark**: Giữ nguyên toàn bộ nội dung nguyên bản, không dùng blur/mask đè lên watermark để tránh làm biến dạng ký tự.
 
 ---
 

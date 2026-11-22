@@ -24,6 +24,7 @@ interface DocumentItem {
   download_url: string;
   created_at?: string;
   is_cached: boolean;
+  platform?: string;
 }
 
 interface UserProfile {
@@ -37,9 +38,10 @@ interface UserProfile {
 
 interface Props {
   onBack: () => void;
+  platform?: 'fuoverflow' | 'fuexam';
 }
 
-export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
+export const ScreenUserDocuments: React.FC<Props> = ({ onBack, platform }) => {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -56,9 +58,10 @@ export const ScreenUserDocuments: React.FC<Props> = ({ onBack }) => {
 
   const loadData = (silent: boolean = false) => {
     if (!silent) setIsLoading(true);
+    const docUrl = platform ? `/api/user/documents?platform=${platform}` : '/api/user/documents';
     Promise.all([
       fetch('/api/user/me').then((r) => (r.ok ? r.json() : null)),
-      fetch('/api/user/documents').then((r) => (r.ok ? r.json() : [])),
+      fetch(docUrl).then((r) => (r.ok ? r.json() : [])),
     ])
       .then(([profData, docData]) => {
         if (profData) setProfile(profData);

@@ -402,7 +402,11 @@ async def download_export_file(
         out_resolved = settings.OUTPUT_DIR.resolve()
         target_str = target.replace("\\", "/")
 
-        if target_str.startswith("data/") or ".." in target_str or target_str.startswith("/"):
+        target_norm = target_str.replace("\\", "/").strip()
+        if target_norm.startswith("data/output/"):
+            rel_sub = target_norm[len("data/output/"):]
+            resolved_path = (out_resolved / rel_sub).resolve()
+        elif target_str.startswith("data/") or ".." in target_str or target_str.startswith("/"):
             resolved_path = (settings.BASE_DIR / target_str.lstrip("/")).resolve()
         else:
             resolved_path = (out_resolved / target).resolve()
@@ -591,3 +595,24 @@ async def open_local_folder(req: Optional[OpenFolderRequest] = None):
     except Exception as e:
         logger.error(f"Failed to open directory {abs_path}: {e}")
         return {"success": False, "error": str(e), "path": abs_path}
+
+
+@router.get("/fuexam/{filename}/download")
+async def download_fuexam_file(filename: str):
+    """Download compiled Word document for fuexam platform."""
+    fuexam_dir = settings.BASE_DIR / "data" / "output" / "fuexam"
+    clean_fn = filename if filename.endswith(".docx") else f"{filename}.docx"
+    file_path = fuexam_dir / clean_fn
+    if not file_path.exists():
+        found = list(fuexam_dir.rglob(f"{clean_fn}")) or list(fuexam_dir.rglob(f"*{filename}*.docx"))
+        if found:
+            file_path = found[0]
+        else:
+            raise HTTPException(status_code=404, detail=f"Không tìm thấy file {filename}")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+

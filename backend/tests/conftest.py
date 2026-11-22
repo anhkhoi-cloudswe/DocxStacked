@@ -51,9 +51,12 @@ def isolate_test_data_dir():
     except Exception:
         pass
 
+from backend.app.db.session import init_db, init_db_sync, rebind_db_engines
+
 @pytest.fixture(autouse=True)
-async def setup_db():
-    await init_db()
+def setup_db():
+    rebind_db_engines()
+    init_db_sync()
 
 @pytest.fixture(autouse=True)
 def reset_daily_quota():

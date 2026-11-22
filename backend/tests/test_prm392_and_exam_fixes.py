@@ -157,7 +157,7 @@ def test_crop_algorithm_version_and_red_bar_margin():
     - Cropper version bumped.
     - Fixture with red_bar at x ~ 809 has 0 source_clipped warnings.
     """
-    assert CROP_ALGORITHM_VERSION.startswith("3.1.0")
+    assert CROP_ALGORITHM_VERSION >= "3.1.0"
     q9_fixture = FIXTURES_DIR / "2024_ite302c_fa24_re_q09.webp"
     res = crop_question_single(q9_fixture)
     assert res.success

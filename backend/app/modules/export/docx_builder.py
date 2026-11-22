@@ -427,7 +427,9 @@ def _render_question_to_doc(
 
     # Detect if options are missing either from crop warnings or if comments are predominantly text descriptions
     has_missing_options = "missing_options" in raw_warnings
-    q_comms = getattr(q, "comments", []) or []
+    q_comms = getattr(q, "__dict__", {}).get("comments") or []
+    if not isinstance(q_comms, list):
+        q_comms = []
     if not has_missing_options and ("few_lines" in raw_warnings or "crop_too_small" in raw_warnings or "missing_stem" in raw_warnings) and q_comms and len(q_comms) >= 1:
         # Check if majority of comments are textual descriptive phrases rather than isolated letters
         from backend.app.modules.analysis.parser import parse_comment_text

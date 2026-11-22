@@ -104,6 +104,7 @@ class JobOrchestrator:
         limit: int = 4,
         force_refresh: bool = False,
         exam_ids: Optional[List[int]] = None,
+        platform: str = "fuoverflow",
     ) -> Job:
         """Create and launch a background exam compilation job."""
         job_uuid = str(uuid.uuid4())
@@ -126,6 +127,7 @@ class JobOrchestrator:
                     "limit": effective_count,
                     "force_refresh": force_refresh,
                     "exam_ids": exam_ids,
+                    "platform": platform,
                 },
             )
             db.add(job)
@@ -134,7 +136,7 @@ class JobOrchestrator:
 
         self._event_history[job_uuid] = []
         task = asyncio.create_task(
-            self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, effective_count, force_refresh, exam_ids=exam_ids)
+            self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, effective_count, force_refresh, exam_ids=exam_ids, platform=platform)
         )
         self._running_tasks[job_uuid] = task
         return job
@@ -185,8 +187,9 @@ class JobOrchestrator:
 
         force_ref = bool(job.details.get("force_refresh", False)) if job.details else False
         saved_exam_ids = job.details.get("exam_ids") if job.details else None
+        platform = job.details.get("platform", "fuoverflow") if job.details else "fuoverflow"
         task = asyncio.create_task(
-            self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count, force_ref, exam_ids=saved_exam_ids)
+            self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count, force_ref, exam_ids=saved_exam_ids, platform=platform)
         )
         self._running_tasks[job.job_id] = task
         return job
@@ -199,8 +202,19 @@ class JobOrchestrator:
         limit: int,
         force_refresh: bool = False,
         exam_ids: Optional[List[int]] = None,
+        platform: str = "fuoverflow",
     ):
         """Execute the compilation pipeline step-by-step."""
+        if platform.lower() == "fuexam":
+            return await self._run_fuexam_job_pipeline(
+                job_id=job_id,
+                subject_code=subject_code,
+                exam_type=exam_type,
+                limit=limit,
+                force_refresh=force_refresh,
+                exam_ids=exam_ids,
+            )
+
         logger.info(f"Starting job pipeline {job_id} for {subject_code} ({exam_type.value}, limit={limit}, force_refresh={force_refresh})...")
         created_files: List[Dict[str, Any]] = []
 
@@ -769,6 +783,430 @@ class JobOrchestrator:
                 job.error_message = str(e)
                 job.current_step = "failed"
                 job.completed_at = datetime.utcnow()
+                job.details = {
+                    **job.details,
+                    "files": list(created_files),
+                    "failed_at": datetime.utcnow().isoformat(),
+                }
+                await db.commit()
+                self._broadcast(job_id, {
+                    "type": "error",
+                    "step": "failed",
+                    "message": f"Lỗi trong quá trình xử lý: {str(e)}",
+                    "files": list(created_files),
+                })
+            finally:
+                if job_id in self._running_tasks:
+                    del self._running_tasks[job_id]
+
+    async def _run_fuexam_job_pipeline(
+        self,
+        job_id: str,
+        subject_code: str,
+        exam_type: ExamType,
+        limit: int,
+        force_refresh: bool = False,
+        exam_ids: Optional[List[int]] = None,
+    ):
+        """Execute real compilation pipeline for fuexam.me."""
+        logger.info(f"Starting fuexam job pipeline {job_id} for {subject_code} ({exam_type.value}, limit={limit})...")
+        created_files: List[Dict[str, Any]] = []
+
+        from backend.app.modules.crawler.fuexam_crawler import (
+            get_authenticated_session,
+            check_session_validity,
+            extract_thread_questions,
+            fetch_and_cache_media_image,
+            fetch_and_cache_media_comments,
+            AuthenticationRequiredError as FuexamAuthError,
+        )
+        from backend.app.modules.crawler.fuexam_subjects import load_subject_map
+        from backend.app.modules.export.image_cropper import crop_question_single
+        from backend.app.modules.analysis.image_answer_reader import read_answer_from_image
+        from backend.app.modules.analysis.voting import tally_votes
+        from backend.app.modules.export.docx_builder import build_exam_docx
+
+        async with async_session_factory() as db:
+            try:
+                # 1. Update status to RUNNING
+                stmt = select(Job).where(Job.job_id == job_id)
+                res = await db.execute(stmt)
+                job = res.scalar_one()
+                job.status = JobStatus.RUNNING
+                job.current_step = "auth_check"
+                initial_details = dict(job.details or {})
+                created_files = list(initial_details.get("files", []))
+                job.details = {**initial_details, "started_at": datetime.utcnow().isoformat(), "platform": "fuexam"}
+                await db.commit()
+
+                self._broadcast(job_id, {
+                    "type": "log",
+                    "step": "auth_check",
+                    "message": "Kiểm tra phiên đăng nhập tài khoản fuexam.me...",
+                    "progress": 5,
+                })
+
+                # 2. Check Auth
+                try:
+                    session = get_authenticated_session()
+                    if not check_session_validity(session):
+                        raise FuexamAuthError("Phiên đăng nhập fuexam.me đã hết hạn hoặc chưa đăng nhập.")
+                except Exception as auth_err:
+                    error_msg = f"Cần đăng nhập fuexam.me: {auth_err}"
+                    logger.error(f"Fuexam job {job_id} failed auth: {error_msg}")
+                    job.status = JobStatus.FAILED
+                    job.error_message = error_msg
+                    job.current_step = "auth_required"
+                    job.details = {**job.details, "completed_at": datetime.utcnow().isoformat()}
+                    await db.commit()
+                    self._broadcast(job_id, {
+                        "type": "error",
+                        "step": "auth_required",
+                        "message": error_msg,
+                    })
+                    return
+
+                self._broadcast(job_id, {
+                    "type": "log",
+                    "step": "auth_check",
+                    "message": "Phiên đăng nhập fuexam.me hợp lệ. Bắt đầu tìm kiếm đề thi...",
+                    "progress": 15,
+                })
+
+                # 3. Subject in DB
+                s_stmt = select(Subject).where(Subject.code == subject_code)
+                s_res = await db.execute(s_stmt)
+                subject = s_res.scalar_one_or_none()
+                if not subject:
+                    sub_map = load_subject_map()
+                    subj_meta = sub_map.get(subject_code, {})
+                    subject = Subject(
+                        code=subject_code,
+                        name=subj_meta.get("name", f"Môn {subject_code}"),
+                        forum_url=subj_meta.get("forum_url", f"https://fuexam.me/forums/{subject_code.lower()}/"),
+                        platform="fuexam",
+                    )
+                    db.add(subject)
+                    await db.flush()
+
+                # 4. Exams to compile
+                job.current_step = "crawling_exams"
+                await db.commit()
+
+                exams_to_process = []
+                if exam_ids and len(exam_ids) > 0:
+                    for tid in exam_ids:
+                        ex_stmt = select(Exam).where((Exam.id == tid) | (Exam.url.like(f"%/{tid}/%")))
+                        ex_res = await db.execute(ex_stmt)
+                        ex_obj = ex_res.scalar_one_or_none()
+                        if not ex_obj:
+                            default_title = f"{subject_code} - {exam_type.value} (Thread {tid})"
+                            if tid == 1174:
+                                default_title = "PRM393 - SU26 - B5 - FE"
+                            elif tid == 941:
+                                default_title = "PRM393 - SU26 - FE - RE"
+                            elif tid == 1587:
+                                default_title = "MAE101 - FA26 - FE"
+                            ex_obj = Exam(
+                                id=tid,
+                                subject_id=subject.id,
+                                title=default_title,
+                                url=f"https://fuexam.me/threads/{tid}/",
+                                exam_type=exam_type,
+                                term="SU26" if "SU26" in default_title else ("FA26" if "FA26" in default_title else "SP26"),
+                                platform="fuexam",
+                                crop_layout="fuexam_2026",
+                            )
+                            db.add(ex_obj)
+                            await db.flush()
+                        exams_to_process.append(ex_obj)
+                else:
+                    ex_stmt = select(Exam).where((Exam.id == 1174) | (Exam.url.like("%/1174/%")))
+                    ex_res = await db.execute(ex_stmt)
+                    ex_obj = ex_res.scalar_one_or_none()
+                    if not ex_obj:
+                        ex_obj = Exam(
+                            id=1174,
+                            subject_id=subject.id,
+                            title="PRM393 - SU26 - B5 - FE",
+                            url="https://fuexam.me/threads/1174/",
+                            exam_type=ExamType.FE,
+                            term="SU26",
+                            platform="fuexam",
+                            crop_layout="fuexam_2026",
+                        )
+                        db.add(ex_obj)
+                        await db.flush()
+                    exams_to_process.append(ex_obj)
+
+                total_exams = len(exams_to_process)
+                total_all_questions = 0
+                all_sources_count = {"image": 0, "comments": 0, "ai": 0, "total": 0}
+
+                # 5. Process each exam
+                for exam_idx, exam in enumerate(exams_to_process, start=1):
+                    exam_progress_base = int(((exam_idx - 1) / total_exams) * 90)
+
+                    self._broadcast(job_id, {
+                        "type": "log",
+                        "step": "crawling_questions",
+                        "message": f"[{exam_idx}/{total_exams}] Đang quét các câu hỏi từ fuexam: {exam.title}...",
+                        "progress": max(10, exam_progress_base),
+                        "current_exam": exam_idx,
+                        "total_exams": total_exams,
+                    })
+
+                    raw_title, questions_meta = extract_thread_questions(exam.url, session)
+                    if not questions_meta:
+                        raise RuntimeError(f"Không tìm thấy câu hỏi nào trong thread {exam.url}")
+
+                    tot_q = len(questions_meta)
+                    exam.question_count = tot_q
+                    total_all_questions += tot_q
+
+                    cropped_dir = settings.BASE_DIR / "data" / "cropped" / "fuexam" / subject_code / f"exam_{exam.id}"
+                    cropped_dir.mkdir(parents=True, exist_ok=True)
+
+                    question_objs: List[Question] = []
+                    answers_map: Dict[int, Answer] = {}
+                    exam_sources = {"image": 0, "comments": 0, "ai": 0, "no_data": 0}
+
+                    for q_idx, q_item in enumerate(questions_meta, start=1):
+                        m_id = q_item["media_id"]
+                        slug = q_item["slug"]
+                        att_url = q_item["attachment_url"]
+
+                        computed_prog = min(95, max(10, int((((exam_idx - 1) * tot_q + q_idx) / (total_exams * tot_q)) * 100)))
+
+                        self._broadcast(job_id, {
+                            "type": "progress",
+                            "step": "crawling_questions",
+                            "message": f"Đang tải câu {q_idx}/{tot_q}: {slug}",
+                            "current_question": q_idx,
+                            "total_questions": tot_q,
+                            "current_exam": exam_idx,
+                            "total_exams": total_exams,
+                            "progress": computed_prog,
+                        })
+
+                        # Download image (delay 1.6s)
+                        img_path, img_cached = fetch_and_cache_media_image(
+                            media_id=m_id,
+                            attachment_url=att_url,
+                            slug=slug,
+                            session=session,
+                            force_refresh=force_refresh,
+                            delay_seconds=1.6,
+                        )
+
+                        # Download comments (delay 1.6s)
+                        parsed_comms, comm_cached = fetch_and_cache_media_comments(
+                            media_id=m_id,
+                            slug=slug,
+                            session=session,
+                            force_refresh=force_refresh,
+                            delay_seconds=1.6,
+                        )
+
+                        # DB Question object
+                        q_db_stmt = select(Question).where(Question.exam_id == exam.id, Question.index == q_idx)
+                        q_db_res = await db.execute(q_db_stmt)
+                        q_obj = q_db_res.scalar_one_or_none()
+                        if not q_obj:
+                            q_obj = Question(
+                                exam_id=exam.id,
+                                index=q_idx,
+                                file_name=img_path.name,
+                                media_id=str(m_id),
+                                local_image_path=str(img_path.resolve()),
+                            )
+                            db.add(q_obj)
+                            await db.flush()
+                        else:
+                            q_obj.file_name = img_path.name
+                            q_obj.media_id = str(m_id)
+                            q_obj.local_image_path = str(img_path.resolve())
+
+                        # Crop image with layout fuexam_2026
+                        cropped_out = cropped_dir / f"q{q_idx:03d}.png"
+                        crop_res = crop_question_single(img_path, output_path=cropped_out)
+                        q_obj.cropped_image_path = str(cropped_out.resolve())
+                        q_obj.crop_layout = crop_res.layout
+                        q_obj.crop_warnings = crop_res.warnings
+
+                        # Determine answer:
+                        # 1. Try reading from green answer strip in image
+                        img_ans_res = read_answer_from_image(img_path)
+                        if img_ans_res.letter and img_ans_res.confidence >= 0.80:
+                            ans_set = img_ans_res.letters or [img_ans_res.letter]
+                            ans_status = AnswerStatus.CONFIDENT
+                            ans_conf = img_ans_res.confidence
+                            vb = {"_source": "image", "_method": img_ans_res.method}
+                            exam_sources["image"] += 1
+                        else:
+                            # 2. Try voting from comments
+                            q_comments: List[Comment] = []
+                            for i_c, c_raw in enumerate(parsed_comms, 1):
+                                q_comments.append(Comment(
+                                    question_id=q_obj.id,
+                                    comment_id=str(c_raw.get("comment_id", i_c)),
+                                    author_hash=c_raw.get("author_hash", f"user_{i_c}"),
+                                    raw_text=c_raw.get("raw_text", ""),
+                                    upvotes=0,
+                                ))
+                            if q_comments:
+                                vote_res = tally_votes(q_comments)
+                                ans_set = vote_res.answer_set
+                                ans_status = vote_res.status
+                                ans_conf = vote_res.confidence
+                                vb = {"_source": "community", **(vote_res.vote_breakdown or {})}
+                                exam_sources["comments"] += 1
+                            else:
+                                ans_set = ["?"]
+                                ans_status = AnswerStatus.NO_DATA
+                                ans_conf = 0.0
+                                vb = {"_source": "no_data"}
+                                exam_sources["no_data"] += 1
+
+                        # Save or update Answer in DB
+                        ans_db_stmt = select(Answer).where(Answer.question_id == q_obj.id)
+                        ans_db_res = await db.execute(ans_db_stmt)
+                        ans_obj = ans_db_res.scalar_one_or_none()
+                        if not ans_obj:
+                            ans_obj = Answer(
+                                question_id=q_obj.id,
+                                answer_set=ans_set,
+                                status=ans_status,
+                                confidence=ans_conf,
+                                vote_breakdown=vb,
+                            )
+                            db.add(ans_obj)
+                            await db.flush()
+                        else:
+                            ans_obj.answer_set = ans_set
+                            ans_obj.status = ans_status
+                            ans_obj.confidence = ans_conf
+                            ans_obj.vote_breakdown = vb
+
+                        q_obj.answer = ans_obj
+                        question_objs.append(q_obj)
+                        answers_map[q_obj.id] = ans_obj
+
+                    await db.commit()
+
+                    # Build .docx for this exam
+                    self._broadcast(job_id, {
+                        "type": "log",
+                        "step": "building_docx",
+                        "message": f"Đang xuất file .docx cho đề: {exam.title} ({tot_q} câu)...",
+                        "progress": 92,
+                    })
+
+                    exam_out_dir = settings.BASE_DIR / "data" / "output" / "fuexam" / subject_code
+                    exam_out_dir.mkdir(parents=True, exist_ok=True)
+
+                    docx_path = build_exam_docx(
+                        subject_code=subject_code,
+                        exam=exam,
+                        questions=question_objs,
+                        output_dir=exam_out_dir,
+                        cropped_dir=cropped_dir,
+                        add_question_number=False,
+                        add_divider=True,
+                        answers_map=answers_map,
+                    )
+
+                    all_sources_count["image"] += exam_sources["image"]
+                    all_sources_count["comments"] += exam_sources["comments"]
+                    all_sources_count["ai"] += exam_sources["ai"]
+                    all_sources_count["total"] += tot_q
+
+                    rel_output = str(docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
+                    file_info = {
+                        "filename": docx_path.name,
+                        "path": rel_output,
+                        "exam_title": exam.title,
+                        "questions_count": tot_q,
+                        "size_bytes": docx_path.stat().st_size if docx_path.exists() else 0,
+                        "cached": False,
+                        "cached_at": datetime.now().strftime("%H:%M %d/%m/%Y"),
+                        "can_rebuild": True,
+                    }
+                    if not any(f.get("filename") == docx_path.name for f in created_files):
+                        created_files.append(file_info)
+
+                    job.details = {
+                        **job.details,
+                        "files": list(created_files),
+                        "completed_exams": exam_idx,
+                        "total_exams": total_exams,
+                        "answer_sources": all_sources_count,
+                    }
+                    if not job.result_file_path:
+                        job.result_file_path = rel_output
+                    await db.commit()
+
+                    self._broadcast(job_id, {
+                        "type": "exam_completed",
+                        "step": "building_docx",
+                        "message": f"Đã hoàn tất biên soạn đề: {exam.title}",
+                        "completed_file": file_info,
+                        "files": list(created_files),
+                        "answer_sources": all_sources_count,
+                        "progress": 95,
+                    })
+
+                # Complete Job
+                job.status = JobStatus.COMPLETED
+                job.current_step = "completed"
+                job.progress_percentage = 100.0
+                if created_files:
+                    job.result_file_path = created_files[0]["path"]
+                job.details = {
+                    **job.details,
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "files": created_files,
+                    "total_exams": total_exams,
+                    "total_questions": total_all_questions,
+                    "answer_sources": all_sources_count,
+                }
+                await db.commit()
+
+                self._broadcast(job_id, {
+                    "type": "completed",
+                    "step": "completed",
+                    "message": f"Hoàn tất biên soạn {total_exams} đề ({total_all_questions} câu hỏi)!",
+                    "progress": 100,
+                    "files": created_files,
+                    "total_exams": total_exams,
+                    "total_questions": total_all_questions,
+                    "answer_sources": all_sources_count,
+                })
+                logger.info(f"Fuexam Job {job_id} completed successfully.")
+
+            except FuexamAuthError as auth_err:
+                logger.error(f"Fuexam job {job_id} requires login: {auth_err}")
+                job.status = JobStatus.FAILED
+                job.error_message = str(auth_err)
+                job.current_step = "auth_required"
+                job.details = {
+                    **job.details,
+                    "files": list(created_files),
+                    "failed_at": datetime.utcnow().isoformat(),
+                }
+                await db.commit()
+                self._broadcast(job_id, {
+                    "type": "error",
+                    "step": "auth_required",
+                    "message": str(auth_err),
+                    "files": list(created_files),
+                })
+
+            except Exception as e:
+                logger.exception(f"Unexpected error executing fuexam job {job_id}: {e}")
+                job.status = JobStatus.FAILED
+                job.error_message = str(e)
+                job.current_step = "failed"
                 job.details = {
                     **job.details,
                     "files": list(created_files),

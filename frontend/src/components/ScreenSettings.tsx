@@ -18,6 +18,8 @@ import {
 
 interface ScreenSettingsProps {
   onBack: () => void;
+  platform?: 'fuoverflow' | 'fuexam';
+  onFuexamLogout?: () => void;
 }
 
 const PROVIDER_TEMPLATES: Record<string, { label: string; isPaid?: boolean; template: AIProviderSetting }> = {
@@ -105,7 +107,7 @@ const IS_PAID_PROVIDER = (name: string): boolean => {
   return n.includes('anthropic') || (n.includes('openai') && !n.includes('openrouter'));
 };
 
-export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
+export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform, onFuexamLogout }) => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [initialSettingsJson, setInitialSettingsJson] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -160,6 +162,33 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
       setNotification({ type: 'error', message: err.message || 'Không thể hoàn thành dọn dữ liệu' });
     } finally {
       setIsCleaning(false);
+    }
+  };
+
+  const handleLogoutFuexam = async () => {
+    const ok = await confirmModal({
+      title: 'Đăng xuất fuexam.me',
+      message: 'Bạn có chắc chắn muốn đăng xuất tài khoản fuexam.me và xoá tệp phiên data/auth/fuexam_storage_state.json?',
+      confirmText: 'Đăng xuất fuexam',
+      isDanger: true,
+    });
+    if (!ok) return;
+    try {
+      const res = await fetch('/api/auth/fuexam/logout', { method: 'POST' });
+      if (res.ok) {
+        if (onFuexamLogout) onFuexamLogout();
+        alertModal({
+          title: 'Đã đăng xuất fuexam',
+          message: 'Đã xoá tệp phiên data/auth/fuexam_storage_state.json thành công.',
+          type: 'success',
+        });
+      }
+    } catch (err: any) {
+      alertModal({
+        title: 'Lỗi',
+        message: 'Lỗi kết nối khi đăng xuất: ' + err.message,
+        type: 'error',
+      });
     }
   };
 
@@ -600,8 +629,8 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
           >
             ← Quay lại màn hình chính
           </button>
-          <h1 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-2xl)', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
-            Cài đặt hệ thống
+          <h1 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-2xl)', fontWeight: 700, margin: 0, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            Cài đặt hệ thống {platform && <span style={{ fontSize: '12px', fontWeight: 600, color: platform === 'fuexam' ? '#b45309' : 'var(--primary)' }}>[{platform}]</span>}
           </h1>
           <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', margin: 'var(--space-1) 0 0 0' }}>
             Tuỳ chỉnh quy tắc xuất file Word, mô hình Vision AI, thuật toán bỏ phiếu và tốc độ cào. Cài đặt được lưu vào cơ sở dữ liệu và chụp ảnh riêng cho từng job.
@@ -744,6 +773,35 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
 
       {/* Group 1: Xuất file Word */}
       {activeSection === 'basic' && (
+      <>
+      {/* Platform Sessions Card */}
+      <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>
+        <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)', fontWeight: 700, margin: '0 0 4px 0', color: 'var(--text-primary)' }}>
+          Quản lý phiên đăng nhập các nền tảng
+        </h2>
+        <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', margin: '0 0 var(--space-4) 0' }}>
+          Đăng xuất tài khoản hoặc xoá phiên làm việc được lưu trên máy chủ.
+        </p>
+        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={handleLogoutFuexam}
+            data-testid="btn-logout-fuexam"
+            style={{
+              padding: '6px 14px',
+              backgroundColor: 'var(--bg-canvas)',
+              border: '1px solid #b45309',
+              borderRadius: 'var(--radius-sm)',
+              color: '#b45309',
+              fontWeight: 600,
+              fontSize: 'var(--text-xs)',
+              cursor: 'pointer',
+            }}
+          >
+            Đăng xuất fuexam.me (Xoá tệp phiên)
+          </button>
+        </div>
+      </div>
       <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
           <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-lg)', fontWeight: 700, margin: 0, color: 'var(--text-primary)' }}>
@@ -855,6 +913,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack }) => {
           </div>
         </div>
       </div>
+      </>
       )}
 
       {/* Group 2: AI Vision Multi-provider */}
