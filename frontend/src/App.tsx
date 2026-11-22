@@ -881,7 +881,7 @@ export const App: React.FC = () => {
             zIndex: 9999,
           }}
         >
-          <span style={{ fontSize: '16px' }}>⚠️</span>
+          <span style={{ fontSize: '13px', fontWeight: 700 }}>[Lưu ý]</span>
           <span>Backend chưa sẵn sàng, đang thử lại...</span>
         </div>
       )}

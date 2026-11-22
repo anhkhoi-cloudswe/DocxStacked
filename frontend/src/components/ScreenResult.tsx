@@ -249,7 +249,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                 fontWeight: 500,
               }}
             >
-              ✓ {openFolderStatus}
+              {openFolderStatus}
             </div>
           )}
 
@@ -311,7 +311,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                           }}
                           title="Số câu lấy đáp án từ dải đáp án trong ảnh (.meta.json)"
                         >
-                          📷 Nguồn ảnh: {file.image_count} câu
+                          Ảnh: {file.image_count} câu
                         </span>
                       )}
                       {file.comment_count !== undefined && file.comment_count > 0 && (
@@ -327,7 +327,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                           }}
                           title="Số câu lấy đáp án tổng hợp từ bình luận (.meta.json)"
                         >
-                          💬 Nguồn bình luận: {file.comment_count} câu
+                          Bình luận: {file.comment_count} câu
                         </span>
                       )}
                       {file.ai_count !== undefined && file.ai_count > 0 && (
@@ -343,7 +343,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                           }}
                           title="Số câu đọc giải thích hoặc giải quyết xung đột bằng AI (.meta.json)"
                         >
-                          ⚡ Nguồn AI: {file.ai_count} câu
+                          AI: {file.ai_count} câu
                         </span>
                       )}
                       {file.confident_count !== undefined && file.confident_count > 0 && (
@@ -358,7 +358,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                             fontWeight: 600,
                           }}
                         >
-                          ✓ {file.confident_count} CONFIDENT
+                          CONFIDENT: {file.confident_count}
                         </span>
                       )}
                       {file.weak_count !== undefined && file.weak_count > 0 && (
@@ -373,7 +373,7 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                             fontWeight: 600,
                           }}
                         >
-                          ⚠ {file.weak_count} WEAK
+                          WEAK: {file.weak_count}
                         </span>
                       )}
                       {file.ai_count !== undefined && file.ai_count > 0 && (
@@ -388,14 +388,14 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                             fontWeight: 600,
                           }}
                         >
-                          ⚡ {file.ai_count} AI
+                          AI: {file.ai_count}
                         </span>
                       )}
                     </div>
 
                     {file.review_needed_questions && file.review_needed_questions.length > 0 && (
                       <div style={{ fontSize: '11px', color: '#B45309', marginTop: '4px', fontWeight: 500 }}>
-                        ⚠ Danh sách câu cần xem lại: Câu {file.review_needed_questions.join(', ')}
+                        Cần xem lại: Câu {file.review_needed_questions.join(', ')}
                       </div>
                     )}
                   </div>

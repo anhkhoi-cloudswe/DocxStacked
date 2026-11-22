@@ -424,7 +424,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 fontSize: '22px',
               }}
             >
-              ✓
+              OK
             </div>
             <h3
               style={{
@@ -458,7 +458,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 }}
               >
                 <div style={{ fontWeight: 700, marginBottom: '2px' }}>
-                  ⚠️ Đăng nhập lại fuexam.me ở tab trình duyệt, DocxStacked sẽ tự nhận
+                  [Lưu ý] Đăng nhập lại fuexam.me ở tab trình duyệt, DocxStacked sẽ tự nhận
                 </div>
                 <div>Tiến trình cào đề đang tạm dừng và sẽ tự động tiếp tục ngay khi nhận phiên mới.</div>
               </div>
@@ -480,7 +480,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 }}
               >
                 <div style={{ fontWeight: 700, marginBottom: '4px' }}>
-                  ⚠️ Chưa phát hiện extension DocxStacked
+                  [Lưu ý] Chưa phát hiện extension DocxStacked
                 </div>
                 <div>
                   Vui lòng mở <code>chrome://extensions</code> (hoặc <code>edge://extensions</code>), bấm nút <strong>Tải lại (Reload)</strong> extension DocxStacked và chấp nhận quyền mới (<strong>Cookies &amp; fuexam.me</strong>).
@@ -501,12 +501,12 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 }}
               >
                 <div style={{ fontWeight: 700, color: '#92400e', fontSize: '13px', marginBottom: '4px' }}>
-                  ⚠️ Chưa có Chrome Extension ID để đồng bộ
+                  [Lưu ý] Chưa có Chrome/Edge Extension ID để đồng bộ
                 </div>
                 <div style={{ fontSize: '12px', color: '#78350f', lineHeight: 1.5, marginBottom: '8px' }}>
                   Để DocxStacked kết nối tự động với extension của bạn, vui lòng:
                   <ol style={{ paddingLeft: '18px', margin: '4px 0 8px 0' }}>
-                    <li>Mở Chrome, truy cập <code>chrome://extensions</code> và bật <b>Chế độ cho nhà phát triển (Developer mode)</b>.</li>
+                    <li>Mở Chrome hoặc Edge, truy cập <code>chrome://extensions</code> (hoặc <code>edge://extensions</code>) và bật <b>Chế độ cho nhà phát triển (Developer mode)</b>.</li>
                     <li>Tìm tiện ích <b>DocxStacked</b> và sao chép chuỗi ID (hoặc ghim "key" trong manifest: <code>kicplcdfmbcfjildbbimpfiljlmfokea</code>).</li>
                     <li>Dán vào ô bên dưới rồi bấm <b>Lưu &amp; Thử lại</b> (hoặc điền tại mục <b>Cài đặt &rarr; ô Chrome Extension ID</b>).</li>
                   </ol>
@@ -514,7 +514,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <input
                     type="text"
-                    placeholder="Dán Chrome Extension ID (32 ký tự)"
+                    placeholder="Dán Extension ID (32 ký tự)"
                     value={inputExtId}
                     onChange={(e) => setInputExtId(e.target.value.trim())}
                     style={{
@@ -546,7 +546,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 </div>
                 {saveExtIdMsg && (
                   <div style={{ fontSize: '11px', color: '#059669', marginTop: '6px', fontWeight: 500 }}>
-                    ✓ {saveExtIdMsg}
+                    [OK] {saveExtIdMsg}
                   </div>
                 )}
               </div>
@@ -659,8 +659,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                   gap: '6px',
                 }}
               >
-                <span>Mở fuexam.me/login trong trình duyệt của bạn</span>
-                <span style={{ fontSize: '11px' }}>↗</span>
+                <span>Mở fuexam.me/login trong trình duyệt của bạn (tab mới)</span>
               </button>
             </div>
 
@@ -711,7 +710,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                       color: '#991b1b',
                     }}
                   >
-                    ⚠️ Backend chưa sẵn sàng, đang thử lại kết nối...
+                    [Lưu ý] Backend chưa sẵn sàng, đang thử lại kết nối...
                   </div>
                 )}
 
@@ -837,7 +836,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                         padding: 0,
                       }}
                     >
-                      {showLogs ? 'Ẩn nhật ký ▲' : `Xem nhật ký Chromium (${recentLogs.length} dòng) ▼`}
+                      {showLogs ? 'Ẩn nhật ký (thu gọn)' : `Xem nhật ký Chromium (${recentLogs.length} dòng)`}
                     </button>
                     {showLogs && (
                       <pre

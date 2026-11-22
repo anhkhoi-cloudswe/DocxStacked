@@ -1136,7 +1136,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
                           fontWeight: 600,
                         }}
                       >
-                        {isEnabled ? '● Đang bật' : '○ Đã tắt'}
+                        {isEnabled ? 'Đang bật' : 'Đã tắt'}
                       </button>
 
                       {/* Key Source Indicator */}
@@ -1196,7 +1196,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
                         style={{ padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: idx === 0 ? 'not-allowed' : 'pointer' }}
                         title="Đẩy lên ưu tiên cao hơn"
                       >
-                        ▲
+                        Lên
                       </button>
                       <button
                         onClick={() => moveProvider(idx, 'down')}
@@ -1204,7 +1204,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
                         style={{ padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: idx === settings.ai.providers.length - 1 ? 'not-allowed' : 'pointer' }}
                         title="Đẩy xuống ưu tiên thấp hơn"
                       >
-                        ▼
+                        Xuống
                       </button>
                       <button
                         onClick={() => deleteProvider(idx)}
@@ -1358,7 +1358,7 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
                               gap: '6px',
                             }}
                           >
-                            <span style={{ color: 'var(--status-safe-text, #10b981)', fontWeight: 600 }}>✓</span>
+                            <CheckIcon size={14} />
                             <span>Đã lưu ({p.masked_key || '••••xxxx'})</span>
                           </div>
                           <button

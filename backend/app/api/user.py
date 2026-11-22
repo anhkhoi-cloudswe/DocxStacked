@@ -122,15 +122,24 @@ async def get_my_documents(
     def _scan_folder(parent_dir: Path, default_plat: str):
         if not parent_dir.exists() or not parent_dir.is_dir():
             return
+        if "_to_delete" in str(parent_dir).lower():
+            return
         for subj_dir in parent_dir.iterdir():
             if not subj_dir.is_dir():
                 continue
             subj_code = subj_dir.name.upper()
-            if subj_code in ("FUO", "FUE", "FUEXAM") or "TEST" in subj_code or (subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code)):
+            if (
+                subj_code in ("FUO", "FUE", "FUEXAM", "_TO_DELETE")
+                or "_to_delete" in str(subj_dir).lower()
+                or "TEST" in subj_code
+                or (subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code))
+            ):
                 continue
 
             for doc_file in subj_dir.glob("*.docx"):
                 if not doc_file.is_file():
+                    continue
+                if "_to_delete" in str(doc_file).lower():
                     continue
                 fn_u = doc_file.name.upper()
                 size_b = doc_file.stat().st_size
@@ -160,16 +169,6 @@ async def get_my_documents(
     _scan_folder(out_dir / "FUE", "fuexam")
     # 3. Scan root out_dir (legacy)
     _scan_folder(out_dir, "fuoverflow")
-
-    # 4. Scan legacy fuexam dir
-    legacy_fuexam = out_dir / "fuexam"
-    if legacy_fuexam.exists() and legacy_fuexam.is_dir():
-        for doc_file in legacy_fuexam.glob("*.docx"):
-            if doc_file.is_file() and doc_file.stat().st_size >= 50:
-                fn = doc_file.name
-                m = re.match(r"^([A-Za-z0-9]+)", fn)
-                sc = m.group(1).upper() if m else "FUEXAM"
-                candidate_files.append((sc, doc_file, doc_file.stat().st_mtime, "FE", sc, "fuexam"))
 
     # Sort strictly newest first across all subjects by real file modification time (mtime)
     candidate_files.sort(key=lambda x: x[2], reverse=True)
