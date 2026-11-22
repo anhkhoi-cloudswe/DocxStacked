@@ -434,15 +434,24 @@ async def check_exam_exists(
     if exam.status == ExamStatus.CRAWLED and subj_code:
         from backend.app.modules.export.docx_builder import format_exam_docx_filename
         docx_name = format_exam_docx_filename(subj_code, exam)
-        docx_path = settings.DATA_DIR / "output" / subj_code / docx_name
-        subj_dir = settings.DATA_DIR / "output" / subj_code
-        if docx_path.exists() and docx_path.stat().st_size > 1000:
-            file_exists = True
-        elif subj_dir.exists():
-            for p in subj_dir.glob("*.docx"):
+        candidate_dirs = [
+            settings.OUTPUT_DIR / "FUO" / subj_code,
+            settings.OUTPUT_DIR / "FUE" / subj_code,
+            settings.OUTPUT_DIR / subj_code,
+        ]
+        for c_dir in candidate_dirs:
+            if not c_dir.exists():
+                continue
+            cand_path = c_dir / docx_name
+            if cand_path.exists() and cand_path.stat().st_size > 1000:
+                file_exists = True
+                break
+            for p in c_dir.glob("*.docx"):
                 if exam.term and exam.term in p.name:
                     file_exists = True
                     break
+            if file_exists:
+                break
 
     if not file_exists or exam.status != ExamStatus.CRAWLED:
         return {

@@ -152,9 +152,10 @@ async def build_folder_zip_response(
 
     if not target_paths:
         if subject:
-            sub_dir = output_dir / subject
-            if sub_dir.exists():
-                target_paths = [p for p in sub_dir.glob("*.docx") if p.is_file()] + [p for p in sub_dir.glob("*.zip") if p.is_file()]
+            sub_dirs = [output_dir / "FUO" / subject, output_dir / "FUE" / subject, output_dir / subject]
+            for sd in sub_dirs:
+                if sd.exists():
+                    target_paths.extend([p for p in sd.glob("*.docx") if p.is_file()] + [p for p in sd.glob("*.zip") if p.is_file()])
         else:
             target_paths = [p for p in output_dir.rglob("*.docx") if p.is_file()]
 
@@ -231,7 +232,11 @@ async def list_exported_files():
     for path in sorted(output_dir.rglob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
         if path.is_file() and path.suffix.lower() in (".docx", ".zip"):
             stat = path.stat()
-            rel_path = str(path.relative_to(settings.BASE_DIR)).replace("\\", "/")
+            try:
+                rel_path = str(path.relative_to(settings.BASE_DIR)).replace("\\", "/")
+            except ValueError:
+                rel_sub = str(path.relative_to(output_dir)).replace("\\", "/")
+                rel_path = f"data/output/{rel_sub}"
             created_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
             files.append(
                 ExportFileOut(
@@ -360,9 +365,7 @@ async def download_export_by_exam_id(
         filename = f"{subject} - {title}.docx"
 
     # Search candidates in output directory
-    out_dir = settings.STORAGE_DIR / "output"
-    if not out_dir.exists() and hasattr(settings, "OUTPUT_DIR") and settings.OUTPUT_DIR.exists():
-        out_dir = settings.OUTPUT_DIR
+    out_dir = settings.OUTPUT_DIR
     sub_dir = out_dir / subject
     target_path = sub_dir / filename
     if not target_path.exists():
@@ -371,8 +374,10 @@ async def download_export_by_exam_id(
         if candidates:
             target_path = candidates[0]
         else:
-            # Fallback search across all output dirs
+            # Fallback search across all output dirs including FUO/FUE subdirectories
             all_cands = list(out_dir.rglob(f"*{title}*.docx")) if out_dir.exists() else []
+            if not all_cands and exam.term:
+                all_cands = [p for p in out_dir.rglob("*.docx") if exam.term in p.name and subject in p.name]
             if all_cands:
                 target_path = all_cands[0]
             else:
@@ -572,9 +577,18 @@ async def open_local_folder(req: Optional[OpenFolderRequest] = None):
     target_dir = output_dir
 
     if req and req.subject:
-        cand = output_dir / req.subject
-        if cand.exists() and cand.is_dir():
-            target_dir = cand
+        subj = req.subject.upper().strip()
+        cand_fuo = output_dir / "FUO" / subj
+        cand_fue = output_dir / "FUE" / subj
+        cand_legacy = output_dir / subj
+        if cand_fue.exists() and cand_fue.is_dir():
+            target_dir = cand_fue
+        elif cand_fuo.exists() and cand_fuo.is_dir():
+            target_dir = cand_fuo
+        elif cand_legacy.exists() and cand_legacy.is_dir():
+            target_dir = cand_legacy
+        else:
+            target_dir = cand_fuo
     elif req and req.path:
         clean_p = req.path.replace("\\", "/").lstrip("/")
         cand = (settings.BASE_DIR / clean_p).resolve()
@@ -600,15 +614,23 @@ async def open_local_folder(req: Optional[OpenFolderRequest] = None):
 @router.get("/fuexam/{filename}/download")
 async def download_fuexam_file(filename: str):
     """Download compiled Word document for fuexam platform."""
-    fuexam_dir = settings.BASE_DIR / "data" / "output" / "fuexam"
+    fue_dir = settings.BASE_DIR / "data" / "output" / "FUE"
+    legacy_dir = settings.BASE_DIR / "data" / "output" / "fuexam"
     clean_fn = filename if filename.endswith(".docx") else f"{filename}.docx"
-    file_path = fuexam_dir / clean_fn
-    if not file_path.exists():
-        found = list(fuexam_dir.rglob(f"{clean_fn}")) or list(fuexam_dir.rglob(f"*{filename}*.docx"))
-        if found:
-            file_path = found[0]
-        else:
-            raise HTTPException(status_code=404, detail=f"Không tìm thấy file {filename}")
+    file_path = None
+    for d in (fue_dir, legacy_dir):
+        if d.exists():
+            direct = d / clean_fn
+            if direct.exists():
+                file_path = direct
+                break
+            found = list(d.rglob(f"{clean_fn}")) or list(d.rglob(f"*{filename}*.docx"))
+            if found:
+                file_path = found[0]
+                break
+
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy file {filename}")
 
     return FileResponse(
         path=str(file_path),

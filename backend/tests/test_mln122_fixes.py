@@ -243,8 +243,8 @@ def test_missing_options_crops_and_word_output():
     # Must NEVER contain placeholder
     assert "Không rõ từ hình ảnh" not in rendered
 
-    # Check paragraph text in document
+    # Check paragraph text in document (per requirement: BỎ hậu tố "(cần kiểm tra lại)" from docx)
     full_text = " ".join(p.text for p in doc.paragraphs)
     assert "A (ảnh nguồn thiếu phương án)" in full_text
-    assert "(cần kiểm tra lại)" in full_text
+    assert "(cần kiểm tra lại)" not in full_text
     assert "Không rõ từ hình ảnh" not in full_text

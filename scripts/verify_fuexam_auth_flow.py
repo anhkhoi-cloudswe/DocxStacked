@@ -68,7 +68,7 @@ def run_verification():
     # BƯỚC 2: KIỂM TRA STATUS SAU KHI ĐĂNG XUẤT
     # =========================================================================
     print("\n[BƯỚC 2] Kiểm tra /api/auth/fuexam/status sau đăng xuất...")
-    logged_in, status_code, username = _check_fuexam_auth_file()
+    logged_in, status_code, username, _ = _check_fuexam_auth_file()
     cli_status = check_status()
     print(f" -> Backend auth check: logged_in={logged_in}, status_code='{status_code}', username={username}")
     print(f" -> CLI script check: status='{cli_status}'")
@@ -160,7 +160,7 @@ def run_verification():
     # BƯỚC 5: KIỂM TRA STATUS SAU KHI ĐĂNG NHẬP THÀNH CÔNG
     # =========================================================================
     print("\n[BƯỚC 5] Kiểm tra /api/auth/fuexam/status sau đăng nhập thành công...")
-    logged_in_after, status_code_after, username_after = _check_fuexam_auth_file()
+    logged_in_after, status_code_after, username_after, _ = _check_fuexam_auth_file()
     cli_status_after = check_status()
     print(f" -> Backend auth check: logged_in={logged_in_after}, status_code='{status_code_after}', username='{username_after}'")
     print(f" -> CLI script check: status='{cli_status_after}'")

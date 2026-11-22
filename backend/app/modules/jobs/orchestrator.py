@@ -368,8 +368,12 @@ class JobOrchestrator:
 
                     # Cache Check with Settings Hash & Comment Freshness
                     current_settings_hash = compute_doc_settings_hash(job_cfg)
-                    cached_filename = format_exam_docx_filename(subject_code, exam)
-                    cached_path = settings.STORAGE_DIR / "output" / subject_code / cached_filename
+                    cached_filename = format_exam_docx_filename(subject_code, exam, platform="fuoverflow")
+                    cached_path = settings.STORAGE_DIR / "output" / "FUO" / subject_code / cached_filename
+                    if not cached_path.exists():
+                        legacy_path = settings.STORAGE_DIR / "output" / subject_code / cached_filename
+                        if legacy_path.exists():
+                            cached_path = legacy_path
                     meta_path = cached_path.with_name(cached_path.name + ".meta.json")
 
                     has_cached_doc = False
@@ -414,6 +418,13 @@ class JobOrchestrator:
                             "progress": min(exam_progress_base + int(50 / total_exams), 95),
                         })
                         rel_output = str(cached_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
+                        meta_cached = {}
+                        if meta_path.exists():
+                            try:
+                                meta_cached = json.loads(meta_path.read_text(encoding="utf-8"))
+                            except Exception:
+                                pass
+
                         file_info = {
                             "filename": cached_path.name,
                             "path": rel_output,
@@ -423,6 +434,12 @@ class JobOrchestrator:
                             "cached": True,
                             "cached_at": cached_time_str,
                             "can_rebuild": True,
+                            "platform": "fuoverflow",
+                            "confident_count": meta_cached.get("confident_count", 0),
+                            "weak_count": meta_cached.get("weak_count", 0),
+                            "conflict_count": meta_cached.get("conflict_count", 0),
+                            "ai_count": meta_cached.get("ai_count", 0),
+                            "review_needed_questions": meta_cached.get("review_needed_questions", []),
                         }
                         if not any(f.get("filename") == cached_path.name for f in created_files):
                             created_files.append(file_info)
@@ -636,10 +653,15 @@ class JobOrchestrator:
                     ans_res = await db.execute(select(Answer).where(Answer.question_id.in_(q_ids)))
                     answers_map = {a.question_id: a for a in ans_res.scalars().all()}
 
+                    fuo_out_dir = settings.STORAGE_DIR / "output" / "FUO" / subject_code
+                    fuo_out_dir.mkdir(parents=True, exist_ok=True)
+
                     docx_path = build_exam_docx(
                         subject_code=subject_code,
                         exam=exam,
                         questions=questions,
+                        output_dir=fuo_out_dir,
+                        platform="fuoverflow",
                         answer_format=ans_fmt,
                         multi_choice_format=job_cfg.get("export", {}).get("multi_choice_format", "comma"),
                         highlight_check_needed=job_cfg.get("export", {}).get("highlight_low_confidence", True),
@@ -650,9 +672,18 @@ class JobOrchestrator:
                         answers_map=answers_map,
                     )
 
-                    # Save sidecar metadata for cache invalidation
+                    # Save sidecar metadata for cache invalidation & review stats
+                    meta_path = docx_path.with_name(docx_path.name + ".meta.json")
+                    existing_meta = {}
+                    if meta_path.exists():
+                        try:
+                            existing_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            pass
+
                     now_dt = datetime.now()
                     meta_data = {
+                        **existing_meta,
                         "settings_hash": current_settings_hash,
                         "created_at": now_dt.isoformat(),
                         "created_at_epoch": now_dt.timestamp(),
@@ -660,8 +691,8 @@ class JobOrchestrator:
                         "latest_comment_timestamp": latest_comment_ts,
                         "questions_count": len(questions),
                         "exam_title": exam.title,
+                        "platform": "fuoverflow",
                     }
-                    meta_path = docx_path.with_name(docx_path.name + ".meta.json")
                     meta_path.write_text(json.dumps(meta_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
                     rel_output = str(docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
@@ -674,6 +705,12 @@ class JobOrchestrator:
                         "cached": False,
                         "cached_at": now_dt.strftime("%H:%M %d/%m/%Y"),
                         "can_rebuild": True,
+                        "platform": "fuoverflow",
+                        "confident_count": meta_data.get("confident_count", 0),
+                        "weak_count": meta_data.get("weak_count", 0),
+                        "conflict_count": meta_data.get("conflict_count", 0),
+                        "ai_count": meta_data.get("ai_count", 0),
+                        "review_needed_questions": meta_data.get("review_needed_questions", []),
                     }
                     if not any(f.get("filename") == docx_path.name for f in created_files):
                         created_files.append(file_info)
@@ -989,6 +1026,15 @@ class JobOrchestrator:
                             "progress": computed_prog,
                         })
 
+                        # Ghi sự kiện từng chặng (mỗi 5 câu)
+                        if q_idx == 1 or q_idx % 5 == 0 or q_idx == tot_q:
+                            self._broadcast(job_id, {
+                                "type": "log",
+                                "step": "crawling_questions",
+                                "message": f"[{exam_idx}/{total_exams}] Đã tải xong chặng câu {q_idx}/{tot_q} cho đề: {exam.title}",
+                                "progress": computed_prog,
+                            })
+
                         # Download image (delay 1.6s)
                         img_path, img_cached = fetch_and_cache_media_image(
                             media_id=m_id,
@@ -1102,7 +1148,7 @@ class JobOrchestrator:
                         "progress": 92,
                     })
 
-                    exam_out_dir = settings.BASE_DIR / "data" / "output" / "fuexam" / subject_code
+                    exam_out_dir = settings.BASE_DIR / "data" / "output" / "FUE" / subject_code
                     exam_out_dir.mkdir(parents=True, exist_ok=True)
 
                     docx_path = build_exam_docx(
@@ -1111,6 +1157,8 @@ class JobOrchestrator:
                         questions=question_objs,
                         output_dir=exam_out_dir,
                         cropped_dir=cropped_dir,
+                        platform="fuexam",
+                        sub_exam_code=exam.title,
                         add_question_number=False,
                         add_divider=True,
                         answers_map=answers_map,
@@ -1120,6 +1168,15 @@ class JobOrchestrator:
                     all_sources_count["comments"] += exam_sources["comments"]
                     all_sources_count["ai"] += exam_sources["ai"]
                     all_sources_count["total"] += tot_q
+
+                    # Read sidecar .meta.json
+                    meta_file = exam_out_dir / f"{docx_path.name}.meta.json"
+                    meta_info = {}
+                    if meta_file.exists():
+                        try:
+                            meta_info = json.loads(meta_file.read_text(encoding="utf-8"))
+                        except Exception:
+                            pass
 
                     rel_output = str(docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
                     file_info = {
@@ -1131,6 +1188,12 @@ class JobOrchestrator:
                         "cached": False,
                         "cached_at": datetime.now().strftime("%H:%M %d/%m/%Y"),
                         "can_rebuild": True,
+                        "platform": "fuexam",
+                        "confident_count": meta_info.get("confident_count", 0),
+                        "weak_count": meta_info.get("weak_count", 0),
+                        "conflict_count": meta_info.get("conflict_count", 0),
+                        "ai_count": meta_info.get("ai_count", 0),
+                        "review_needed_questions": meta_info.get("review_needed_questions", []),
                     }
                     if not any(f.get("filename") == docx_path.name for f in created_files):
                         created_files.append(file_info)

@@ -382,6 +382,9 @@ def test_05_fuexam_modal_states_and_operational_error(dist_server):
         page.goto(dist_server)
 
         # 1. State: idle
+        # Expand advanced Chromium section if collapsed
+        page.wait_for_selector("summary", timeout=6000)
+        page.locator("summary").first.click()
         page.wait_for_selector("[data-testid='btn-open-fuexam-login']", timeout=6000)
         btn_open = page.locator("[data-testid='btn-open-fuexam-login']")
         assert btn_open.is_visible()

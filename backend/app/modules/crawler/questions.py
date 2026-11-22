@@ -150,10 +150,11 @@ async def crawl_exam_questions(
       - Commits each question progressively so progress is never lost.
     """
     logger.info(f"Crawling questions for exam: {exam.title} ({exam.url})")
+    current_settings = get_settings()
 
     # Prepare storage directory for this exam
     exam_slug = re.sub(r"[^\w\-]", "_", f"exam_{exam.id}_{exam.term or 'fe'}")
-    exam_raw_dir = settings.STORAGE_DIR / "raw" / subject_code / exam_slug
+    exam_raw_dir = current_settings.STORAGE_DIR / "raw" / subject_code / exam_slug
     exam_raw_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Deduplication / Resume check: if already fully crawled in DB with valid images on disk
@@ -171,7 +172,7 @@ async def crawl_exam_questions(
             full_path = (
                 Path(q.local_image_path)
                 if Path(q.local_image_path).is_absolute()
-                else settings.BASE_DIR / q.local_image_path
+                else current_settings.BASE_DIR / q.local_image_path
             )
             if not full_path.exists() or full_path.stat().st_size < 8000:
                 all_valid = False
@@ -257,7 +258,14 @@ async def crawl_exam_questions(
 
         local_img_filename = f"q{q_index:02d}_{file_name}"
         local_img_path = exam_raw_dir / local_img_filename
-        rel_img_path = str(local_img_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
+        try:
+            rel_img_path = str(local_img_path.resolve().relative_to(current_settings.BASE_DIR.resolve())).replace("\\", "/")
+        except ValueError:
+            try:
+                rel_sub = str(local_img_path.resolve().relative_to(current_settings.STORAGE_DIR.resolve())).replace("\\", "/")
+                rel_img_path = f"data/{rel_sub}"
+            except ValueError:
+                rel_img_path = str(local_img_path).replace("\\", "/")
 
         # Check existing Question in DB
         stmt = select(Question).where(Question.exam_id == exam.id, Question.index == q_index)

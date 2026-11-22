@@ -260,7 +260,7 @@ def test_existing_exam_title_preserved(tmp_path, monkeypatch):
     assert res_data["exam_title"] == original_title
     assert "MLN122 - MLN122" not in res_data["exam_title"]
     assert "(Extension Ingested)" not in res_data["exam_title"]
-    assert res_data["docx_filename"].startswith("MLN122 - SU26 - RE")
+    assert res_data["docx_filename"].startswith("MLN122 - FUO - SU26")
     print(f"\n[Test Result] Title preserved accurately: '{res_data['exam_title']}' -> '{res_data['docx_filename']}'")
 
 

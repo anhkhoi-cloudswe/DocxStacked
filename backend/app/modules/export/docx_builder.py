@@ -1,8 +1,10 @@
 import difflib
 import io
+import json
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from PIL import Image
@@ -26,42 +28,110 @@ class SettingsProxy:
 settings = SettingsProxy()
 
 
-def format_exam_docx_filename(subject_code: str, exam: Exam) -> str:
+def normalize_term(term_str: Optional[str]) -> Optional[str]:
     """
-    Format filename matching the original exam title or structured '{MaMon} - {Kỳ} - {Type}.docx'.
-    Preserves exact designations like 'RE' (Retake) vs 'FE', e.g. 'PRM392 - SP26 - RE.docx'.
-    Strips notification counts, badges like 'Đề Thi FE', and redundant subject codes.
+    Chuẩn hóa kỳ học sang định dạng XX## (SU26, FA26, SP26; 'SU 2024' -> SU24, 'Fall 2024' -> FA24).
+    """
+    if not term_str:
+        return None
+    t = term_str.strip()
+    m = re.search(r"\b(SU(?:MMER)?|FA(?:LL)?|SP(?:RING)?|WI(?:NTER)?)\s*(?:20)?(\d{2})\b", t, re.IGNORECASE)
+    if m:
+        prefix = m.group(1).upper()
+        if prefix.startswith("SU"):
+            p = "SU"
+        elif prefix.startswith("FA"):
+            p = "FA"
+        elif prefix.startswith("SP"):
+            p = "SP"
+        elif prefix.startswith("WI"):
+            p = "WI"
+        else:
+            p = prefix[:2]
+        yy = m.group(2)
+        return f"{p}{yy}"
+    return None
+
+
+def format_exam_docx_filename(
+    subject_code: str,
+    exam: Exam,
+    platform: Optional[str] = None,
+    sub_exam_code: Optional[str] = None,
+) -> str:
+    """
+    Quy ước tên file Word:
+    - "{MÔN} - FUO - {KỲ} - {LOẠI}.docx" cho FUOverflow
+    - "{MÔN} - FUE - {KỲ} - {LOẠI}.docx" cho fuexam
+    Hậu tố giữ nguyên thứ tự: ... - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}].docx
+    Kỳ chuẩn hóa XX## (SU26, FA26, SP26; "SU 2024" -> SU24).
+    Không bao giờ dùng "(Thread N)" làm tên file.
     """
     code = subject_code.upper().strip()
+
+    # 1. Xác định tag nền tảng: FUE hoặc FUO
+    plat = platform or getattr(exam, "platform", None) or ""
+    if "fuexam" in str(plat).lower():
+        plat_tag = "FUE"
+    else:
+        plat_tag = "FUO"
+
+    # Lấy tiêu đề sạch loại bỏ (Thread N)
     raw_title = (exam.title or "").strip()
+    clean_title = re.sub(r"\(?\bThread\s*\d+\b\)?", "", raw_title, flags=re.IGNORECASE).strip()
+    clean_title = re.sub(r'[\\/*?:"<>|]', "", clean_title).strip()
 
-    if raw_title:
-        from backend.app.api.ingest import clean_exam_title
-        cleaned = clean_exam_title(raw_title)
-        # Clean characters not allowed in Windows filenames: \ / : * ? " < > |
-        cleaned = re.sub(r'[\\/*?:"<>|]', "", cleaned).strip()
-        # Remove trailing .docx if present in title
-        if cleaned.lower().endswith(".docx"):
-            cleaned = cleaned[:-5].strip()
+    # 2. Chuẩn hóa Kỳ học XX##
+    norm_term = normalize_term(getattr(exam, "term", None))
+    if not norm_term:
+        norm_term = normalize_term(clean_title)
+    if not norm_term:
+        m_term = re.search(r"\b(SU|FA|SP|WI)\s*\d{2,4}\b", clean_title, re.IGNORECASE)
+        if m_term:
+            norm_term = normalize_term(m_term.group(0))
+        else:
+            m_cust = re.search(r"\b(Kỳ\s*\w+|Term\s*\w+|Semester\s*\w+)\b", clean_title, re.IGNORECASE)
+            if m_cust:
+                norm_term = re.sub(r"\s+", "", m_cust.group(0)).upper()
+                setattr(exam, "warning", f"Không đọc được kỳ học chuẩn XX##; đã sử dụng '{norm_term}' từ tiêu đề thread.")
+            else:
+                norm_term = "UNKNOWN"
+                setattr(exam, "warning", "Không đọc được kỳ học từ tiêu đề đề thi. Vui lòng kiểm tra lại.")
 
-        # Eliminate repetitive duplicate subject prefix like 'PRN232 - Đề Thi FE - PRN232' or 'CSD202 - CSD202'
-        cleaned = re.sub(rf"^{re.escape(code)}[\s\-_]+(?:\[?(?:Đề\s*Thi\s*FE|Đề\s*Thi\s*PE)\]?[\s\-_]+)?{re.escape(code)}[\s\-_]+", f"{code} - ", cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(rf"^{re.escape(code)}[\s\-_]+{re.escape(code)}[\s\-_]+", f"{code} - ", cleaned, flags=re.IGNORECASE)
+    # 3. Kiểm tra các thành phần hậu tố theo thứ tự: [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}]
+    combined_info = f"{clean_title} {exam.term or ''} {sub_exam_code or ''}"
+    has_b5 = bool(re.search(r"\bB5\b", combined_info, re.IGNORECASE))
+    has_re = bool(re.search(r"\b(RE|RETAKE)\b", combined_info, re.IGNORECASE))
 
-        # Ensure the filename starts with subject code if missing
-        if not cleaned.upper().startswith(code):
-            cleaned = f"{code} - {cleaned}"
+    # Loại bài thi {LOẠI}: PE hoặc FE
+    e_type_val = exam.exam_type.value if hasattr(exam.exam_type, "value") else str(exam.exam_type or "FE")
+    if "PE" in e_type_val.upper() or re.search(r"\bPE\b", clean_title, re.IGNORECASE):
+        e_type = "PE"
+    else:
+        e_type = "FE"
 
-        return f"{cleaned}.docx"
+    # Mã đề (nếu có: De1, C1, C2...)
+    extra_code = None
+    if sub_exam_code:
+        clean_sub = re.sub(r"\(?\bThread\s*\d+\b\)?", "", sub_exam_code, flags=re.IGNORECASE).strip()
+        if clean_sub and clean_sub.upper() not in ("B5", "FE", "PE", "RE", "RETAKE", norm_term, code, plat_tag):
+            extra_code = clean_sub
+    elif clean_title:
+        m_code = re.search(r"\b(C\d+|De\s*\d+|MD\s*\d+|Mã\s*đề\s*\d+)\b", clean_title, re.IGNORECASE)
+        if m_code:
+            extra_code = m_code.group(1).replace(" ", "")
 
-    term = exam.term
-    if not term and exam.title:
-        m = re.search(r"\b(SU|FA|SP|WI)\d{2}\b", exam.title, re.IGNORECASE)
-        if m:
-            term = m.group(0).upper()
-    term_str = term if term else "SU26"
-    e_type = exam.exam_type.value if hasattr(exam.exam_type, "value") else (str(exam.exam_type) if exam.exam_type else "FE")
-    return f"{code} - {term_str} - {e_type}.docx"
+    # 4. Ráp theo chuẩn thứ tự: {MÔN} - {PLAT} - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}].docx
+    parts = [code, plat_tag, norm_term]
+    if has_b5:
+        parts.append("B5")
+    parts.append(e_type)
+    if has_re:
+        parts.append("RE")
+    if extra_code and extra_code not in parts:
+        parts.append(extra_code)
+
+    return f"{' - '.join(parts)}.docx"
 
 
 def cluster_text_answers(comments: List[Any], similarity_threshold: float = 0.85) -> Optional[str]:
@@ -484,15 +554,7 @@ def _render_question_to_doc(
     run_ans.font.color.rgb = RGBColor(0xEE, 0x00, 0x00)  # Teacher Red #EE0000
 
     # 1. Cờ phiếu (Vote consensus / uncertainty)
-    has_vote_flag = highlight_check_needed and (
-        status in (AnswerStatus.CONFLICT, AnswerStatus.WEAK, AnswerStatus.NO_DATA)
-        or ans_text.startswith("?")
-    )
-    if has_vote_flag:
-        run_note = ans_paragraph.add_run(" (cần kiểm tra lại)")
-        run_note.bold = False
-        run_note.font.size = Pt(11)
-        run_note.font.color.rgb = RGBColor(0x7F, 0x7F, 0x7F)  # Muted grey 11pt
+    # BỎ hậu tố "(cần kiểm tra lại)" theo Requirement 2. Cảnh báo độ tin cậy chuyển vào .meta.json.
 
     # 2. Cờ ảnh (Crop / image quality warnings on this specific question only)
     image_note = ""
@@ -548,6 +610,8 @@ def build_exam_docx(
     unsupported_layout_warning: bool = False,
     use_raw_fallback: bool = False,
     answers_map: Optional[Dict[int, Answer]] = None,
+    platform: Optional[str] = None,
+    sub_exam_code: Optional[str] = None,
 ) -> Path:
     """
     Build Word (.docx) document following the exact reference style (MLN122, PRN232):
@@ -560,7 +624,8 @@ def build_exam_docx(
           * Single: 'B' or 'B. Keyword'
           * Multiple: 'A, C' or 'A. Keyword1, C. Keyword2'
           * No data / unanalyzed: '?'
-      - If conflict, weak, or no_data: appends ' (cần kiểm tra lại)' in small 11pt grey.
+      - Answer line contains ONLY letter / letter + keyword (NO '(cần kiểm tra lại)' in Word).
+      - Confidence breakdown & review list stored in .meta.json.
     """
     exam_title_clean = exam.title.strip()
     if exam_title_clean.upper().startswith(f"{subject_code.upper()} -"):
@@ -570,7 +635,8 @@ def build_exam_docx(
     logger.info(f"Building Word document for {display_title} ({len(questions)} questions)...")
 
     if output_dir is None:
-        output_dir = settings.STORAGE_DIR / "output" / subject_code
+        plat_tag = "FUE" if (platform and "fuexam" in platform.lower()) else "FUO"
+        output_dir = settings.STORAGE_DIR / "output" / plat_tag / subject_code.upper().strip()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if cropped_dir is None:
@@ -647,7 +713,7 @@ def build_exam_docx(
             logger.error(err_msg)
             raise RuntimeError(err_msg)
 
-    filename = format_exam_docx_filename(subject_code, exam)
+    filename = format_exam_docx_filename(subject_code, exam, platform=platform, sub_exam_code=sub_exam_code)
     file_path = output_dir / filename
     temp_file_path = output_dir / f"{filename}.tmp_{os.getpid()}_{int(time.time())}.docx"
 
@@ -681,6 +747,49 @@ def build_exam_docx(
 
     # Atomic replace
     os.replace(str(temp_file_path), str(file_path))
+
+    # Save sidecar metadata .meta.json (Requirement 2)
+    meta_file = output_dir / f"{filename}.meta.json"
+    confident_cnt = 0
+    weak_cnt = 0
+    conflict_cnt = 0
+    ai_cnt = 0
+    review_needed_qs: List[int] = []
+
+    if answers_map:
+        for q in questions:
+            ans = answers_map.get(q.id)
+            if ans:
+                st = (ans.status.value if hasattr(ans.status, "value") else str(ans.status or "")).upper()
+                src = ans.vote_breakdown.get("_source", "") if (ans.vote_breakdown and isinstance(ans.vote_breakdown, dict)) else ""
+                is_ai = getattr(ans, "source", None) == "ai" or src == "ai"
+                if is_ai:
+                    ai_cnt += 1
+                if st == "CONFIDENT":
+                    confident_cnt += 1
+                elif st == "WEAK":
+                    weak_cnt += 1
+                    review_needed_qs.append(q.index)
+                elif st in ("CONFLICT", "NO_DATA"):
+                    conflict_cnt += 1
+                    review_needed_qs.append(q.index)
+                elif is_ai:
+                    review_needed_qs.append(q.index)
+
+    sidecar_meta = {
+        "filename": filename,
+        "subject_code": subject_code.upper().strip(),
+        "exam_title": exam.title,
+        "platform": platform or ("fuexam" if "FUE" in filename else "fuoverflow"),
+        "questions_count": len(questions),
+        "confident_count": confident_cnt,
+        "weak_count": weak_cnt,
+        "conflict_count": conflict_cnt,
+        "ai_count": ai_cnt,
+        "review_needed_questions": sorted(list(set(review_needed_qs))),
+        "updated_at": datetime.now().isoformat(),
+    }
+    meta_file.write_text(json.dumps(sidecar_meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
     logger.info(f"Generated clean Word document: {file_path} (Size: {file_path.stat().st_size} bytes)")
     return file_path

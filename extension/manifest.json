@@ -10,7 +10,8 @@
     "scripting",
     "alarms",
     "downloads",
-    "offscreen"
+    "offscreen",
+    "cookies"
   ],
   "externally_connectable": {
     "matches": [
@@ -22,11 +23,12 @@
   },
   "host_permissions": [
     "https://fuoverflow.com/*",
+    "https://fuexam.me/*",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "fuexam_session.js"
   },
   "side_panel": {
     "default_path": "sidepanel.html"

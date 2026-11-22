@@ -86,6 +86,10 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
+  const isFuexam =
+    details.exam_type === 'FUE' ||
+    files.some((f) => f.platform === 'fuexam' || f.filename.includes(' - FUE - ') || f.path.includes('/FUE/'));
+
   return (
     <div style={{ maxWidth: '880px', margin: '0 auto' }}>
       <div className="card-paper">
@@ -147,12 +151,22 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
           }}
         >
           <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 'var(--space-1)' }}>
-            Đặc điểm tài liệu biên soạn:
+            Đặc điểm tài liệu biên soạn ({isFuexam ? 'nền tảng fuexam.me' : 'nền tảng FUOverflow'}):
           </div>
           <ul style={{ paddingLeft: 'var(--space-4)', color: 'var(--text-secondary)' }}>
-            <li>Tất cả hình ảnh câu hỏi được tải độ phân giải gốc full-res từ CDN/Media của FUOverflow.</li>
-            <li>Đã căn chỉnh kích thước lề chuẩn khổ Letter (8.5 x 11 inch) trong Word.</li>
-            <li>Đã phân tích bình luận, tổng hợp ý kiến và xác định đáp án có độ tin cậy kèm chú thích chi tiết.</li>
+            {isFuexam ? (
+              <>
+                <li>Tất cả hình ảnh câu hỏi được tải độ phân giải gốc từ CDN/Media của fuexam.me.</li>
+                <li>Đã căn chỉnh kích thước lề chuẩn khổ Letter (8.5 x 11 inch) trong Word.</li>
+                <li>Đáp án được nhận diện từ ảnh hoặc phân tích bình luận của cộng đồng thành viên.</li>
+              </>
+            ) : (
+              <>
+                <li>Tất cả hình ảnh câu hỏi được tải độ phân giải gốc full-res từ CDN/Media của FUOverflow.</li>
+                <li>Đã căn chỉnh kích thước lề chuẩn khổ Letter (8.5 x 11 inch) trong Word.</li>
+                <li>Đã phân tích bình luận, tổng hợp ý kiến và xác định đáp án có độ tin cậy kèm chú thích chi tiết.</li>
+              </>
+            )}
           </ul>
         </div>
 
@@ -282,6 +296,61 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{file.questions_count} câu</span> ·{' '}
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{formatFileSize(file.size_bytes)}</span>
                     </div>
+
+                    {/* Metadata & Confidence Stats */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
+                      {file.confident_count !== undefined && file.confident_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: 'var(--status-confident-bg)',
+                            color: 'var(--status-confident-text)',
+                            border: '1px solid var(--status-confident-border)',
+                            fontWeight: 600,
+                          }}
+                        >
+                          ✓ {file.confident_count} CONFIDENT
+                        </span>
+                      )}
+                      {file.weak_count !== undefined && file.weak_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#FEF3C7',
+                            color: '#92400E',
+                            border: '1px solid #FCD34D',
+                            fontWeight: 600,
+                          }}
+                        >
+                          ⚠ {file.weak_count} WEAK
+                        </span>
+                      )}
+                      {file.ai_count !== undefined && file.ai_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#EFF6FF',
+                            color: '#1D4ED8',
+                            border: '1px solid #BFDBFE',
+                            fontWeight: 600,
+                          }}
+                        >
+                          ⚡ {file.ai_count} AI
+                        </span>
+                      )}
+                    </div>
+
+                    {file.review_needed_questions && file.review_needed_questions.length > 0 && (
+                      <div style={{ fontSize: '11px', color: '#B45309', marginTop: '4px', fontWeight: 500 }}>
+                        ⚠ Danh sách câu cần xem lại: Câu {file.review_needed_questions.join(', ')}
+                      </div>
+                    )}
                   </div>
 
                   <button

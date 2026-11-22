@@ -265,8 +265,17 @@ def do_logout() -> bool:
     """
     append_log("Thực hiện đăng xuất fuexam.me...", level="INFO")
 
-    # 1. Gọi logout phía máy chủ nếu có cookie
-    if STORAGE_STATE_FILE.exists():
+    # Kiểm tra auth_source: Nếu là extension thì KHÔNG gọi logout máy chủ
+    auth_source = "headed_chromium"
+    if USER_FILE.exists():
+        try:
+            u_data = json.loads(USER_FILE.read_text(encoding="utf-8"))
+            auth_source = u_data.get("auth_source", "headed_chromium")
+        except Exception:
+            pass
+
+    # 1. Gọi logout phía máy chủ nếu có cookie và KHÔNG PHẢI extension
+    if auth_source != "extension" and STORAGE_STATE_FILE.exists():
         try:
             state_data = json.loads(STORAGE_STATE_FILE.read_text(encoding="utf-8"))
             cookies_dict = {c["name"]: c["value"] for c in state_data.get("cookies", [])}

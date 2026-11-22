@@ -36,12 +36,13 @@ def test_parse_subject_and_category():
 @pytest.mark.asyncio
 async def test_download_folder_zip_structure(tmp_path):
     # Setup dummy docx files in output dir
-    out_dir = settings.OUTPUT_DIR / "TEST_SUBJ"
+    effective_settings = get_settings()
+    out_dir = effective_settings.OUTPUT_DIR / "TEST_SUBJ"
     out_dir.mkdir(parents=True, exist_ok=True)
     f1 = out_dir / "TEST_SUBJ - SP26 - RE.docx"
     f2 = out_dir / "TEST_SUBJ - SP26 - FE.docx"
-    f1.write_bytes(b"dummy content 1")
-    f2.write_bytes(b"dummy content 2")
+    f1.write_bytes(b"dummy content 1" * 10)
+    f2.write_bytes(b"dummy content 2" * 10)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

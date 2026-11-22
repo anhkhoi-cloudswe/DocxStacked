@@ -63,8 +63,10 @@ def test_valid_pinned_extension_id_accepted_without_token(tmp_path, monkeypatch)
     res = client.post(
         "/api/ingest",
         json={
+            "run_id": "test_ext_sec_01",
             "subject_code": "TEST101",
             "exam_title": "TEST101 - SU26 - FE",
+            "exam_url": "https://fuoverflow.com/threads/test-ext-sec.1234/",
             "questions": [],
             "options": {"ai_enabled": False},
         },

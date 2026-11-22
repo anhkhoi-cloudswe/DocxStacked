@@ -51,7 +51,7 @@ async def test_01_logout_deletes_all_storage_and_profiles():
     assert not profile_dir.exists(), "browser_profile_fuexam phải bị xoá sạch"
 
     # Trạng thái status phải trả logged_out
-    logged_in, status_code, username = _check_fuexam_auth_file()
+    logged_in, status_code, username, _ = _check_fuexam_auth_file()
     assert logged_in is False
     assert status_code == "logged_out"
     assert username is None
@@ -101,7 +101,7 @@ def test_03_dual_condition_xf_user_and_public_page():
             {"name": "xf_session", "value": "some_session_token", "domain": "fuexam.me"}
         ]
     }), encoding="utf-8")
-    logged_in, status_code, _ = _check_fuexam_auth_file()
+    logged_in, status_code, _, _ = _check_fuexam_auth_file()
     assert logged_in is False, "Chỉ có xf_session không được chấp nhận đăng nhập"
     assert status_code == "logged_out"
 
@@ -111,7 +111,7 @@ def test_03_dual_condition_xf_user_and_public_page():
             {"name": "xf_user", "value": "", "domain": "fuexam.me"}
         ]
     }), encoding="utf-8")
-    logged_in, status_code, _ = _check_fuexam_auth_file()
+    logged_in, status_code, _, _ = _check_fuexam_auth_file()
     assert logged_in is False
     assert status_code == "logged_out"
 

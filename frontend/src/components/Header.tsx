@@ -17,6 +17,7 @@ interface HeaderProps {
   onLogout?: () => void;
   platform?: PlatformType | null;
   onSwitchPlatform?: () => void;
+  authSource?: 'headed_chromium' | 'extension' | 'server' | null;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -32,17 +33,22 @@ export const Header: React.FC<HeaderProps> = ({
   onLogout,
   platform,
   onSwitchPlatform,
+  authSource,
 }) => {
   const [isDark, setIsDark] = useState<boolean>(() => {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
 
+  const isExtensionAuth = platform === 'fuexam' && authSource === 'extension';
+
   const handleLogout = async () => {
     const platformName = platform === 'fuexam' ? 'fuexam.me' : 'FUOverflow';
     const ok = await confirmModal({
-      title: 'Đăng xuất tài khoản',
-      message: `Bạn có chắc chắn muốn đăng xuất phiên tài khoản ${platformName}?`,
-      confirmText: 'Đăng xuất',
+      title: isExtensionAuth ? 'Ngắt kết nối DocxStacked' : 'Đăng xuất tài khoản',
+      message: isExtensionAuth
+        ? 'Bạn có chắc muốn ngắt kết nối phiên fuexam.me trên DocxStacked? Thao tác này chỉ xoá phiên lưu cục bộ trên DocxStacked, không làm đăng xuất tài khoản trên trình duyệt của bạn.'
+        : `Bạn có chắc chắn muốn đăng xuất phiên tài khoản ${platformName}?`,
+      confirmText: isExtensionAuth ? 'Ngắt kết nối' : 'Đăng xuất',
       isDanger: true,
     });
     if (!ok) return;
@@ -268,7 +274,13 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 type="button"
                 onClick={handleLogout}
-                aria-label={platform === 'fuexam' ? 'Đăng xuất khỏi tài khoản fuexam.me' : 'Đăng xuất khỏi tài khoản FUOverflow'}
+                aria-label={
+                  isExtensionAuth
+                    ? 'Ngắt kết nối phiên fuexam.me trên DocxStacked'
+                    : platform === 'fuexam'
+                    ? 'Đăng xuất khỏi tài khoản fuexam.me'
+                    : 'Đăng xuất khỏi tài khoản FUOverflow'
+                }
                 style={{
                   background: 'none',
                   border: '1px solid var(--border-subtle)',
@@ -283,10 +295,16 @@ export const Header: React.FC<HeaderProps> = ({
                   alignItems: 'center',
                   gap: '4px',
                 }}
-                title={platform === 'fuexam' ? 'Đăng xuất khỏi tài khoản fuexam.me' : 'Đăng xuất khỏi tài khoản FUOverflow'}
+                title={
+                  isExtensionAuth
+                    ? 'Ngắt kết nối phiên trên DocxStacked (không làm đăng xuất trên trình duyệt thật)'
+                    : platform === 'fuexam'
+                    ? 'Đăng xuất khỏi tài khoản fuexam.me'
+                    : 'Đăng xuất khỏi tài khoản FUOverflow'
+                }
               >
                 <LogoutIcon size={14} />
-                <span>Đăng xuất</span>
+                <span>{isExtensionAuth ? 'Ngắt kết nối' : 'Đăng xuất'}</span>
               </button>
             </div>
 

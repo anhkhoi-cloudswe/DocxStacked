@@ -463,6 +463,21 @@ export const ScreenSelectSubject: React.FC<Props> = ({
               <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                 Đã chọn: <strong style={{ color: 'var(--primary)' }}>{selectedCodes.length}</strong> môn
               </span>
+              <span
+                data-testid="subject-filter-count-label"
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  padding: '2px 8px',
+                  backgroundColor: 'var(--bg-subtle)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                }}
+              >
+                {displayedSubjects.length} / 292 môn
+              </span>
               <div style={{ display: 'inline-flex', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
                 <button
                   type="button"

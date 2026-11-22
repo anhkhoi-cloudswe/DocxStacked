@@ -8,9 +8,9 @@ from backend.app.core.config import get_settings
 from backend.app.db.session import init_db, rebind_db_engines
 from backend.app.modules.analysis.gemini_guard import get_daily_quota_tracker
 
-@pytest.fixture(autouse=True, scope="session")
-def anyio_backend():
-    return "asyncio"
+# @pytest.fixture(scope="session")
+# def anyio_backend():
+#     return "asyncio"
 
 @pytest.fixture(autouse=True, scope="session")
 def isolate_test_data_dir():

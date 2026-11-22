@@ -575,7 +575,7 @@ export const ScreenProgress: React.FC<Props> = ({
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>Câu hỏi hiện tại</div>
             <div
               data-testid="question-counter"
-              style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', fontWeight: 600 }}
+              style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)' }}
             >
               {totalQuestions > 0 ? `Câu ${currentQuestion} / ${totalQuestions}` : 'Đang chờ...'}
             </div>
@@ -595,7 +595,11 @@ export const ScreenProgress: React.FC<Props> = ({
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--text-xs)',
                 fontWeight: 600,
-                color: errorMessage ? 'var(--status-conflict-text)' : 'var(--primary)',
+                color: errorMessage && !isRateLimiting
+                  ? 'var(--status-conflict-text)'
+                  : currentStep.toLowerCase().includes('đang tải câu')
+                  ? 'var(--text-secondary)'
+                  : 'var(--primary)',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',

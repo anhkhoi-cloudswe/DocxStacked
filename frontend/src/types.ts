@@ -50,9 +50,12 @@ export interface AuthStatus {
 
 export interface FuexamAuthStatus {
   logged_in: boolean;
-  status_code: 'logged_in' | 'expired' | 'not_logged_in';
+  status_code: 'logged_in' | 'expired' | 'not_logged_in' | 'logged_out';
   username?: string | null;
   detail?: string;
+  auth_source?: 'headed_chromium' | 'extension' | null;
+  extension_heartbeat_alive?: boolean;
+  last_extension_heartbeat_age?: number | null;
 }
 
 export type FuexamLoginStatus =
@@ -100,6 +103,12 @@ export interface JobFile {
   size_bytes: number;
   cached?: boolean;
   cached_at?: string | null;
+  platform?: string;
+  confident_count?: number;
+  weak_count?: number;
+  conflict_count?: number;
+  ai_count?: number;
+  review_needed_questions?: number[];
 }
 
 export interface JobDetails {

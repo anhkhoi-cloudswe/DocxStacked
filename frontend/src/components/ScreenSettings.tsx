@@ -20,6 +20,7 @@ interface ScreenSettingsProps {
   onBack: () => void;
   platform?: 'fuoverflow' | 'fuexam';
   onFuexamLogout?: () => void;
+  fuexamAuthSource?: 'headed_chromium' | 'extension' | null;
 }
 
 const PROVIDER_TEMPLATES: Record<string, { label: string; isPaid?: boolean; template: AIProviderSetting }> = {
@@ -107,7 +108,7 @@ const IS_PAID_PROVIDER = (name: string): boolean => {
   return n.includes('anthropic') || (n.includes('openai') && !n.includes('openrouter'));
 };
 
-export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform, onFuexamLogout }) => {
+export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform, onFuexamLogout, fuexamAuthSource }) => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [initialSettingsJson, setInitialSettingsJson] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -193,10 +194,13 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
   };
 
   const handleLogoutFuexam = async () => {
+    const isExtension = fuexamAuthSource === 'extension';
     const ok = await confirmModal({
-      title: 'Đăng xuất fuexam.me',
-      message: 'Bạn có chắc chắn muốn đăng xuất tài khoản fuexam.me và xoá tệp phiên data/auth/fuexam_storage_state.json?',
-      confirmText: 'Đăng xuất fuexam',
+      title: isExtension ? 'Ngắt kết nối DocxStacked' : 'Đăng xuất fuexam.me',
+      message: isExtension
+        ? 'Bạn có chắc chắn muốn ngắt kết nối phiên fuexam.me trên DocxStacked? Thao tác này chỉ xoá phiên lưu cục bộ trên DocxStacked, không làm đăng xuất tài khoản trên trình duyệt của bạn.'
+        : 'Bạn có chắc chắn muốn đăng xuất tài khoản fuexam.me và xoá tệp phiên data/auth/fuexam_storage_state.json?',
+      confirmText: isExtension ? 'Ngắt kết nối' : 'Đăng xuất fuexam',
       isDanger: true,
     });
     if (!ok) return;
@@ -205,8 +209,10 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
       if (res.ok) {
         if (onFuexamLogout) onFuexamLogout();
         alertModal({
-          title: 'Đã đăng xuất fuexam',
-          message: 'Đã xoá tệp phiên data/auth/fuexam_storage_state.json thành công.',
+          title: isExtension ? 'Đã ngắt kết nối' : 'Đã đăng xuất fuexam',
+          message: isExtension
+            ? 'Đã ngắt kết nối phiên fuexam.me trên DocxStacked (không đăng xuất trình duyệt thật).'
+            : 'Đã xoá tệp phiên data/auth/fuexam_storage_state.json thành công.',
           type: 'success',
         });
       }
@@ -809,24 +815,31 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
         <p style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', margin: '0 0 var(--space-4) 0' }}>
           Đăng xuất tài khoản hoặc xoá phiên làm việc được lưu trên máy chủ.
         </p>
-        <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            onClick={handleLogoutFuexam}
-            data-testid="btn-logout-fuexam"
-            style={{
-              padding: '6px 14px',
-              backgroundColor: 'var(--bg-canvas)',
-              border: '1px solid #b45309',
-              borderRadius: 'var(--radius-sm)',
-              color: '#b45309',
-              fontWeight: 600,
-              fontSize: 'var(--text-xs)',
-              cursor: 'pointer',
-            }}
-          >
-            Đăng xuất fuexam.me (Xoá tệp phiên)
-          </button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={handleLogoutFuexam}
+              data-testid="btn-logout-fuexam"
+              style={{
+                padding: '6px 14px',
+                backgroundColor: 'var(--bg-canvas)',
+                border: '1px solid #b45309',
+                borderRadius: 'var(--radius-sm)',
+                color: '#b45309',
+                fontWeight: 600,
+                fontSize: 'var(--text-xs)',
+                cursor: 'pointer',
+              }}
+            >
+              {fuexamAuthSource === 'extension' ? 'Ngắt kết nối DocxStacked' : 'Đăng xuất fuexam.me (Xoá tệp phiên)'}
+            </button>
+          </div>
+          {fuexamAuthSource === 'extension' && (
+            <div style={{ fontSize: '11.5px', color: 'var(--text-secondary)' }}>
+              * Chỉ ngắt kết nối phiên trên DocxStacked, không làm đăng xuất tài khoản trên trình duyệt của bạn.
+            </div>
+          )}
         </div>
       </div>
       <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>

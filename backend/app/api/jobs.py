@@ -118,7 +118,7 @@ async def create_job(payload: JobCreateRequest):
     """Start a new exam compilation job. Enforces live authentication verification before job creation."""
     if payload.platform.lower() == "fuexam":
         from backend.app.api.auth import _check_fuexam_auth_file
-        logged_in, status_code, _ = _check_fuexam_auth_file()
+        logged_in, status_code, _, _ = _check_fuexam_auth_file()
         if not logged_in:
             raise HTTPException(
                 status_code=401,

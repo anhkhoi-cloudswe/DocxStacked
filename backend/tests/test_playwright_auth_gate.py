@@ -45,6 +45,7 @@ def dist_server():
 def create_isolated_page(context):
     """Creates a page with all global background endpoints intercepted to strictly prevent leakage to port 8000."""
     page = context.new_page()
+    page.add_init_script("try { localStorage.setItem('docxstacked_platform', 'fuoverflow'); } catch (e) {}")
     page.route("**/api/auth/extension-heartbeat", lambda route: route.fulfill(
         status=200, content_type="application/json", body=json.dumps({"ok": True})
     ))
@@ -383,11 +384,10 @@ def test_extension_logged_in_backend_logged_out_flow_and_screenshots(dist_server
             page_out.evaluate("window.__triggerCheckAuth && window.__triggerCheckAuth();")
             page_out.wait_for_timeout(200)
 
-        page_out.wait_for_selector("text=Chưa đăng nhập FUOverflow", timeout=5000)
-        # Verify diagnostic lines
-        assert page_out.locator("text=Chẩn đoán kết nối:").is_visible()
-        assert page_out.locator("text=Lý do lỗi cuối cùng:").is_visible()
-        assert page_out.locator("text=Số lần thất bại liên tiếp:").is_visible()
+        page_out.wait_for_selector("text=Chưa đăng nhập tài khoản FUOverflow", timeout=5000)
+        # Verify modal instructions
+        assert page_out.locator("text=Extension DocxStacked đã hoạt động nhưng bạn chưa đăng nhập").is_visible()
+        assert page_out.locator("[data-testid='btn-open-fuoverflow-login']").is_visible()
 
         # Capture screenshot 2: logged_out
         ss_logged_out = screenshot_dir / "screenshot_logged_out.png"
@@ -415,8 +415,8 @@ def test_extension_logged_in_backend_logged_out_flow_and_screenshots(dist_server
             page_noext.evaluate("window.__triggerCheckAuth && window.__triggerCheckAuth();")
             page_noext.wait_for_timeout(200)
 
-        page_noext.wait_for_selector("text=Chưa thấy extension trên trình duyệt này", timeout=5000)
-        assert page_noext.locator("text=Chẩn đoán kết nối:").is_visible()
+        page_noext.wait_for_selector("text=Chưa kết nối Extension DocxStacked", timeout=5000)
+        assert page_noext.locator("text=Hướng dẫn cài đặt Extension:").is_visible()
 
         # Capture screenshot 3: no_extension
         ss_noext = screenshot_dir / "screenshot_no_extension.png"

@@ -30,6 +30,12 @@ class DocumentItem(BaseModel):
     created_at: Optional[str] = None
     is_cached: bool = True
     platform: str = "fuoverflow"
+    path: Optional[str] = None
+    confident_count: Optional[int] = 0
+    weak_count: Optional[int] = 0
+    conflict_count: Optional[int] = 0
+    ai_count: Optional[int] = 0
+    review_needed_questions: Optional[List[int]] = None
 
 
 class UserProfileResponse(BaseModel):
@@ -60,7 +66,7 @@ async def get_my_profile(db: AsyncSession = Depends(get_db)):
 
     # Scan output directory for total documents
     out_dir = settings.STORAGE_DIR / "output"
-    total_docs = len(list(out_dir.glob("*/*.docx"))) if out_dir.exists() else 0
+    total_docs = len(list(out_dir.rglob("*.docx"))) if out_dir.exists() else 0
     subject_dirs = [d for d in out_dir.iterdir() if d.is_dir()] if out_dir.exists() else []
 
     return UserProfileResponse(
@@ -107,57 +113,71 @@ async def get_my_documents(
     documents: List[DocumentItem] = []
     seen_exam_keys: Set[str] = set()
 
-    # Scan all subject folders in output/ and collect candidate docx files
+    # Scan all subject folders in output/ (FUO, FUE, legacy subject dirs)
     candidate_files = []
-    for subj_dir in out_dir.iterdir():
-        if not subj_dir.is_dir():
-            continue
-        subj_code = subj_dir.name.upper()
-        # Separate fuexam and hide test subject folders
-        if subj_code == "FUEXAM" or "TEST" in subj_code or (subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code)):
-            continue
 
-        for doc_file in subj_dir.glob("*.docx"):
-            if not doc_file.is_file():
+    def _scan_folder(parent_dir: Path, default_plat: str):
+        if not parent_dir.exists() or not parent_dir.is_dir():
+            return
+        for subj_dir in parent_dir.iterdir():
+            if not subj_dir.is_dir():
                 continue
-            fn_u = doc_file.name.upper()
-            size_b = doc_file.stat().st_size
-
-            # Filter rules:
-            # 1. Hide 20 byte or < 50 byte files
-            if size_b < 50:
-                continue
-            # 2. Hide test files (TEST101..., "MLN122 - Test", (Extension Ingested))
-            if "TEST" in fn_u or "TEST" in subj_code or "(EXTENSION INGESTED)" in fn_u or fn_u.endswith("TEST.DOCX") or " - TEST" in fn_u:
-                continue
-            # 3. Hide files smaller than 50 KB
-            if size_b < 50 * 1024:
+            subj_code = subj_dir.name.upper()
+            if subj_code in ("FUO", "FUE", "FUEXAM") or "TEST" in subj_code or (subj_code.startswith("T") and len(subj_code) == 6 and any(char.isdigit() for char in subj_code)):
                 continue
 
-            candidate_files.append((subj_code, doc_file, doc_file.stat().st_mtime, "FE", subj_dir.name))
+            for doc_file in subj_dir.glob("*.docx"):
+                if not doc_file.is_file():
+                    continue
+                fn_u = doc_file.name.upper()
+                size_b = doc_file.stat().st_size
+                if size_b < 50:
+                    continue
+                if "TEST" in fn_u or "TEST" in subj_code or "(EXTENSION INGESTED)" in fn_u or fn_u.endswith("TEST.DOCX") or " - TEST" in fn_u:
+                    continue
+                if size_b < 50 * 1024:
+                    continue
+                plat = "fuexam" if (" - FUE - " in doc_file.name or default_plat == "fuexam") else "fuoverflow"
+                candidate_files.append((subj_code, doc_file, doc_file.stat().st_mtime, "FE", subj_dir.name, plat))
 
-        # Also scan {subj}_PE directory for PE exam folders
-        pe_dir = subj_dir / f"{subj_code}_PE"
-        if pe_dir.exists() and pe_dir.is_dir():
-            for pe_exam_dir in pe_dir.iterdir():
-                if pe_exam_dir.is_dir():
-                    pe_files = [f for f in pe_exam_dir.iterdir() if f.is_file()]
-                    if pe_files:
-                        tot_size = sum(f.stat().st_size for f in pe_files)
-                        latest_m = max(f.stat().st_mtime for f in pe_files)
-                        candidate_files.append((subj_code, pe_exam_dir, latest_m, "PE", pe_exam_dir.name))
+            # Also scan {subj}_PE directory for PE exam folders
+            pe_dir = subj_dir / f"{subj_code}_PE"
+            if pe_dir.exists() and pe_dir.is_dir():
+                for pe_exam_dir in pe_dir.iterdir():
+                    if pe_exam_dir.is_dir():
+                        pe_files = [f for f in pe_exam_dir.iterdir() if f.is_file()]
+                        if pe_files:
+                            tot_size = sum(f.stat().st_size for f in pe_files)
+                            latest_m = max(f.stat().st_mtime for f in pe_files)
+                            candidate_files.append((subj_code, pe_exam_dir, latest_m, "PE", pe_exam_dir.name, default_plat))
+
+    # 1. Scan FUO/
+    _scan_folder(out_dir / "FUO", "fuoverflow")
+    # 2. Scan FUE/
+    _scan_folder(out_dir / "FUE", "fuexam")
+    # 3. Scan root out_dir (legacy)
+    _scan_folder(out_dir, "fuoverflow")
+
+    # 4. Scan legacy fuexam dir
+    legacy_fuexam = out_dir / "fuexam"
+    if legacy_fuexam.exists() and legacy_fuexam.is_dir():
+        for doc_file in legacy_fuexam.glob("*.docx"):
+            if doc_file.is_file() and doc_file.stat().st_size >= 50:
+                fn = doc_file.name
+                m = re.match(r"^([A-Za-z0-9]+)", fn)
+                sc = m.group(1).upper() if m else "FUEXAM"
+                candidate_files.append((sc, doc_file, doc_file.stat().st_mtime, "FE", sc, "fuexam"))
 
     # Sort strictly newest first across all subjects by real file modification time (mtime)
     candidate_files.sort(key=lambda x: x[2], reverse=True)
 
-    for subj_code, target_item, mtime, item_type, title_name in candidate_files:
+    for subj_code, target_item, mtime, item_type, title_name, file_plat in candidate_files:
         if item_type == "PE":
             pe_files = [f for f in target_item.iterdir() if f.is_file()]
             tot_size = sum(f.stat().st_size for f in pe_files)
             created_dt = datetime.fromtimestamp(mtime)
             created_str = created_dt.strftime("%H:%M %d/%m/%Y")
-            rel_folder = f"data/output/{subj_code}/{subj_code}_PE/{title_name}"
-            # PE download bundles files or downloads folder
+            rel_folder = str(target_item.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
             download_url = f"/api/exports/bundle.zip?subject={subj_code}&files={','.join(str(f.relative_to(settings.BASE_DIR)).replace('\\\\', '/') for f in pe_files)}"
             documents.append(
                 DocumentItem(
@@ -170,6 +190,8 @@ async def get_my_documents(
                     download_url=download_url,
                     created_at=created_str,
                     is_cached=True,
+                    platform=file_plat,
+                    path=rel_folder,
                 )
             )
             continue
@@ -180,8 +202,8 @@ async def get_my_documents(
         meta = file_metadata_map.get(fn, {})
         exam_title = meta.get("exam_title") or fn.replace(".docx", "")
 
-        # Deduplicate by canonical exam key (e.g. normalize spaces and subject prefix)
-        canonical_key = f"{subj_code}::{exam_title.strip().lower()}"
+        # Deduplicate by canonical exam key and platform
+        canonical_key = f"{file_plat}::{subj_code}::{fn.strip().lower()}"
         if canonical_key in seen_exam_keys:
             continue
         seen_exam_keys.add(canonical_key)
@@ -189,17 +211,19 @@ async def get_my_documents(
         q_count = meta.get("questions_count", 0)
 
         # Load sidecar metadata if present
-        meta_file = doc_file.parent / f"{doc_file.name}.meta.json"
-        if meta_file.exists():
-            try:
-                with open(meta_file, "r", encoding="utf-8") as mf:
-                    sidecar_meta = json.load(mf)
-                    if sidecar_meta.get("questions_count"):
-                        q_count = sidecar_meta["questions_count"]
-                    if sidecar_meta.get("exam_title"):
-                        exam_title = sidecar_meta["exam_title"]
-            except Exception:
-                pass
+        sidecar_meta = {}
+        for meta_cand in (doc_file.parent / f"{doc_file.name}.meta.json", doc_file.with_suffix(".docx.meta.json")):
+            if meta_cand.exists():
+                try:
+                    with open(meta_cand, "r", encoding="utf-8") as mf:
+                        sidecar_meta = json.load(mf)
+                        if sidecar_meta.get("questions_count"):
+                            q_count = sidecar_meta["questions_count"]
+                        if sidecar_meta.get("exam_title"):
+                            exam_title = sidecar_meta["exam_title"]
+                        break
+                except Exception:
+                    pass
 
         # If question count not in metadata, query matching exam in DB or count in docx
         if q_count == 0:
@@ -229,7 +253,7 @@ async def get_my_documents(
         created_dt = datetime.fromtimestamp(mtime)
         created_str = created_dt.strftime("%H:%M %d/%m/%Y")
 
-        rel_path = f"data/output/{subj_code}/{fn}"
+        rel_path = str(doc_file.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
         download_url = f"/api/exports/download?file={rel_path}"
 
         documents.append(
@@ -243,39 +267,21 @@ async def get_my_documents(
                 download_url=download_url,
                 created_at=created_str,
                 is_cached=True,
-                platform="fuoverflow",
+                platform=file_plat,
+                path=rel_path,
+                confident_count=sidecar_meta.get("confident_count", 0),
+                weak_count=sidecar_meta.get("weak_count", 0),
+                conflict_count=sidecar_meta.get("conflict_count", 0),
+                ai_count=sidecar_meta.get("ai_count", 0),
+                review_needed_questions=sidecar_meta.get("review_needed_questions", []),
             )
         )
-
-    # Scan fuexam documents
-    fuexam_dir = settings.STORAGE_DIR / "output" / "fuexam"
-    if fuexam_dir.exists():
-        for doc_file in fuexam_dir.glob("*.docx"):
-            if not doc_file.is_file() or doc_file.stat().st_size < 50:
-                continue
-            fn = doc_file.name
-            m = re.match(r"^([A-Za-z0-9]+)", fn)
-            sc = m.group(1).upper() if m else "FUEXAM"
-            size_b = doc_file.stat().st_size
-            created_str = datetime.fromtimestamp(doc_file.stat().st_mtime).strftime("%H:%M %d/%m/%Y")
-            documents.append(
-                DocumentItem(
-                    filename=fn,
-                    subject_code=sc,
-                    exam_title=fn.replace(".docx", ""),
-                    questions_count=50,
-                    size_bytes=size_b,
-                    size_formatted=_format_size(size_b),
-                    download_url=f"/api/exports/fuexam/{fn}/download",
-                    created_at=created_str,
-                    is_cached=True,
-                    platform="fuexam",
-                )
-            )
 
     if platform and platform.strip():
         req_p = platform.strip().lower()
         documents = [d for d in documents if d.platform == req_p]
+
+    return documents
 
     return documents
 

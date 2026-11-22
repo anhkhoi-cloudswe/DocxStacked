@@ -1,77 +1,72 @@
 # HƯỚNG DẪN VẬN HÀNH DOCXSTACKED & ĐĂNG NHẬP NỀN TẢNG
 
-Tài liệu này hướng dẫn cách chạy hệ thống DocxStacked, khởi động giao diện Dashboard và đăng nhập hai nền tảng: **FUOverflow** và **fuexam.me**.
+Tài liệu này hướng dẫn cách chạy hệ thống DocxStacked, cài đặt/tải lại Extension và cơ chế đồng bộ phiên cho hai nền tảng: **FUOverflow** và **fuexam.me**.
 
 ---
 
 ## 1. Khởi động Backend & Frontend
 
-### 1.1 Khởi động Backend (FastAPI)
-Để backend có toàn quyền tương tác với màn hình đồ hoạ Windows (mở trình duyệt Chromium cho việc đăng nhập fuexam.me), bạn **phải** chạy backend trong phiên Windows thực (PowerShell hoặc Terminal của VS Code/IDE trên máy):
-
+### 1.1 Khởi động toàn bộ môi trường phát triển
 ```powershell
 cd c:\AK\PET_PROJECTS\DocxStacked
 .venv\Scripts\Activate.ps1
 python run_dev.py
 ```
-
-> [!IMPORTANT]
-> **LƯU Ý VẬN HÀNH QUAN TRỌNG (ĐĂNG NHẬP CHROMIUM HEADED):**
-> Nút *"Mở cửa sổ đăng nhập fuexam"* trên giao diện Dashboard sẽ yêu cầu backend khởi động một cửa sổ trình duyệt Chromium hiển thị (headed mode).
-> 
-> Trình duyệt hiển thị **chỉ có thể mở được** khi backend được khởi chạy từ phiên desktop/PowerShell của người dùng. Nếu backend được kích hoạt từ môi trường nền không tương tác (như CI/CD hoặc terminal ngầm của AI Agent không có desktop session), backend sẽ phát hiện và trả về mã lỗi rõ ràng kèm hướng dẫn:
-> 
-> ```
-> Không thể mở cửa sổ trình duyệt Chromium từ môi trường ngầm hoặc phiên không tương tác.
-> Vui lòng chạy backend từ PowerShell trên máy thật: python run_dev.py
-> (hoặc mở trực tiếp cửa sổ Chromium từ PowerShell: python scripts/fuexam_login.py)
-> ```
-> 
-> Giao diện Dashboard sẽ hiển thị thông báo lỗi trên ngay lập tức và **không bao giờ bị treo**.
+- `run_dev.py` sẽ khởi động FastAPI backend (cổng 8000), Vite frontend (cổng 5173), kiểm tra health check `/api/health` trước khi sẵn sàng.
+- Khi truy cập `http://localhost:5173`, nếu backend chưa hoàn toàn sẵn sàng, frontend sẽ hiển thị banner thông báo *"Backend chưa sẵn sàng, đang thử lại..."* và vô hiệu hoá các nút bấm đăng nhập cho tới khi kết nối ổn định.
 
 ---
 
-## 2. Phương thức đăng nhập fuexam.me duy nhất (Cửa sổ Chromium thật)
+## 2. Cài đặt / Tải lại Extension DocxStacked (Chrome & Edge)
 
-Hệ thống tuân thủ nguyên tắc bảo mật: **không đọc hoặc xử lý mật khẩu người dùng qua mã nguồn hay console**. Đăng nhập fuexam chỉ có một cách duy nhất:
+Extension DocxStacked chịu trách nhiệm hỗ trợ cào đề FUOverflow và tự động đồng bộ phiên đăng nhập của `fuexam.me`.
 
-### Cách 1: Đăng nhập trực quan qua Dashboard
-1. Truy cập Dashboard tại `http://localhost:5173` (hoặc `http://localhost:8000`).
-2. Chọn thẻ nền tảng **fuexam.me**.
-3. Nếu chưa có phiên làm việc, Dashboard sẽ hiện hộp thoại đăng nhập.
-4. Nhấn nút **"Mở cửa sổ đăng nhập"**. Cửa sổ Chromium sẽ mở đến `https://fuexam.me/login/`.
-5. Bạn tự nhập tài khoản và mật khẩu trực tiếp trên giao diện Chromium rồi nhấn "Đăng nhập".
-6. Dashboard tự động phát hiện phiên đăng nhập thành công và đóng hộp thoại trong 1 giây mà không cần thao tác thêm.
+### 2.1 Cách tải lại Extension Unpacked sau khi cập nhật
+Khi `manifest.json` được bổ sung quyền mới (`cookies` và host permission `https://fuexam.me/*`), trình duyệt Chrome/Edge yêu cầu tải lại extension unpacked:
 
-### Cách 2: Mở cửa sổ Chromium qua dòng lệnh
-Nếu bạn đang chạy từ PowerShell trên máy thật:
-```powershell
-.venv\Scripts\python.exe scripts/fuexam_login.py
-```
-- Cửa sổ Chromium thật sẽ xuất hiện để bạn tự nhập tài khoản và mật khẩu.
-- Sau khi đăng nhập thành công, phiên tự động lưu vào `data/auth/fuexam_storage_state.json`.
-
-### Kiểm tra trạng thái phiên
-```powershell
-.venv\Scripts\python.exe scripts/fuexam_login.py --status
-```
-Kết quả trả về:
-- `logged_in`: Đã có phiên hợp lệ.
-- `logged_out`: Chưa đăng nhập hoặc phiên đã hết hạn.
+1. Mở trình duyệt Chrome hoặc Edge:
+   - Trên Chrome: truy cập thanh địa chỉ `chrome://extensions`
+   - Trên Edge: truy cập thanh địa chỉ `edge://extensions`
+2. Bật chế độ **Developer mode** (Chế độ dành cho nhà phát triển) ở góc trên bên phải.
+3. Tìm extension **DocxStacked**:
+   - Nếu đã cài đặt trước đó: Nhấn nút **Tải lại (Reload / biểu tượng mũi tên xoay)** trên thẻ extension.
+   - Nếu cài mới lần đầu: Nhấn **Tải tiện ích đã giải nén (Load unpacked)** -> Chọn thư mục `extension` trong dự án (`c:\AK\PET_PROJECTS\DocxStacked\extension`).
+4. Nếu trình duyệt hiện popup yêu cầu xác nhận quyền mới:
+   - Xác nhận chấp thuận cấp quyền **"Đọc và thay đổi dữ liệu của bạn trên fuexam.me"** và **"Cookies"**.
 
 ---
 
-## 3. Quản lý phiên FUOverflow
+## 3. Cơ chế đăng nhập fuexam.me qua Extension (Mặc định)
 
-- Nền tảng FUOverflow sử dụng **Extension DocxStacked trên trình duyệt Chrome/Edge** làm nguồn xác thực duy nhất (Single Source of Truth).
-- Người dùng chỉ cần đăng nhập tài khoản FUOverflow trên trình duyệt có cài Extension.
-- Dashboard tự động kết nối qua extension PING / externally_connectable với cơ chế debounce $\ge 30\text{s}$, không spam request.
-- Khi truy cập Dashboard từ Extension (bấm "Mở dashboard" trên popup hoặc URL có tham số `?source=extension`), hệ thống tự động bỏ qua màn hình chọn nền tảng và vào thẳng FUOverflow mà không hiện modal.
+DocxStacked sử dụng phương án **đồng bộ phiên qua Extension làm mặc định** cho fuexam.me:
+- Người dùng **chỉ cần đăng nhập trên trình duyệt thật của mình** tại tab `https://fuexam.me/login/`.
+- Extension tự động đọc các cookie cần thiết (`xf_user`, `xf_session`, `xf_csrf`, `cf_clearance`) và gửi về backend qua API bảo mật `POST /api/auth/fuexam/extension-session` với header `X-Ingest-Token`.
+- **Bảo mật tuyệt đối**: DocxStacked không ghi log giá trị cookie ở bất kỳ file nhật ký hay console nào.
+- Backend probe kiểm tra phiên trực tiếp trên `https://fuexam.me/` (xác nhận HTTP 200 và thẻ `html[data-logged-in="true"]`), trích xuất tên tài khoản thật (ví dụ: *Đông Khởi*) và đánh dấu phiên thành công.
+- Modal trên Dashboard tự động phát hiện và đóng trong 1 giây.
+
+### 3.1 Khi phiên hết hạn giữa lúc đang cào (Mid-Job)
+- Nếu phiên fuexam.me hết hạn khi đang tải tài liệu đề thi, job sẽ tự động **tạm dừng an toàn**.
+- Hộp thoại cảnh báo xuất hiện: *"Đăng nhập lại fuexam.me ở tab trình duyệt, DocxStacked sẽ tự nhận"*.
+- Người dùng chỉ cần chuyển sang tab trình duyệt đăng nhập lại, DocxStacked sẽ tự động nhận phiên mới và tiếp tục cào mà không cần tạo lại job.
+
+### 3.2 Ngắt kết nối phiên Extension
+- Nhấn nút **"Ngắt kết nối DocxStacked"** trên Header hoặc trong trang **Cài đặt**.
+- Thao tác này **chỉ xoá phiên lưu cục bộ trên DocxStacked**, tuyệt đối **KHÔNG gọi server-side logout** trên fuexam.me, giúp tài khoản trên trình duyệt thật của bạn vẫn duy trì đăng nhập bình thường.
 
 ---
 
-## 4. Xoá phiên / Đăng xuất
+## 4. Lựa chọn nâng cao: Dùng cửa sổ Chromium riêng (Headed Playwright)
 
-- **fuexam.me**: Người dùng có thể nhấn nút **"Đăng xuất fuexam.me (Xoá tệp phiên)"** trong trang **Cài đặt** (Settings) hoặc trên thanh tiêu đề Header. Thao tác này sẽ xoá tệp `data/auth/fuexam_storage_state.json`.
-- **FUOverflow**: Nhấn nút "Đăng xuất" trên Header để xoá phiên đăng nhập.
+Dành cho trường hợp người dùng không thể cài extension hoặc môi trường thử nghiệm độc lập:
+- Trong modal đăng nhập fuexam.me, mở phần **"Nâng cao: Dùng cửa sổ Chromium riêng (thu gọn mặc định)"**.
+- Bấm nút *"Mở cửa sổ Chromium riêng"*. Backend sẽ khởi chạy cửa sổ Playwright headed với tiêu đề *"DocxStacked - Đăng nhập fuexam"*.
+- Chế độ này có watchdog tự động dọn dẹp profile tạm và tiến trình chrome mồ côi nếu có lỗi.
+- Khi đăng xuất từ chế độ này, backend sẽ thực hiện dọn dẹp profile và gọi server-side logout để đóng phiên.
 
+---
+
+## 5. Quản lý phiên FUOverflow
+
+- FUOverflow vẫn sử dụng Extension DocxStacked làm nguồn xác thực duy nhất (Single Source of Truth) qua cơ chế ingest/externally_connectable hiện có.
+- Tất cả các module và file mã nguồn của FUOverflow trong extension (`background.js`, `content.js`, `sidepanel.js`, `offscreen.js`) được bảo toàn nguyên vẹn 100%.

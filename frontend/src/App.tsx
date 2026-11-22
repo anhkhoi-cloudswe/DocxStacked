@@ -168,6 +168,7 @@ export const App: React.FC = () => {
   const [platform, setPlatform] = useState<PlatformType | null>(getInitialPlatform);
   const [isFuexamLoggedIn, setIsFuexamLoggedIn] = useState<boolean>(false);
   const [fuexamUsername, setFuexamUsername] = useState<string>('');
+  const [fuexamAuthSource, setFuexamAuthSource] = useState<'headed_chromium' | 'extension' | null>(null);
   const [hasInitialFuexamChecked, setHasInitialFuexamChecked] = useState<boolean>(false);
   const [isBackendReady, setIsBackendReady] = useState<boolean>(true);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('select');
@@ -357,13 +358,16 @@ export const App: React.FC = () => {
         const logged = Boolean(data && data.logged_in);
         setIsFuexamLoggedIn(logged);
         setFuexamUsername(data?.username || '');
+        setFuexamAuthSource(data?.auth_source || null);
       } else {
         setIsFuexamLoggedIn(false);
         setFuexamUsername('');
+        setFuexamAuthSource(null);
       }
     } catch {
       setIsFuexamLoggedIn(false);
       setFuexamUsername('');
+      setFuexamAuthSource(null);
     } finally {
       setHasInitialFuexamChecked(true);
     }
@@ -460,6 +464,7 @@ export const App: React.FC = () => {
         await fetch('/api/auth/fuexam/logout', { method: 'POST' }).catch(() => {});
         setIsFuexamLoggedIn(false);
         setFuexamUsername('');
+        setFuexamAuthSource(null);
       } else {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -883,6 +888,7 @@ export const App: React.FC = () => {
         onLogout={handleLogout}
         platform={platform}
         onSwitchPlatform={handleSwitchPlatform}
+        authSource={platform === 'fuexam' ? fuexamAuthSource : authSource}
       />
 
       <main style={{ flex: 1, padding: 'var(--space-6) var(--space-4)' }}>
@@ -895,7 +901,12 @@ export const App: React.FC = () => {
                 <ScreenSettings
                   onBack={handleCloseSettings}
                   platform={platform}
-                  onFuexamLogout={() => setIsFuexamLoggedIn(false)}
+                  onFuexamLogout={() => {
+                    setIsFuexamLoggedIn(false);
+                    setFuexamUsername('');
+                    setFuexamAuthSource(null);
+                  }}
+                  fuexamAuthSource={fuexamAuthSource}
                 />
               )}
 

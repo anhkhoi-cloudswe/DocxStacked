@@ -16,8 +16,8 @@ def test_format_exam_docx_filename():
         term="SU26",
         url="https://fuoverflow.com/threads/123/",
     )
-    name = format_exam_docx_filename("CSD202", exam)
-    assert name == "CSD202 - SU26 - FE.docx"
+    name = format_exam_docx_filename("CSD202", exam, platform="fuoverflow")
+    assert name == "CSD202 - FUO - SU26 - FE.docx"
     assert "CSD202_CSD202" not in name
 
     # Test preserving RE (Retake) in title
@@ -27,9 +27,8 @@ def test_format_exam_docx_filename():
         term="SP26",
         url="https://fuoverflow.com/threads/6953/",
     )
-    name_re = format_exam_docx_filename("PRM392", exam_re)
-    assert name_re == "PRM392 - SP26 - RE.docx"
-    assert "FE" not in name_re
+    name_re = format_exam_docx_filename("PRM392", exam_re, platform="fuoverflow")
+    assert name_re == "PRM392 - FUO - SP26 - FE - RE.docx"
 
     # Test with title missing subject code
     exam_partial = Exam(
@@ -38,8 +37,8 @@ def test_format_exam_docx_filename():
         term="SP24",
         url="https://fuoverflow.com/threads/6954/",
     )
-    name_partial = format_exam_docx_filename("PRM392", exam_partial)
-    assert name_partial == "PRM392 - SP 2024 - RE.docx"
+    name_partial = format_exam_docx_filename("PRM392", exam_partial, platform="fuoverflow")
+    assert name_partial == "PRM392 - FUO - SP24 - FE - RE.docx"
 
 
 def test_crop_synthetic_image(tmp_path: Path):
@@ -108,7 +107,7 @@ def test_docx_builder_structure(tmp_path: Path):
     )
 
     assert docx_path.exists()
-    assert docx_path.name == "CSD202 - SU26 - FE.docx"
+    assert docx_path.name == "CSD202 - FUO - SU26 - FE.docx"
 
     doc = Document(str(docx_path))
     section = doc.sections[0]

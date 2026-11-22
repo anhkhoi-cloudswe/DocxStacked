@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 import urllib.request
 import urllib.error
 import uuid
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 import psutil
 
@@ -35,6 +35,9 @@ _latest_extension_heartbeat: dict = {
     "logged_in": False,
     "username": None,
 }
+
+# In-memory flag to signal extension to sync fuexam cookies
+_fuexam_sync_requested: bool = False
 
 
 class ExtensionHeartbeatRequest(BaseModel):
@@ -188,8 +191,9 @@ async def extension_heartbeat(payload: ExtensionHeartbeatRequest):
     """
     Called by browser extension (every 30-60s via alarms or upon opening sidepanel)
     to notify backend that the user is logged into fuoverflow.com.
+    Returns fuexam_sync_requested=true when backend is awaiting fuexam login sync.
     """
-    global _latest_extension_heartbeat
+    global _latest_extension_heartbeat, _fuexam_sync_requested, _fuexam_session_state
     _latest_extension_heartbeat = {
         "timestamp": time.time(),
         "logged_in": bool(payload.logged_in),
@@ -201,7 +205,20 @@ async def extension_heartbeat(payload: ExtensionHeartbeatRequest):
         touch_active_run_activity()
     except Exception:
         pass
-    return {"status": "ok", "recorded": _latest_extension_heartbeat}
+
+    # Kiểm tra xem có đang cần đồng bộ phiên fuexam.me từ extension không
+    is_fuexam_logged, _, _, _ = _check_fuexam_auth_file()
+    sync_needed = bool(
+        (_fuexam_sync_requested or _fuexam_session_state.get("state") in ("waiting", "starting"))
+        and not is_fuexam_logged
+    )
+
+    return {
+        "status": "ok",
+        "recorded": _latest_extension_heartbeat,
+        "fuexam_sync_requested": sync_needed,
+        "fueuxam_sync_requested": sync_needed,
+    }
 
 
 @router.get("/status", response_model=AuthStatusResponse)
@@ -615,7 +632,10 @@ class FuexamAuthStatusResponse(BaseModel):
     logged_in: bool
     status_code: str  # "logged_in", "expired", "not_logged_in"
     username: Optional[str] = None
+    auth_source: Optional[str] = None
     detail: str = ""
+    extension_heartbeat_alive: bool = False
+    last_extension_heartbeat_age: Optional[float] = None
 
 
 class FuexamLoginSessionResponse(BaseModel):
@@ -626,6 +646,10 @@ class FuexamLoginSessionResponse(BaseModel):
     error: Optional[str] = None
     started_at: Optional[float] = None
     recent_logs: List[str] = []
+
+
+class FuexamExtensionSessionRequest(BaseModel):
+    cookies: List[dict]
 
 
 _fuexam_session_state: dict = {
@@ -694,46 +718,237 @@ def _get_recent_fuexam_logs(max_lines: int = 20) -> List[str]:
         return []
 
 
-def _check_fuexam_auth_file() -> Tuple[bool, str, Optional[str]]:
-    """Check if fuexam_storage_state.json exists and has valid cookies."""
+def _check_fuexam_auth_file() -> Tuple[bool, str, Optional[str], Optional[str]]:
+    """Check if fuexam_storage_state.json exists and has valid cookies. Returns (logged_in, status_code, username, auth_source)."""
     auth_file = get_settings().DATA_DIR / "auth" / "fuexam_storage_state.json"
     if not auth_file.exists():
-        return False, "logged_out", None
+        return False, "logged_out", None, None
     try:
         data = json.loads(auth_file.read_text(encoding="utf-8"))
         cookies = data.get("cookies", [])
         cookies_dict = {c.get("name"): c.get("value") for c in cookies}
         # Must have xf_user with non-empty value (xf_session alone is NOT accepted)
         if not cookies_dict.get("xf_user"):
-            return False, "logged_out", None
+            return False, "logged_out", None, None
 
-        # Load real username from user info file
+        # Load real username and auth_source from user info file
         username = None
+        auth_source = "headed_chromium"
         user_file = get_settings().DATA_DIR / "auth" / "fuexam_user.json"
         if user_file.exists():
             try:
                 u_data = json.loads(user_file.read_text(encoding="utf-8"))
                 username = u_data.get("username")
+                auth_source = u_data.get("auth_source", "headed_chromium")
             except Exception:
                 pass
 
-        return True, "logged_in", username or "Thành viên fuexam"
+        return True, "logged_in", username or "Thành viên fuexam", auth_source
     except Exception as e:
         logger.warning(f"Error reading fuexam auth file: {e}")
-        return False, "logged_out", None
+        return False, "logged_out", None, None
 
 
 @router.get("/fuexam/status", response_model=FuexamAuthStatusResponse)
 async def get_fuexam_auth_status():
     """Kiểm tra trạng thái phiên đăng nhập của nền tảng fuexam.me."""
-    logged_in, status_code, username = _check_fuexam_auth_file()
+    logged_in, status_code, username, auth_source = _check_fuexam_auth_file()
+    now = time.time()
+    last_hb = _latest_extension_heartbeat.get("timestamp", 0.0)
+    hb_age = now - last_hb if last_hb > 0 else 999999.0
+    hb_alive = hb_age <= 30.0
+
     detail = f"Đã đăng nhập fuexam.me ({username})." if logged_in else "Chưa đăng nhập fuexam.me."
     return FuexamAuthStatusResponse(
         logged_in=logged_in,
         status_code=status_code,
         username=username,
+        auth_source=auth_source,
         detail=detail,
+        extension_heartbeat_alive=hb_alive,
+        last_extension_heartbeat_age=hb_age if last_hb > 0 else None,
     )
+
+
+@router.post("/fuexam/sync-request")
+async def request_fuexam_sync():
+    """Bật cờ yêu cầu extension đồng bộ phiên fuexam.me (khi modal mở hoặc người dùng bấm)."""
+    global _fuexam_sync_requested, _fuexam_session_state
+    _fuexam_sync_requested = True
+    _fuexam_session_state["state"] = "waiting"
+    _fuexam_session_state["stage"] = "waiting_for_extension"
+    _fuexam_session_state["message"] = "Đang chờ Extension DocxStacked gửi phiên đăng nhập fuexam.me..."
+    _fuexam_session_state["error"] = None
+    return {"success": True, "sync_requested": True}
+
+
+@router.post("/fuexam/extension-session")
+async def receive_fuexam_extension_session(
+    payload: FuexamExtensionSessionRequest,
+    request: Request,
+    x_ingest_token: Optional[str] = Header(None, alias="X-Ingest-Token"),
+    x_docxstacked_ext: Optional[str] = Header(None, alias="X-DocxStacked-Ext"),
+):
+    """
+    Tiếp nhận cookies phiên đăng nhập fuexam.me từ extension:
+    - Kiểm tra token (403 nếu sai).
+    - Bắt buộc có xf_user không rỗng (400 nếu thiếu).
+    - Probe GET https://fuexam.me/ cần HTTP 200 và html[data-logged-in="true"].
+    - Thành công: lưu data/auth/fuexam_storage_state.json và fuexam_user.json (auth_source="extension").
+    - Thất bại: trả lỗi rõ, không lưu.
+    - TUYỆT ĐỐI không ghi log giá trị cookie ở bất kỳ nơi nào.
+    """
+    global _fuexam_session_state, _fuexam_sync_requested
+    import requests
+    from bs4 import BeautifulSoup
+
+    # 1. Kiểm tra Token Ingest
+    expected_token = (get_settings().INGEST_TOKEN or "").strip()
+    if not expected_token:
+        expected_token = getattr(get_settings(), "LOCAL_INGEST_KEY", "docxstacked_local_secret_2026")
+
+    provided_token = (x_ingest_token or "").strip()
+    configured_ext_id = (get_settings().EXTENSION_ID or "kicplcdfmbcfjildbbimpfiljlmfokea").strip()
+    origin_header = request.headers.get("origin", "")
+    is_trusted_origin = origin_header.startswith(f"chrome-extension://{configured_ext_id}")
+    is_trusted_header = x_docxstacked_ext == configured_ext_id
+
+    # If neither valid token nor trusted extension origin/header
+    token_valid = bool(provided_token and provided_token == expected_token)
+    if not token_valid and not (is_trusted_origin or is_trusted_header):
+        logger.warning("[FUEXAM EXTENSION AUTH] Từ chối request do sai Ingest Token và không có Origin extension hợp lệ.")
+        raise HTTPException(status_code=403, detail="Xác thực Ingest Token không hợp lệ.")
+
+    # 2. Kiểm tra danh sách cookies
+    raw_cookies = payload.cookies or []
+    cookies_dict = {}
+    playwright_cookies = []
+
+    for c in raw_cookies:
+        name = c.get("name")
+        val = c.get("value")
+        if name and val is not None:
+            cookies_dict[name] = val
+            playwright_cookies.append({
+                "name": name,
+                "value": val,
+                "domain": c.get("domain") or ".fuexam.me",
+                "path": c.get("path") or "/",
+                "expires": c.get("expirationDate", -1),
+                "httpOnly": bool(c.get("httpOnly", False)),
+                "secure": bool(c.get("secure", True)),
+                "sameSite": c.get("sameSite", "Lax"),
+            })
+
+    xf_user = cookies_dict.get("xf_user")
+    if not xf_user or not str(xf_user).strip():
+        logger.warning("[FUEXAM EXTENSION AUTH] Thiếu cookie xf_user hoặc giá trị rỗng.")
+        raise HTTPException(
+            status_code=400,
+            detail="Thiếu cookie xf_user hoặc cookie rỗng. Bạn chưa đăng nhập tài khoản trên fuexam.me.",
+        )
+
+    # 3. Probe GET https://fuexam.me/ để xác minh phiên
+    is_valid = False
+    real_username = None
+    probe_url = "https://fuexam.me/"
+    probe_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
+    }
+
+    try:
+        resp = await asyncio.to_thread(
+            requests.get,
+            probe_url,
+            cookies=cookies_dict,
+            headers=probe_headers,
+            timeout=10,
+        )
+        if resp.status_code == 200 and 'data-logged-in="true"' in resp.text:
+            is_valid = True
+            from scripts.fuexam_login import extract_real_username_from_html
+            real_username = extract_real_username_from_html(resp.text)
+    except Exception as e:
+        logger.warning(f"[FUEXAM EXTENSION AUTH] Probe requests thất bại: {e}. Thử fallback Playwright headless...")
+
+    # Fallback Playwright headless nếu requests bị chặn hoặc lỗi
+    if not is_valid:
+        try:
+            def _playwright_probe():
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(headless=True)
+                    ctx = browser.new_context()
+                    ctx.add_cookies(playwright_cookies)
+                    page = ctx.new_page()
+                    page.goto(probe_url, wait_until="domcontentloaded", timeout=15000)
+                    content = page.content()
+                    browser.close()
+                    if 'data-logged-in="true"' in content:
+                        from scripts.fuexam_login import extract_real_username_from_html
+                        u = extract_real_username_from_html(content)
+                        return True, u
+                    return False, None
+
+            is_valid, real_username = await asyncio.to_thread(_playwright_probe)
+        except Exception as e:
+            logger.warning(f"[FUEXAM EXTENSION AUTH] Playwright headless probe thất bại: {e}")
+
+    if not is_valid:
+        logger.warning("[FUEXAM EXTENSION AUTH] Xác minh phiên fuexam.me thất bại (không có data-logged-in='true').")
+        raise HTTPException(
+            status_code=400,
+            detail="Phiên đăng nhập không hợp lệ hoặc đã hết hạn trên fuexam.me (trang web không trả về data-logged-in='true'). Vui lòng đăng nhập lại trên trình duyệt.",
+        )
+
+    # 4. Lưu storage_state.json và fuexam_user.json
+    current_settings = get_settings()
+    auth_dir = current_settings.DATA_DIR / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    auth_file = auth_dir / "fuexam_storage_state.json"
+    user_file = auth_dir / "fuexam_user.json"
+
+    storage_state_data = {
+        "cookies": playwright_cookies,
+        "origins": [],
+    }
+    auth_file.write_text(json.dumps(storage_state_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    final_username = real_username or "Thành viên fuexam"
+    user_data = {
+        "username": final_username,
+        "logged_in_at": datetime.now().isoformat(),
+        "auth_source": "extension",
+    }
+    user_file.write_text(json.dumps(user_data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    try:
+        from scripts.fuexam_login import set_owner_only_permissions
+        set_owner_only_permissions(auth_file)
+        set_owner_only_permissions(user_file)
+    except Exception:
+        pass
+
+    # 5. Cập nhật state
+    _fuexam_session_state = {
+        "run_id": None,
+        "state": "success",
+        "stage": "authenticated",
+        "pid": None,
+        "started_at": time.time(),
+        "message": f"Đồng bộ phiên fuexam.me thành công từ extension ({final_username}).",
+        "error": None,
+    }
+    _fuexam_sync_requested = False
+
+    logger.info(f"[FUEXAM EXTENSION AUTH] Đã đồng bộ thành công phiên fuexam.me từ extension cho tài khoản '{final_username}'.")
+    return {
+        "success": True,
+        "username": final_username,
+        "message": f"Đã đồng bộ phiên fuexam.me thành công ({final_username}).",
+    }
 
 
 @router.post("/fuexam/login/start", response_model=FuexamLoginSessionResponse)
@@ -748,7 +963,7 @@ async def start_fuexam_login():
     global _fuexam_session_state
 
     # 1. Nếu đã đăng nhập rồi
-    logged_in, _, username = _check_fuexam_auth_file()
+    logged_in, _, username, _ = _check_fuexam_auth_file()
     if logged_in:
         _fuexam_session_state = {
             "run_id": None,
@@ -913,7 +1128,7 @@ async def get_fuexam_login_status():
     global _fuexam_session_state
 
     # 1. Kiểm tra nếu file storage_state đã xuất hiện phiên hợp lệ
-    logged_in, _, username = _check_fuexam_auth_file()
+    logged_in, _, username, _ = _check_fuexam_auth_file()
     if logged_in:
         cleanup_fuexam_chrome_and_profiles()
         _fuexam_session_state["state"] = "success"
@@ -1044,8 +1259,9 @@ async def check_chromium_self_check():
 def _perform_fuexam_logout_sync() -> tuple[bool, str]:
     """
     Exhaustive logout for fuexam:
-    1. Call server-side logout on fuexam.me if possible (POST /logout/ with _xfToken).
-       Strictly avoid touching /account/*.
+    1. Check auth_source in fuexam_user.json. If auth_source == "extension",
+       DO NOT call server-side logout on fuexam.me (as this would invalidate user's session in their browser).
+       Only call server-side logout if auth_source != "extension".
     2. Terminate any browser processes locking fuexam profile dirs.
     3. Delete storage_state.json and fuexam_user.json.
     4. Delete all profile/user_data_dir directories of Chromium used for fuexam.
@@ -1059,8 +1275,19 @@ def _perform_fuexam_logout_sync() -> tuple[bool, str]:
     user_file = current_settings.DATA_DIR / "auth" / "fuexam_user.json"
     profile_dir = current_settings.DATA_DIR / "browser_profile_fuexam"
 
-    # 1. Server-side logout
-    if auth_file.exists():
+    # Check auth_source
+    auth_source = None
+    if user_file.exists():
+        try:
+            udata = json.loads(user_file.read_text(encoding="utf-8"))
+            auth_source = udata.get("auth_source")
+        except Exception:
+            pass
+
+    # 1. Server-side logout (ONLY if not extension auth)
+    if auth_source == "extension":
+        logger.info("Extension auth mode detected: Skipping server-side logout to preserve browser session.")
+    elif auth_file.exists():
         try:
             state_data = json.loads(auth_file.read_text(encoding="utf-8"))
             cookies = {c["name"]: c["value"] for c in state_data.get("cookies", [])}
@@ -1122,6 +1349,8 @@ def _perform_fuexam_logout_sync() -> tuple[bool, str]:
     except Exception as e:
         logger.warning(f"Error deleting fuexam profile directory: {e}")
 
+    if auth_source == "extension":
+        return True, "Đã ngắt kết nối phiên fuexam.me trên DocxStacked (không đăng xuất trình duyệt thật)."
     return True, "Đã đăng xuất fuexam.me thành công."
 
 
