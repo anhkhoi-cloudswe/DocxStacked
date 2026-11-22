@@ -387,8 +387,16 @@ async def update_settings(db: AsyncSession, new_settings: Dict[str, Any]) -> Dic
             if p_name in invalid_set and p.get("enabled"):
                 p["enabled"] = False
 
+    # Extract and persist extension_id if provided
+    if "extension" in clean_settings and isinstance(clean_settings["extension"], dict):
+        ext_id = clean_settings["extension"].get("extension_id")
+        if ext_id is not None:
+            clean_ext_id = str(ext_id).strip()
+            save_api_key_to_env("EXTENSION_ID", clean_ext_id)
+            app_settings.EXTENSION_ID = clean_ext_id
+
     # Save to database
-    sections = ["export", "ai", "voting", "crawl"]
+    sections = ["export", "ai", "voting", "crawl", "extension"]
     for sec in sections:
         if sec in clean_settings:
             val = clean_settings[sec]

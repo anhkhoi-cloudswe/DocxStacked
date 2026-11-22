@@ -142,9 +142,10 @@ async def get_settings_endpoint(db: AsyncSession = Depends(get_db)):
     active = await get_active_settings(db)
     masked = mask_settings_for_api(active)
     # Include ingest token & extension id for UI display
+    ext_id = (active.get("extension") or {}).get("extension_id") or settings.EXTENSION_ID or "kicplcdfmbcfjildbbimpfiljlmfokea"
     masked["extension"] = {
         "ingest_token": settings.INGEST_TOKEN,
-        "extension_id": settings.EXTENSION_ID or "",
+        "extension_id": ext_id,
     }
     return masked
 

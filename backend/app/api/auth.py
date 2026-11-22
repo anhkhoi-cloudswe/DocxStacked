@@ -652,6 +652,14 @@ class FuexamExtensionSessionRequest(BaseModel):
     cookies: List[dict]
 
 
+class FuexamModalMetricRequest(BaseModel):
+    duration_ms: int
+    outcome: str
+    sync_method: Optional[str] = "unknown"
+    username: Optional[str] = None
+    extension_id: Optional[str] = None
+
+
 _fuexam_session_state: dict = {
     "state": "idle",
     "stage": "idle",
@@ -949,6 +957,28 @@ async def receive_fuexam_extension_session(
         "username": final_username,
         "message": f"Đã đồng bộ phiên fuexam.me thành công ({final_username}).",
     }
+
+
+@router.post("/fuexam/modal-session-metric")
+async def record_fuexam_modal_session_metric(payload: FuexamModalMetricRequest):
+    """
+    Ghi lại thời gian mở modal đồng bộ phiên thực tế (tính bằng mili giây) vào log backend
+    để người dùng gửi lại; không tự khẳng định 'dưới 3 giây' khi chưa có số đo thật.
+    """
+    log_msg = (
+        f"[FUEXAM_SYNC_TIMING] Modal session completed in {payload.duration_ms} ms "
+        f"(outcome='{payload.outcome}', method='{payload.sync_method}', user='{payload.username}', ext_id='{payload.extension_id}')"
+    )
+    logger.info(log_msg)
+    try:
+        append_log(
+            f"[THỜI GIAN ĐỒNG BỘ] Modal hoàn tất sau {payload.duration_ms} ms "
+            f"(kết quả: {payload.outcome}, phương thức: {payload.sync_method})",
+            level="INFO",
+        )
+    except Exception:
+        pass
+    return {"status": "ok", "duration_ms": payload.duration_ms}
 
 
 @router.post("/fuexam/login/start", response_model=FuexamLoginSessionResponse)

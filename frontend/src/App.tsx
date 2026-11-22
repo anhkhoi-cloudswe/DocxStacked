@@ -11,7 +11,7 @@ import { FuoverflowLoginModal } from './components/FuoverflowLoginModal';
 import { GlobalModalHost, alertModal, confirmModal } from './components/ModalDialog';
 import type { JobDetails, JobFile, JobStatusResponse, PlatformType } from './types';
 
-const EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
+const DEFAULT_PINNED_EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
 
 interface EnqueueResult {
   success: boolean;
@@ -28,8 +28,10 @@ async function tryEnqueueViaExtension(
   subjectCode: string,
   examType: string,
   examIds?: number[],
-  forceReplace: boolean = false
+  forceReplace: boolean = false,
+  targetExtensionId?: string
 ): Promise<EnqueueResult> {
+  const activeExtId = targetExtensionId || DEFAULT_PINNED_EXTENSION_ID;
   if (typeof window !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
     try {
       let examsToEnqueue: any[] = [];
@@ -90,7 +92,7 @@ async function tryEnqueueViaExtension(
 
         try {
           (window as any).chrome.runtime.sendMessage(
-            EXTENSION_ID,
+            activeExtId,
             {
               type: 'ENQUEUE_EXAMS',
               payload: {
@@ -180,6 +182,18 @@ export const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [initialOpenLogin, setInitialOpenLogin] = useState<boolean>(false);
   const [loginTrigger, setLoginTrigger] = useState<number>(0);
+  const [extensionId, setExtensionId] = useState<string>(DEFAULT_PINNED_EXTENSION_ID);
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.extension?.extension_id) {
+          setExtensionId(data.extension.extension_id);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Authentication gate state machine (strictly 4 states: checking, no_extension, logged_out, logged_in)
   type AuthGateState = 'checking' | 'no_extension' | 'logged_out' | 'logged_in';
@@ -215,7 +229,7 @@ export const App: React.FC = () => {
 
     try {
       // 1. Probe extension presence and forum auth
-      const PINNED_EXT_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
+      const activeExtId = extensionId || DEFAULT_PINNED_EXTENSION_ID;
       let extDetected = false;
       let extAuthLoggedIn: boolean | null = null;
       let extAuthUsername: string | null = null;
@@ -245,7 +259,7 @@ export const App: React.FC = () => {
               }
             }, 1500);
             (window as any).chrome.runtime.sendMessage(
-              PINNED_EXT_ID,
+              activeExtId,
               { type: 'PING_EXTENSION' },
               (response: any) => {
                 if (!done) {
@@ -714,7 +728,7 @@ export const App: React.FC = () => {
     }
 
     // Option 1: Send selected exams to Chrome extension via externally_connectable
-    const extResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds);
+    const extResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds, false, extensionId);
     if (extResult.success) {
       setIsLoading(false);
       await alertModal({
@@ -737,7 +751,7 @@ export const App: React.FC = () => {
       });
 
       if (shouldReplace) {
-        const replaceResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds, true);
+        const replaceResult = await tryEnqueueViaExtension(selectedSubject, selectedExamType, selectedExamIds, true, extensionId);
         if (replaceResult.success) {
           setIsLoading(false);
           await alertModal({
@@ -964,6 +978,8 @@ export const App: React.FC = () => {
                 <FuexamLoginModal
                   isOpen={hasInitialFuexamChecked && !isFuexamLoggedIn}
                   isBackendReady={isBackendReady}
+                  extensionId={extensionId}
+                  onUpdateExtensionId={(newId) => setExtensionId(newId)}
                   onClose={handleSwitchPlatform}
                   onSuccess={() => {
                     setIsFuexamLoggedIn(true);

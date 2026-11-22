@@ -35,6 +35,9 @@ class DocumentItem(BaseModel):
     weak_count: Optional[int] = 0
     conflict_count: Optional[int] = 0
     ai_count: Optional[int] = 0
+    image_count: Optional[int] = 0
+    comment_count: Optional[int] = 0
+    source_breakdown: Optional[Dict[str, Any]] = None
     review_needed_questions: Optional[List[int]] = None
 
 
@@ -273,6 +276,9 @@ async def get_my_documents(
                 weak_count=sidecar_meta.get("weak_count", 0),
                 conflict_count=sidecar_meta.get("conflict_count", 0),
                 ai_count=sidecar_meta.get("ai_count", 0),
+                image_count=sidecar_meta.get("image_count", 0),
+                comment_count=sidecar_meta.get("comment_count", 0),
+                source_breakdown=sidecar_meta.get("source_breakdown", {}),
                 review_needed_questions=sidecar_meta.get("review_needed_questions", []),
             )
         )

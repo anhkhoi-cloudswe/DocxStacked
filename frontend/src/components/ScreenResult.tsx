@@ -156,9 +156,8 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
           <ul style={{ paddingLeft: 'var(--space-4)', color: 'var(--text-secondary)' }}>
             {isFuexam ? (
               <>
-                <li>Tất cả hình ảnh câu hỏi được tải độ phân giải gốc từ CDN/Media của fuexam.me.</li>
+                <li>Ảnh đề tải trực tiếp từ fuexam.me. Đáp án đọc từ dải đáp án in trong ảnh nếu có; nếu không có thì tổng hợp từ bình luận cộng đồng.</li>
                 <li>Đã căn chỉnh kích thước lề chuẩn khổ Letter (8.5 x 11 inch) trong Word.</li>
-                <li>Đáp án được nhận diện từ ảnh hoặc phân tích bình luận của cộng đồng thành viên.</li>
               </>
             ) : (
               <>
@@ -297,8 +296,56 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                       <span style={{ fontFamily: 'var(--font-mono)' }}>{formatFileSize(file.size_bytes)}</span>
                     </div>
 
-                    {/* Metadata & Confidence Stats */}
+                    {/* Metadata & Confidence Stats & Answer Sources (.meta.json) */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '6px' }}>
+                      {file.image_count !== undefined && file.image_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#ECFDF5',
+                            color: '#065F46',
+                            border: '1px solid #A7F3D0',
+                            fontWeight: 600,
+                          }}
+                          title="Số câu lấy đáp án từ dải đáp án trong ảnh (.meta.json)"
+                        >
+                          📷 Nguồn ảnh: {file.image_count} câu
+                        </span>
+                      )}
+                      {file.comment_count !== undefined && file.comment_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#EFF6FF',
+                            color: '#1E40AF',
+                            border: '1px solid #BFDBFE',
+                            fontWeight: 600,
+                          }}
+                          title="Số câu lấy đáp án tổng hợp từ bình luận (.meta.json)"
+                        >
+                          💬 Nguồn bình luận: {file.comment_count} câu
+                        </span>
+                      )}
+                      {file.ai_count !== undefined && file.ai_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#FEF3C7',
+                            color: '#92400E',
+                            border: '1px solid #FCD34D',
+                            fontWeight: 600,
+                          }}
+                          title="Số câu đọc giải thích hoặc giải quyết xung đột bằng AI (.meta.json)"
+                        >
+                          ⚡ Nguồn AI: {file.ai_count} câu
+                        </span>
+                      )}
                       {file.confident_count !== undefined && file.confident_count > 0 && (
                         <span
                           style={{

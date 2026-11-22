@@ -273,3 +273,46 @@ async def test_07_extension_logout_does_not_call_server():
     assert status_code == "logged_out"
     assert username is None
     assert auth_source is None
+
+
+@pytest.mark.asyncio
+async def test_08_modal_session_metric_recorded():
+    """8. Ghi lại thời gian mở modal thực tế dưới dạng mili giây vào backend log."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        payload = {
+            "duration_ms": 1450,
+            "outcome": "success",
+            "sync_method": "direct_extension",
+            "username": "Đông Khởi",
+            "extension_id": "kicplcdfmbcfjildbbimpfiljlmfokea",
+        }
+        resp = await client.post("/api/auth/fuexam/modal-session-metric", json=payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["duration_ms"] == 1450
+
+
+@pytest.mark.asyncio
+async def test_09_extension_id_setting_persisted():
+    """9. Cấu hình Extension ID qua API Settings được lưu và trả về chính xác."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Update extension_id
+        update_payload = {
+            "extension": {
+                "extension_id": "abcdefghijklmnopabcdefghijklmnop",
+            }
+        }
+        resp = await client.put("/api/settings", json=update_payload)
+        assert resp.status_code == 200
+
+        # 2. Get settings to verify
+        get_resp = await client.get("/api/settings")
+        assert get_resp.status_code == 200
+        settings_data = get_resp.json()
+        assert settings_data.get("extension", {}).get("extension_id") == "abcdefghijklmnopabcdefghijklmnop"
+
+        # 3. Clean up back to default
+        await client.put("/api/settings", json={"extension": {"extension_id": "kicplcdfmbcfjildbbimpfiljlmfokea"}})

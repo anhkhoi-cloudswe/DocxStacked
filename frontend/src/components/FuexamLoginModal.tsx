@@ -7,6 +7,8 @@ interface FuexamLoginModalProps {
   onSuccess: () => void;
   isMidJob?: boolean;
   isBackendReady?: boolean;
+  extensionId?: string;
+  onUpdateExtensionId?: (newId: string) => void;
 }
 
 export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
@@ -15,6 +17,8 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
   onSuccess,
   isMidJob = false,
   isBackendReady = true,
+  extensionId,
+  onUpdateExtensionId,
 }) => {
   // Sync state & extension state
   const [successUsername, setSuccessUsername] = useState<string | null>(null);
@@ -29,12 +33,94 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
   const [recentLogs, setRecentLogs] = useState<string[]>([]);
   const [showLogs, setShowLogs] = useState<boolean>(false);
 
+  // Dynamic extension ID state (Requirement 2)
+  const [currentExtId, setCurrentExtId] = useState<string>(extensionId || '');
+  const [inputExtId, setInputExtId] = useState<string>('');
+  const [isSavingExtId, setIsSavingExtId] = useState<boolean>(false);
+  const [saveExtIdMsg, setSaveExtIdMsg] = useState<string | null>(null);
+
+  // Sync prop changes
+  useEffect(() => {
+    if (extensionId) {
+      setCurrentExtId(extensionId);
+    }
+  }, [extensionId]);
+
+  // Load from /api/settings if empty
+  useEffect(() => {
+    if (!currentExtId) {
+      fetch('/api/settings')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          const id = data?.extension?.extension_id || 'kicplcdfmbcfjildbbimpfiljlmfokea';
+          if (id) {
+            setCurrentExtId(id);
+            if (onUpdateExtensionId) onUpdateExtensionId(id);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [currentExtId, onUpdateExtensionId]);
+
+  // Measured timing for actual modal session sync (Requirement 4)
+  const modalOpenTimeRef = useRef<number>(0);
+  const metricSentRef = useRef<boolean>(false);
+
+  const sendModalMetric = (outcome: 'success' | 'cancelled' | 'closed', syncMethod: string, user?: string | null) => {
+    if (metricSentRef.current || !modalOpenTimeRef.current) return;
+    metricSentRef.current = true;
+    const durationMs = Date.now() - modalOpenTimeRef.current;
+    fetch('/api/auth/fuexam/modal-session-metric', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        duration_ms: durationMs,
+        outcome,
+        sync_method: syncMethod,
+        username: user || null,
+        extension_id: currentExtId || null,
+      }),
+    }).catch(() => {});
+  };
+
+  const handleSaveExtensionId = async () => {
+    if (!inputExtId.trim()) return;
+    setIsSavingExtId(true);
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          extension: { extension_id: inputExtId.trim() },
+        }),
+      });
+      if (res.ok) {
+        const newId = inputExtId.trim();
+        setCurrentExtId(newId);
+        onUpdateExtensionId?.(newId);
+        setSaveExtIdMsg('Đã lưu Chrome Extension ID thành công! Đang kích hoạt kết nối...');
+        setTimeout(() => {
+          setSaveExtIdMsg(null);
+          triggerDirectExtensionSync(newId);
+        }, 800);
+      }
+    } catch (err) {
+      //
+    } finally {
+      setIsSavingExtId(false);
+    }
+  };
+
   // Direct extension sync via externally_connectable
-  const EXTENSION_ID = 'kicplcdfmbcfjildbbimpfiljlmfokea';
   const [isSyncingDirectly, setIsSyncingDirectly] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
 
-  const triggerDirectExtensionSync = () => {
+  const triggerDirectExtensionSync = (targetExtId?: string) => {
+    const extId = targetExtId || currentExtId;
+    if (!extId) {
+      setSyncFeedback('Chưa có Extension ID. Vui lòng nhập ID ở trên hoặc trong Cài đặt.');
+      return;
+    }
     setIsSyncingDirectly(true);
     setSyncFeedback('Đang gửi yêu cầu trực tiếp tới extension...');
     fetch('/api/auth/fuexam/sync-request', { method: 'POST' }).catch(() => {});
@@ -42,7 +128,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
     if (typeof (window as any).chrome !== 'undefined' && (window as any).chrome?.runtime?.sendMessage) {
       try {
         (window as any).chrome.runtime.sendMessage(
-          EXTENSION_ID,
+          extId,
           { type: 'SYNC_FUEXAM_SESSION' },
           (response: any) => {
             setIsSyncingDirectly(false);
@@ -52,6 +138,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
               return;
             }
             if (response && response.ok) {
+              sendModalMetric('success', 'direct_extension', response.username);
               setSuccessUsername(response.username || 'Thành viên');
               setTimeout(() => onSuccess(), 800);
             } else if (response && response.message) {
@@ -78,6 +165,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
   // When modal opens/closes
   useEffect(() => {
     if (!isOpen) {
+      sendModalMetric('closed', 'modal_closed');
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       if (secondsTimerRef.current) clearInterval(secondsTimerRef.current);
       setSuccessUsername(null);
@@ -89,6 +177,9 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
       setRecentLogs([]);
       return;
     }
+
+    modalOpenTimeRef.current = Date.now();
+    metricSentRef.current = false;
 
     // 1. Trigger direct extension sync via externally_connectable & notify backend
     triggerDirectExtensionSync();
@@ -119,6 +210,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
             }
           }
           if (authData.logged_in && authData.username) {
+            sendModalMetric('success', 'status_poll', authData.username);
             setSuccessUsername(authData.username);
             setTimeout(() => {
               onSuccess();
@@ -135,6 +227,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
             setRecentLogs(session.recent_logs);
           }
           if (session.state === 'success' || session.state === 'authenticated') {
+            sendModalMetric('success', 'chromium_headed', session.message);
             setSuccessUsername(session.message || 'Thành viên');
             setTimeout(() => {
               onSuccess();
@@ -395,6 +488,70 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
               </div>
             )}
 
+            {/* Missing Extension ID Notice & Guidance (Requirement 2) */}
+            {!currentExtId.trim() && (
+              <div
+                data-testid="missing-ext-id-guidance"
+                style={{
+                  backgroundColor: '#fffbeb',
+                  border: '1px solid #fcd34d',
+                  borderRadius: '6px',
+                  padding: '12px 14px',
+                  marginBottom: '16px',
+                }}
+              >
+                <div style={{ fontWeight: 700, color: '#92400e', fontSize: '13px', marginBottom: '4px' }}>
+                  ⚠️ Chưa có Chrome Extension ID để đồng bộ
+                </div>
+                <div style={{ fontSize: '12px', color: '#78350f', lineHeight: 1.5, marginBottom: '8px' }}>
+                  Để DocxStacked kết nối tự động với extension của bạn, vui lòng:
+                  <ol style={{ paddingLeft: '18px', margin: '4px 0 8px 0' }}>
+                    <li>Mở Chrome, truy cập <code>chrome://extensions</code> và bật <b>Chế độ cho nhà phát triển (Developer mode)</b>.</li>
+                    <li>Tìm tiện ích <b>DocxStacked</b> và sao chép chuỗi ID (hoặc ghim "key" trong manifest: <code>kicplcdfmbcfjildbbimpfiljlmfokea</code>).</li>
+                    <li>Dán vào ô bên dưới rồi bấm <b>Lưu &amp; Thử lại</b> (hoặc điền tại mục <b>Cài đặt &rarr; ô Chrome Extension ID</b>).</li>
+                  </ol>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    placeholder="Dán Chrome Extension ID (32 ký tự)"
+                    value={inputExtId}
+                    onChange={(e) => setInputExtId(e.target.value.trim())}
+                    style={{
+                      flex: 1,
+                      padding: '6px 10px',
+                      fontSize: '12px',
+                      border: '1px solid #d97706',
+                      borderRadius: '4px',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={isSavingExtId || !inputExtId.trim()}
+                    onClick={handleSaveExtensionId}
+                    style={{
+                      padding: '6px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      backgroundColor: '#d97706',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: isSavingExtId || !inputExtId.trim() ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {isSavingExtId ? 'Đang lưu...' : 'Lưu & Thử lại'}
+                  </button>
+                </div>
+                {saveExtIdMsg && (
+                  <div style={{ fontSize: '11px', color: '#059669', marginTop: '6px', fontWeight: 500 }}>
+                    ✓ {saveExtIdMsg}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Default Extension Flow: Explanation */}
             <p
               style={{
@@ -446,7 +603,10 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', flexWrap: 'wrap', marginBottom: '20px' }}>
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() => {
+                  sendModalMetric('closed', 'user_clicked_close');
+                  onClose();
+                }}
                 style={{
                   padding: '9px 16px',
                   fontSize: '13px',
@@ -462,7 +622,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={triggerDirectExtensionSync}
+                onClick={() => triggerDirectExtensionSync()}
                 disabled={isSyncingDirectly}
                 data-testid="btn-sync-now"
                 style={{

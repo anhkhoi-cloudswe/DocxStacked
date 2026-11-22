@@ -748,12 +748,15 @@ def build_exam_docx(
     # Atomic replace
     os.replace(str(temp_file_path), str(file_path))
 
-    # Save sidecar metadata .meta.json (Requirement 2)
+    # Save sidecar metadata .meta.json (Requirement 2 & Requirement 3)
     meta_file = output_dir / f"{filename}.meta.json"
     confident_cnt = 0
     weak_cnt = 0
     conflict_cnt = 0
     ai_cnt = 0
+    image_cnt = 0
+    comment_cnt = 0
+    no_data_cnt = 0
     review_needed_qs: List[int] = []
 
     if answers_map:
@@ -765,6 +768,15 @@ def build_exam_docx(
                 is_ai = getattr(ans, "source", None) == "ai" or src == "ai"
                 if is_ai:
                     ai_cnt += 1
+                elif src == "image":
+                    image_cnt += 1
+                elif src in ("community", "comments"):
+                    comment_cnt += 1
+                elif st == "NO_DATA" or src == "no_data":
+                    no_data_cnt += 1
+                else:
+                    comment_cnt += 1
+
                 if st == "CONFIDENT":
                     confident_cnt += 1
                 elif st == "WEAK":
@@ -786,6 +798,15 @@ def build_exam_docx(
         "weak_count": weak_cnt,
         "conflict_count": conflict_cnt,
         "ai_count": ai_cnt,
+        "image_count": image_cnt,
+        "comment_count": comment_cnt,
+        "no_data_count": no_data_cnt,
+        "source_breakdown": {
+            "image": image_cnt,
+            "comments": comment_cnt,
+            "ai": ai_cnt,
+            "no_data": no_data_cnt,
+        },
         "review_needed_questions": sorted(list(set(review_needed_qs))),
         "updated_at": datetime.now().isoformat(),
     }
