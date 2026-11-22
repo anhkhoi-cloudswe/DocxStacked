@@ -116,17 +116,17 @@ async def list_recent_jobs(
 @router.post("", response_model=JobResponse)
 async def create_job(payload: JobCreateRequest):
     """Start a new exam compilation job. Enforces live authentication verification before job creation."""
-    import os
-    if not os.environ.get("PYTEST_CURRENT_TEST"):
-        if payload.platform.lower() == "fuexam":
-            from backend.app.api.auth import _check_fuexam_auth_file
-            logged_in, status_code, _ = _check_fuexam_auth_file()
-            if not logged_in:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Cần đăng nhập fuexam.me: Phiên đăng nhập chưa được thiết lập hoặc đã hết hạn.",
-                )
-        else:
+    if payload.platform.lower() == "fuexam":
+        from backend.app.api.auth import _check_fuexam_auth_file
+        logged_in, status_code, _ = _check_fuexam_auth_file()
+        if not logged_in:
+            raise HTTPException(
+                status_code=401,
+                detail="Cần đăng nhập fuexam.me: Phiên đăng nhập chưa được thiết lập hoặc đã hết hạn.",
+            )
+    else:
+        import os
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
             from backend.app.api.auth import _check_browser_auth_async
             auth_check = await _check_browser_auth_async()
             if not auth_check.logged_in:

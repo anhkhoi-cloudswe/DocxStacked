@@ -167,6 +167,7 @@ type ScreenType = 'select' | 'progress' | 'result' | 'settings' | 'documents';
 export const App: React.FC = () => {
   const [platform, setPlatform] = useState<PlatformType | null>(getInitialPlatform);
   const [isFuexamLoggedIn, setIsFuexamLoggedIn] = useState<boolean>(false);
+  const [fuexamUsername, setFuexamUsername] = useState<string>('');
   const [isFuexamChecking, setIsFuexamChecking] = useState<boolean>(false);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('select');
   const [jobId, setJobId] = useState<string | null>(null);
@@ -353,12 +354,16 @@ export const App: React.FC = () => {
       const res = await fetch('/api/auth/fuexam/status');
       if (res.ok) {
         const data = await res.json();
-        setIsFuexamLoggedIn(Boolean(data && data.logged_in));
+        const logged = Boolean(data && data.logged_in);
+        setIsFuexamLoggedIn(logged);
+        setFuexamUsername(data?.username || '');
       } else {
         setIsFuexamLoggedIn(false);
+        setFuexamUsername('');
       }
     } catch {
       setIsFuexamLoggedIn(false);
+      setFuexamUsername('');
     } finally {
       setIsFuexamChecking(false);
     }
@@ -430,6 +435,7 @@ export const App: React.FC = () => {
       if (platform === 'fuexam') {
         await fetch('/api/auth/fuexam/logout', { method: 'POST' }).catch(() => {});
         setIsFuexamLoggedIn(false);
+        setFuexamUsername('');
       } else {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -825,7 +831,7 @@ export const App: React.FC = () => {
         onOpenLogin={handleOpenLogin}
         isBlocked={!isPlatformLoggedIn}
         isLoggedIn={isPlatformLoggedIn}
-        username={platform === 'fuexam' ? 'Thành viên fuexam' : authUsername}
+        username={platform === 'fuexam' ? (fuexamUsername || 'Thành viên') : authUsername}
         onLogout={handleLogout}
         platform={platform}
         onSwitchPlatform={handleSwitchPlatform}

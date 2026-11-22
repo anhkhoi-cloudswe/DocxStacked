@@ -633,28 +633,38 @@ _fuexam_session_state: dict = {
 
 def _check_fuexam_auth_file() -> Tuple[bool, str, Optional[str]]:
     """Check if fuexam_storage_state.json exists and has valid cookies."""
-    if not FUEXAM_AUTH_FILE.exists():
-        return False, "not_logged_in", None
+    auth_file = get_settings().DATA_DIR / "auth" / "fuexam_storage_state.json"
+    if not auth_file.exists():
+        return False, "logged_out", None
     try:
-        data = json.loads(FUEXAM_AUTH_FILE.read_text(encoding="utf-8"))
+        data = json.loads(auth_file.read_text(encoding="utf-8"))
         cookies = data.get("cookies", [])
-        has_auth = any(
-            c.get("name") in ("xf_user", "xf_session", "xf_user_session") and c.get("value")
-            for c in cookies
-        )
-        if has_auth:
-            return True, "logged_in", "fuexam_member"
-        return False, "expired", None
+        cookies_dict = {c.get("name"): c.get("value") for c in cookies}
+        # Must have xf_user with non-empty value (xf_session alone is NOT accepted)
+        if not cookies_dict.get("xf_user"):
+            return False, "logged_out", None
+
+        # Load real username from user info file
+        username = None
+        user_file = get_settings().DATA_DIR / "auth" / "fuexam_user.json"
+        if user_file.exists():
+            try:
+                u_data = json.loads(user_file.read_text(encoding="utf-8"))
+                username = u_data.get("username")
+            except Exception:
+                pass
+
+        return True, "logged_in", username or "Thành viên fuexam"
     except Exception as e:
         logger.warning(f"Error reading fuexam auth file: {e}")
-        return False, "not_logged_in", None
+        return False, "logged_out", None
 
 
 @router.get("/fuexam/status", response_model=FuexamAuthStatusResponse)
 async def get_fuexam_auth_status():
     """Kiểm tra trạng thái phiên đăng nhập của nền tảng fuexam.me."""
     logged_in, status_code, username = _check_fuexam_auth_file()
-    detail = "Đã đăng nhập fuexam.me." if logged_in else "Chưa đăng nhập fuexam.me."
+    detail = f"Đã đăng nhập fuexam.me ({username})." if logged_in else "Chưa đăng nhập fuexam.me."
     return FuexamAuthStatusResponse(
         logged_in=logged_in,
         status_code=status_code,
@@ -667,20 +677,18 @@ async def get_fuexam_auth_status():
 async def start_fuexam_login():
     """
     Khởi động cửa sổ Chromium headed để người dùng đăng nhập fuexam.me.
-    Lưu ý vận hành (Requirement 0): Chỉ hoạt động khi backend chạy trong phiên
-    Windows tương tác của người dùng (PowerShell hoặc IDE).
-    Nếu không thể mở Chromium, trả lỗi rõ ràng kèm hướng dẫn khắc phục.
+    Chạy trực tiếp từ backend không mở cmd console nháy, log ghi ra data/logs/fuexam_login.log.
     """
     global _fuexam_session_state
 
     # 1. Nếu đã đăng nhập rồi
-    logged_in, _, _ = _check_fuexam_auth_file()
+    logged_in, _, username = _check_fuexam_auth_file()
     if logged_in:
         _fuexam_session_state = {
             "state": "authenticated",
             "pid": None,
             "started_at": time.time(),
-            "message": "Đã có phiên đăng nhập fuexam.me hợp lệ.",
+            "message": f"Đã có phiên đăng nhập fuexam.me hợp lệ ({username}).",
             "error": None,
         }
         return FuexamLoginSessionResponse(**_fuexam_session_state)
@@ -704,18 +712,23 @@ async def start_fuexam_login():
         return FuexamLoginSessionResponse(**_fuexam_session_state)
 
     try:
-        flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        log_file_path = settings.DATA_DIR / "logs" / "fuexam_login.log"
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
+        log_out = open(log_file_path, "a", encoding="utf-8")
+
+        # creationflags=0 avoids cmd flashing; Chromium headed window opens directly
         proc = subprocess.Popen(
             [sys.executable, str(login_script), "--browser", "chromium"],
             cwd=str(settings.BASE_DIR),
-            creationflags=flags,
+            stdout=log_out,
+            stderr=subprocess.STDOUT,
+            creationflags=0,
         )
 
         # Allow process to start or detect immediate failure
         await asyncio.sleep(0.8)
         poll_res = proc.poll()
         if poll_res is not None and poll_res != 0:
-            # Process failed immediately
             err_msg = (
                 "Không thể mở cửa sổ trình duyệt Chromium từ môi trường ngầm hoặc phiên không tương tác. "
                 "Vui lòng chạy backend từ PowerShell trên máy thật (python run_dev.py) để hiển thị cửa sổ Chromium."
@@ -760,10 +773,10 @@ async def get_fuexam_login_status():
     global _fuexam_session_state
 
     # 1. Kiểm tra nếu file storage_state đã xuất hiện phiên hợp lệ
-    logged_in, _, _ = _check_fuexam_auth_file()
+    logged_in, _, username = _check_fuexam_auth_file()
     if logged_in:
         _fuexam_session_state["state"] = "authenticated"
-        _fuexam_session_state["message"] = "Đăng nhập fuexam.me thành công!"
+        _fuexam_session_state["message"] = f"Đăng nhập fuexam.me thành công! Tài khoản: {username}"
         _fuexam_session_state["error"] = None
         return FuexamLoginSessionResponse(**_fuexam_session_state)
 
@@ -819,15 +832,95 @@ async def cancel_fuexam_login():
     return {"success": True, "message": "Đã huỷ phiên đăng nhập."}
 
 
+def _perform_fuexam_logout_sync() -> tuple[bool, str]:
+    """
+    Exhaustive logout for fuexam:
+    1. Call server-side logout on fuexam.me if possible (POST /logout/ with _xfToken).
+       Strictly avoid touching /account/*.
+    2. Terminate any browser processes locking fuexam profile dirs.
+    3. Delete storage_state.json and fuexam_user.json.
+    4. Delete all profile/user_data_dir directories of Chromium used for fuexam.
+    """
+    import shutil
+    import requests
+    from bs4 import BeautifulSoup
+
+    current_settings = get_settings()
+    auth_file = current_settings.DATA_DIR / "auth" / "fuexam_storage_state.json"
+    user_file = current_settings.DATA_DIR / "auth" / "fuexam_user.json"
+    profile_dir = current_settings.DATA_DIR / "browser_profile_fuexam"
+
+    # 1. Server-side logout
+    if auth_file.exists():
+        try:
+            state_data = json.loads(auth_file.read_text(encoding="utf-8"))
+            cookies = {c["name"]: c["value"] for c in state_data.get("cookies", [])}
+            if "xf_user" in cookies or "xf_session" in cookies:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": "https://fuexam.me/",
+                }
+                resp = requests.get("https://fuexam.me/logout/", cookies=cookies, headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    token = None
+                    form = soup.find("form", action=lambda a: a and "logout" in a)
+                    if form:
+                        inp = form.find("input", attrs={"name": "_xfToken"})
+                        if inp:
+                            token = inp.get("value")
+                    if not token:
+                        inp = soup.find("input", attrs={"name": "_xfToken"})
+                        if inp:
+                            token = inp.get("value")
+                    if token:
+                        requests.post(
+                            "https://fuexam.me/logout/",
+                            data={"_xfToken": token, "_xfRedirect": "https://fuexam.me/"},
+                            cookies=cookies,
+                            headers=headers,
+                            timeout=10,
+                        )
+                        logger.info("Sent server-side logout request to fuexam.me successfully.")
+        except Exception as e:
+            logger.warning(f"Server-side logout warning: {e}")
+
+    # 2. Terminate running browser processes
+    try:
+        from scripts.fuexam_login import terminate_profile_locks
+        terminate_profile_locks(profile_dir)
+        for p in current_settings.DATA_DIR.glob("fuexam_*profile*"):
+            if p.is_dir():
+                terminate_profile_locks(p)
+    except Exception as e:
+        logger.warning(f"Error terminating profile locks: {e}")
+
+    # 3. Delete auth files
+    for f in (auth_file, user_file):
+        try:
+            if f.exists():
+                f.unlink()
+        except Exception as e:
+            logger.warning(f"Could not delete {f.name}: {e}")
+
+    # 4. Delete all Chromium profile / user_data directories for fuexam
+    try:
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        for p in current_settings.DATA_DIR.glob("fuexam_*profile*"):
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"Error deleting fuexam profile directory: {e}")
+
+    return True, "Đã đăng xuất fuexam.me thành công."
+
+
 @router.post("/fuexam/logout")
 async def logout_fuexam():
-    """Đăng xuất fuexam.me bằng cách xoá data/auth/fuexam_storage_state.json."""
+    """Đăng xuất fuexam.me: xoá tệp phiên, profile Chromium, và gọi logout máy chủ."""
     global _fuexam_session_state
-    if FUEXAM_AUTH_FILE.exists():
-        try:
-            FUEXAM_AUTH_FILE.unlink()
-        except Exception as e:
-            logger.warning(f"Error deleting fuexam storage state: {e}")
+    success, message = await asyncio.to_thread(_perform_fuexam_logout_sync)
     _fuexam_session_state = {
         "state": "idle",
         "pid": None,
@@ -835,4 +928,4 @@ async def logout_fuexam():
         "message": "Chưa có phiên đăng nhập nào đang chạy.",
         "error": None,
     }
-    return {"success": True, "message": "Đã đăng xuất fuexam.me thành công."}
+    return {"success": success, "message": message}

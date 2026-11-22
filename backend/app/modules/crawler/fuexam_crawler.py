@@ -62,13 +62,11 @@ def get_authenticated_session() -> requests.Session:
         raise AuthenticationRequiredError(f"Tệp phiên bị lỗi không thể đọc: {e}")
 
     cookies = state.get("cookies", [])
-    has_auth_cookie = any(
-        c.get("name") in ("xf_user", "xf_session", "xf_user_session") and c.get("value")
-        for c in cookies
-    )
-    if not has_auth_cookie:
+    cookies_map = {c.get("name"): c.get("value") for c in cookies}
+    # Điều kiện bắt buộc: phải có cookie xf_user (không chấp nhận chỉ xf_session)
+    if not cookies_map.get("xf_user"):
         raise AuthenticationRequiredError(
-            "Cần đăng nhập fuexam.me: Không có cookie xác thực trong tệp phiên."
+            "Cần đăng nhập fuexam.me: Không có cookie 'xf_user' hợp lệ trong tệp phiên (không chấp nhận chỉ xf_session)."
         )
 
     session = requests.Session()
