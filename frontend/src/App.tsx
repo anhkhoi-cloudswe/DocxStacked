@@ -168,7 +168,8 @@ export const App: React.FC = () => {
   const [platform, setPlatform] = useState<PlatformType | null>(getInitialPlatform);
   const [isFuexamLoggedIn, setIsFuexamLoggedIn] = useState<boolean>(false);
   const [fuexamUsername, setFuexamUsername] = useState<string>('');
-  const [isFuexamChecking, setIsFuexamChecking] = useState<boolean>(false);
+  const [hasInitialFuexamChecked, setHasInitialFuexamChecked] = useState<boolean>(false);
+  const [isBackendReady, setIsBackendReady] = useState<boolean>(true);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('select');
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeRunningJobId, setActiveRunningJobId] = useState<string | null>(null);
@@ -349,7 +350,6 @@ export const App: React.FC = () => {
   }, [transitionTo]);
 
   const checkFuexamAuth = useCallback(async () => {
-    setIsFuexamChecking(true);
     try {
       const res = await fetch('/api/auth/fuexam/status');
       if (res.ok) {
@@ -365,9 +365,33 @@ export const App: React.FC = () => {
       setIsFuexamLoggedIn(false);
       setFuexamUsername('');
     } finally {
-      setIsFuexamChecking(false);
+      setHasInitialFuexamChecked(true);
     }
   }, []);
+
+  // Giám sát trạng thái sẵn sàng của Backend (/api/health)
+  useEffect(() => {
+    let mounted = true;
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (mounted) {
+          setIsBackendReady(res.ok);
+        }
+      } catch {
+        if (mounted) {
+          setIsBackendReady(false);
+        }
+      }
+    };
+    checkHealth();
+    const intervalMs = isBackendReady ? 15000 : 3000;
+    const t = setInterval(checkHealth, intervalMs);
+    return () => {
+      mounted = false;
+      clearInterval(t);
+    };
+  }, [isBackendReady]);
 
   const handleSelectPlatform = useCallback((selected: PlatformType) => {
     setPlatform(selected);
@@ -818,6 +842,30 @@ export const App: React.FC = () => {
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', backgroundColor: 'var(--bg-canvas)' }}>
+      {!isBackendReady && (
+        <div
+          data-testid="backend-not-ready-banner"
+          style={{
+            backgroundColor: '#fef2f2',
+            borderBottom: '1px solid #fecaca',
+            padding: '10px 16px',
+            color: '#991b1b',
+            textAlign: 'center',
+            fontSize: '13px',
+            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            position: 'sticky',
+            top: 0,
+            zIndex: 9999,
+          }}
+        >
+          <span style={{ fontSize: '16px' }}>⚠️</span>
+          <span>Backend chưa sẵn sàng, đang thử lại...</span>
+        </div>
+      )}
       <Header
         currentScreen={currentScreen}
         activeJobId={activeRunningJobId || (currentScreen !== 'progress' ? jobId : null)}
@@ -903,9 +951,13 @@ export const App: React.FC = () => {
 
               {platform === 'fuexam' && (
                 <FuexamLoginModal
-                  isOpen={!isFuexamLoggedIn && !isFuexamChecking}
+                  isOpen={hasInitialFuexamChecked && !isFuexamLoggedIn}
+                  isBackendReady={isBackendReady}
                   onClose={handleSwitchPlatform}
-                  onSuccess={() => setIsFuexamLoggedIn(true)}
+                  onSuccess={() => {
+                    setIsFuexamLoggedIn(true);
+                    checkFuexamAuth();
+                  }}
                 />
               )}
             </>

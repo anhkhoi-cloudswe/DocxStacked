@@ -1,21 +1,24 @@
 import asyncio
 from datetime import datetime
+import glob
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from typing import List, Optional, Tuple
 import urllib.request
 import urllib.error
+import uuid
 from fastapi import APIRouter
 from pydantic import BaseModel
 import psutil
 
 from backend.app.core.config import get_settings
 from backend.app.core.logging import get_logger
-
-import time
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -616,19 +619,79 @@ class FuexamAuthStatusResponse(BaseModel):
 
 
 class FuexamLoginSessionResponse(BaseModel):
-    state: str  # "idle", "waiting", "authenticated", "timeout", "error", "cancelled"
+    state: str  # "idle", "starting", "waiting", "success", "failed", "timeout", "cancelled"
+    stage: Optional[str] = None
+    run_id: Optional[str] = None
     message: str = ""
     error: Optional[str] = None
     started_at: Optional[float] = None
+    recent_logs: List[str] = []
 
 
 _fuexam_session_state: dict = {
     "state": "idle",
+    "stage": "idle",
+    "run_id": None,
     "pid": None,
     "started_at": 0.0,
     "message": "Chưa có phiên đăng nhập nào đang chạy.",
     "error": None,
 }
+
+
+def cleanup_fuexam_chrome_and_profiles():
+    """
+    Dọn dẹp triệt để mọi tiến trình chrome.exe mồ côi và profile tạm:
+    - Tìm và kill tiến trình có cmdline chứa 'fuexam_fresh_profile' hoặc 'browser_profile_fuexam' hoặc 'fuexam_selfcheck'.
+    - Xoá các thư mục tempfile có tiền tố 'fuexam_fresh_profile_' hoặc 'fuexam_selfcheck_'.
+    """
+    current_pid = os.getpid()
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if proc.info["pid"] == current_pid:
+                continue
+            cmdline = proc.info.get("cmdline") or []
+            cmd_str = " ".join(cmdline).lower()
+            if "fuexam_fresh_profile" in cmd_str or "fuexam_selfcheck" in cmd_str or "browser_profile_fuexam" in cmd_str:
+                p = psutil.Process(proc.info["pid"])
+                p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+
+    import glob
+    import shutil
+    temp_dir = Path(tempfile.gettempdir())
+    for p_str in glob.glob(str(temp_dir / "fuexam_fresh_profile_*")) + glob.glob(str(temp_dir / "fuexam_selfcheck_*")):
+        try:
+            shutil.rmtree(p_str, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _get_recent_fuexam_logs(max_lines: int = 20) -> List[str]:
+    """Lấy tối đa 20 dòng cuối của fuexam_login.log, đã lọc sạch không chứa cookie/token."""
+    log_file = get_settings().DATA_DIR / "logs" / "fuexam_login.log"
+    if not log_file.exists():
+        return []
+    try:
+        import re
+        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        tail = lines[-max_lines:]
+        sanitized = []
+        patterns = [
+            (re.compile(r'(xf_user|xf_session|xf_csrf|_xfToken|token|cookie)=([^\s;&,]+)', re.IGNORECASE), r'\1=[REDACTED]'),
+            (re.compile(r'("?(?:xf_user|xf_session|xf_csrf|_xfToken|token|password)"?\s*:\s*)"([^"]+)"', re.IGNORECASE), r'\1"[REDACTED]"'),
+            (re.compile(r'cookies:\s*\[.*?\]', re.IGNORECASE), r'cookies: [REDACTED]'),
+        ]
+        for line in tail:
+            masked = line
+            for pat, repl in patterns:
+                masked = pat.sub(repl, masked)
+            sanitized.append(masked)
+        return sanitized
+    except Exception as e:
+        logger.warning(f"Error reading fuexam_login.log: {e}")
+        return []
 
 
 def _check_fuexam_auth_file() -> Tuple[bool, str, Optional[str]]:
@@ -677,7 +740,10 @@ async def get_fuexam_auth_status():
 async def start_fuexam_login():
     """
     Khởi động cửa sổ Chromium headed để người dùng đăng nhập fuexam.me.
-    Chạy trực tiếp từ backend không mở cmd console nháy, log ghi ra data/logs/fuexam_login.log.
+    - Xoá fuexam_login_ipc.json và truncate fuexam_login.log trước mỗi lần start.
+    - Cấp run_id ngẫu nhiên cho mỗi phiên, script con phải ghi đúng run_id + pid mới chấp nhận.
+    - Chỉ trả trạng thái 'waiting' sau khi script con đã ghi stage 'page_loaded' (sau khi goto xong).
+    - Watchdog 30s: nếu chưa tới 'page_loaded', kill tiến trình con, dọn chrome.exe mồ côi và báo lỗi kèm tên giai đoạn.
     """
     global _fuexam_session_state
 
@@ -685,103 +751,179 @@ async def start_fuexam_login():
     logged_in, _, username = _check_fuexam_auth_file()
     if logged_in:
         _fuexam_session_state = {
-            "state": "authenticated",
+            "run_id": None,
+            "state": "success",
+            "stage": "authenticated",
             "pid": None,
             "started_at": time.time(),
             "message": f"Đã có phiên đăng nhập fuexam.me hợp lệ ({username}).",
             "error": None,
         }
-        return FuexamLoginSessionResponse(**_fuexam_session_state)
+        return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
     # 2. Kiểm tra nếu phiên trước đang chạy
     pid = _fuexam_session_state.get("pid")
     if pid and _fuexam_session_state.get("state") == "waiting":
         if psutil.pid_exists(pid):
-            return FuexamLoginSessionResponse(**_fuexam_session_state)
+            return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
-    # 3. Khởi chạy scripts/fuexam_login.py với browser chromium
-    login_script = settings.BASE_DIR / "scripts" / "fuexam_login.py"
+    current_settings = get_settings()
+
+    # Dọn dẹp tiến trình chrome mồ côi và profile tạm từ phiên trước
+    cleanup_fuexam_chrome_and_profiles()
+
+    login_script = current_settings.BASE_DIR / "scripts" / "fuexam_login.py"
     if not login_script.exists():
         _fuexam_session_state = {
-            "state": "error",
+            "run_id": None,
+            "state": "failed",
+            "stage": "init",
             "pid": None,
             "started_at": time.time(),
             "message": "Không tìm thấy tệp scripts/fuexam_login.py",
             "error": "Tệp scripts/fuexam_login.py không tồn tại.",
         }
-        return FuexamLoginSessionResponse(**_fuexam_session_state)
+        return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
+
+    # 3. Xoá file báo hiệu IPC cũ
+    ipc_file = current_settings.DATA_DIR / "auth" / "fuexam_login_ipc.json"
+    try:
+        if ipc_file.exists():
+            ipc_file.unlink()
+    except Exception:
+        pass
+
+    # 4. Truncate file log fuexam_login.log cho lần chạy này
+    log_file_path = current_settings.DATA_DIR / "logs" / "fuexam_login.log"
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+    run_id = f"run_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    try:
+        with open(log_file_path, "w", encoding="utf-8") as f:
+            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            f.write(f"[{now_iso}] [INFO] [STAGE: init] Khởi tạo phiên đăng nhập mới (run_id: {run_id})\n")
+    except Exception:
+        pass
 
     try:
-        log_file_path = settings.DATA_DIR / "logs" / "fuexam_login.log"
-        log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        log_out = open(log_file_path, "a", encoding="utf-8")
-
-        # creationflags=0 avoids cmd flashing; Chromium headed window opens directly
-        proc = subprocess.Popen(
-            [sys.executable, str(login_script), "--browser", "chromium"],
-            cwd=str(settings.BASE_DIR),
-            stdout=log_out,
-            stderr=subprocess.STDOUT,
-            creationflags=0,
-        )
-
-        # Allow process to start or detect immediate failure
-        await asyncio.sleep(0.8)
-        poll_res = proc.poll()
-        if poll_res is not None and poll_res != 0:
-            err_msg = (
-                "Không thể mở cửa sổ trình duyệt Chromium từ môi trường ngầm hoặc phiên không tương tác. "
-                "Vui lòng chạy backend từ PowerShell trên máy thật (python run_dev.py) để hiển thị cửa sổ Chromium."
-            )
-            _fuexam_session_state = {
-                "state": "error",
-                "pid": None,
-                "started_at": time.time(),
-                "message": "Không thể mở cửa sổ trình duyệt",
-                "error": err_msg,
-            }
-            return FuexamLoginSessionResponse(**_fuexam_session_state)
-
         _fuexam_session_state = {
-            "state": "waiting",
-            "pid": proc.pid,
+            "run_id": run_id,
+            "state": "starting",
+            "stage": "init",
+            "pid": None,
             "started_at": time.time(),
-            "message": "Hãy đăng nhập trong cửa sổ trình duyệt vừa mở.",
+            "message": "Đang khởi động trình duyệt Chromium...",
             "error": None,
         }
-        return FuexamLoginSessionResponse(**_fuexam_session_state)
+
+        # Khởi chạy với CREATE_NEW_CONSOLE trên Windows, stdin=DEVNULL
+        creationflags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        cmd = [sys.executable, str(login_script), "--browser", "chromium", "--run-id", run_id]
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(current_settings.BASE_DIR),
+            stdin=subprocess.DEVNULL,
+            stdout=None,
+            stderr=None,
+            creationflags=creationflags,
+            env=os.environ.copy(),
+        )
+        _fuexam_session_state["pid"] = proc.pid
+
+        # 5. Watchdog 30 giây: theo dõi tiến trình con & chỉ nhận waiting khi stage == "page_loaded"
+        wait_start = time.time()
+        last_stage = "init"
+        while time.time() - wait_start < 30.0:
+            # A. Đọc file IPC trước để cập nhật stage mới nhất (kể cả khi tiến trình vừa ghi xong rồi thoát)
+            if ipc_file.exists():
+                try:
+                    ipc_data = json.loads(ipc_file.read_text(encoding="utf-8"))
+                    if ipc_data.get("run_id") == run_id and ipc_data.get("pid") == proc.pid:
+                        curr_stage = ipc_data.get("stage", "starting")
+                        last_stage = curr_stage
+                        _fuexam_session_state["stage"] = curr_stage
+                        if curr_stage == "page_loaded" and ipc_data.get("state") == "waiting":
+                            _fuexam_session_state["state"] = "waiting"
+                            _fuexam_session_state["message"] = "Hãy đăng nhập trong cửa sổ vừa mở."
+                            return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
+                        elif ipc_data.get("state") == "failed":
+                            cleanup_fuexam_chrome_and_profiles()
+                            _fuexam_session_state["state"] = "failed"
+                            _fuexam_session_state["error"] = ipc_data.get("message", "Lỗi trong tiến trình đăng nhập.")
+                            return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
+                except Exception:
+                    pass
+
+            # B. Kiểm tra nếu tiến trình thoát sớm
+            poll_res = proc.poll()
+            if poll_res is not None:
+                cleanup_fuexam_chrome_and_profiles()
+                err_msg = f"Tiến trình Chromium đã thoát sớm (mã lỗi {poll_res}) tại giai đoạn '{last_stage}'."
+                if poll_res != 0:
+                    err_msg += " Cửa sổ Chromium đã bị đóng hoặc lỗi môi trường đồ hoạ."
+                _fuexam_session_state = {
+                    "run_id": run_id,
+                    "state": "failed",
+                    "stage": last_stage,
+                    "pid": None,
+                    "started_at": time.time(),
+                    "message": "Không thể mở cửa sổ trình duyệt",
+                    "error": err_msg,
+                }
+                return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
+
+            await asyncio.sleep(0.3)
+
+        # C. Watchdog 30s kích hoạt nếu chưa đạt stage 'page_loaded'
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        cleanup_fuexam_chrome_and_profiles()
+        _fuexam_session_state = {
+            "run_id": run_id,
+            "state": "failed",
+            "stage": last_stage,
+            "pid": None,
+            "started_at": time.time(),
+            "message": "Khởi động trình duyệt quá thời gian (watchdog 30s)",
+            "error": f"Watchdog timeout (30s): Chromium chưa tải xong trang đăng nhập. Điểm dừng cuối cùng: '{last_stage}'. Cửa sổ trình duyệt có thể bị chặn hoặc đóng.",
+        }
+        return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
     except Exception as e:
         logger.error(f"Error launching fuexam login: {e}")
-        err_msg = (
-            f"Lỗi khởi chạy Chromium: {e}. "
-            "Khắc phục: Chạy backend từ cửa sổ PowerShell trên máy thật (python run_dev.py) để hiển thị cửa sổ Chromium."
-        )
+        cleanup_fuexam_chrome_and_profiles()
         _fuexam_session_state = {
-            "state": "error",
+            "run_id": run_id,
+            "state": "failed",
+            "stage": "init",
             "pid": None,
             "started_at": time.time(),
             "message": "Lỗi khởi chạy trình duyệt",
-            "error": err_msg,
+            "error": f"Lỗi khởi chạy Chromium: {e}",
         }
-        return FuexamLoginSessionResponse(**_fuexam_session_state)
+        return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
 
 @router.get("/fuexam/login/status", response_model=FuexamLoginSessionResponse)
 async def get_fuexam_login_status():
-    """Theo dõi tiến độ đăng nhập fuexam.me."""
+    """Theo dõi tiến độ đăng nhập fuexam.me kèm 20 dòng log mới nhất đã lọc sạch token."""
     global _fuexam_session_state
 
     # 1. Kiểm tra nếu file storage_state đã xuất hiện phiên hợp lệ
     logged_in, _, username = _check_fuexam_auth_file()
     if logged_in:
-        _fuexam_session_state["state"] = "authenticated"
+        cleanup_fuexam_chrome_and_profiles()
+        _fuexam_session_state["state"] = "success"
+        _fuexam_session_state["stage"] = "authenticated"
         _fuexam_session_state["message"] = f"Đăng nhập fuexam.me thành công! Tài khoản: {username}"
         _fuexam_session_state["error"] = None
-        return FuexamLoginSessionResponse(**_fuexam_session_state)
+        return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
-    # 2. Nếu đang ở trạng thái waiting, kiểm tra thời gian timeout 5 phút (300 giây)
-    if _fuexam_session_state.get("state") == "waiting":
+    # 2. Nếu đang ở trạng thái waiting hoặc starting, kiểm tra thời gian timeout 5 phút (300 giây)
+    if _fuexam_session_state.get("state") in ("waiting", "starting"):
         started = _fuexam_session_state.get("started_at", 0.0)
         if time.time() - started > 300:
             pid = _fuexam_session_state.get("pid")
@@ -790,10 +932,12 @@ async def get_fuexam_login_status():
                     psutil.Process(pid).kill()
                 except Exception:
                     pass
+            cleanup_fuexam_chrome_and_profiles()
             _fuexam_session_state["state"] = "timeout"
+            _fuexam_session_state["stage"] = "timeout"
             _fuexam_session_state["message"] = "Quá thời hạn chờ 5 phút mà chưa hoàn tất đăng nhập."
             _fuexam_session_state["error"] = "Hết thời gian chờ (5 phút)."
-            return FuexamLoginSessionResponse(**_fuexam_session_state)
+            return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
         # Kiểm tra xem tiến trình trình duyệt còn sống không
         pid = _fuexam_session_state.get("pid")
@@ -801,15 +945,19 @@ async def get_fuexam_login_status():
             try:
                 proc = psutil.Process(pid)
                 if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
-                    _fuexam_session_state["state"] = "error"
+                    cleanup_fuexam_chrome_and_profiles()
+                    _fuexam_session_state["state"] = "failed"
+                    _fuexam_session_state["stage"] = "closed"
                     _fuexam_session_state["message"] = "Cửa sổ trình duyệt đã bị đóng."
-                    _fuexam_session_state["error"] = "Cửa sổ trình duyệt đã bị đóng trước khi hoàn tất đăng nhập."
+                    _fuexam_session_state["error"] = "Cửa sổ Chromium đã bị đóng hoặc tiến trình đã dừng trước khi hoàn tất đăng nhập."
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                _fuexam_session_state["state"] = "error"
+                cleanup_fuexam_chrome_and_profiles()
+                _fuexam_session_state["state"] = "failed"
+                _fuexam_session_state["stage"] = "closed"
                 _fuexam_session_state["message"] = "Tiến trình trình duyệt đã kết thúc."
-                _fuexam_session_state["error"] = "Cửa sổ trình duyệt đã bị đóng trước khi hoàn tất đăng nhập."
+                _fuexam_session_state["error"] = "Cửa sổ Chromium đã bị đóng hoặc tiến trình đã dừng trước khi hoàn tất đăng nhập."
 
-    return FuexamLoginSessionResponse(**_fuexam_session_state)
+    return FuexamLoginSessionResponse(**_fuexam_session_state, recent_logs=_get_recent_fuexam_logs(20))
 
 
 @router.post("/fuexam/login/cancel")
@@ -822,14 +970,75 @@ async def cancel_fuexam_login():
             psutil.Process(pid).kill()
         except Exception:
             pass
+    cleanup_fuexam_chrome_and_profiles()
+    current_settings = get_settings()
+    ipc_file = current_settings.DATA_DIR / "auth" / "fuexam_login_ipc.json"
+    try:
+        if ipc_file.exists():
+            ipc_file.unlink()
+    except Exception:
+        pass
     _fuexam_session_state = {
-        "state": "cancelled",
+        "run_id": None,
+        "state": "idle",
+        "stage": "idle",
         "pid": None,
         "started_at": 0.0,
         "message": "Người dùng đã huỷ phiên đăng nhập.",
         "error": None,
     }
     return {"success": True, "message": "Đã huỷ phiên đăng nhập."}
+
+
+@router.post("/fuexam/chromium-self-check")
+async def check_chromium_self_check():
+    """Chạy self-check kiểm tra khả năng mở Chromium thật trên máy người dùng."""
+    login_script = settings.BASE_DIR / "scripts" / "fuexam_login.py"
+    if not login_script.exists():
+        return {
+            "success": False,
+            "browser": "Chromium",
+            "executable_path": "",
+            "message": "Không tìm thấy scripts/fuexam_login.py",
+        }
+    try:
+        res = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, str(login_script), "--self-check"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            cwd=str(settings.BASE_DIR),
+        )
+        success = (res.returncode == 0)
+        output = (res.stdout or "") + "\n" + (res.stderr or "")
+        exec_path = ""
+        for line in output.splitlines():
+            if "Đường dẫn thực thi" in line and ":" in line:
+                exec_path = line.split(":", 1)[1].strip()
+        return {
+            "success": success,
+            "browser": "Playwright Chromium",
+            "executable_path": exec_path,
+            "message": "Chromium mở và đóng bình thường (3s test)." if success else (res.stderr or res.stdout or "Không thể mở Chromium"),
+            "output": output.strip(),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "browser": "Chromium",
+            "executable_path": "",
+            "message": "Self-check quá thời gian (timeout 20s).",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "browser": "Chromium",
+            "executable_path": "",
+            "message": f"Lỗi khi chạy self-check: {e}",
+        }
 
 
 def _perform_fuexam_logout_sync() -> tuple[bool, str]:

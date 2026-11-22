@@ -55,13 +55,25 @@ export interface FuexamAuthStatus {
   detail?: string;
 }
 
-export type FuexamLoginStatus = 'idle' | 'waiting' | 'authenticated' | 'timeout' | 'error' | 'cancelled';
+export type FuexamLoginStatus =
+  | 'idle'
+  | 'starting'
+  | 'waiting'
+  | 'success'
+  | 'failed'
+  | 'timeout'
+  | 'authenticated'
+  | 'error'
+  | 'cancelled';
 
 export interface FuexamLoginSession {
   state: FuexamLoginStatus;
+  stage?: string | null;
+  run_id?: string | null;
   message: string;
   error?: string | null;
   started_at?: number | null;
+  recent_logs?: string[];
 }
 
 export interface AnswerSourceSummary {

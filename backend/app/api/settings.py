@@ -581,3 +581,56 @@ async def test_provider_connection_endpoint(
             "provider": provider.name,
             "message": f"Lỗi kết nối: {type(e).__name__} ({err_msg[:120]})",
         }
+
+
+@router.post("/chromium-self-check")
+async def settings_chromium_self_check():
+    """Chạy self-check kiểm tra khả năng mở Chromium thật trên máy người dùng."""
+    import subprocess
+    import sys
+    login_script = settings.BASE_DIR / "scripts" / "fuexam_login.py"
+    if not login_script.exists():
+        return {
+            "success": False,
+            "browser": "Chromium",
+            "executable_path": "",
+            "message": "Không tìm thấy scripts/fuexam_login.py",
+        }
+    try:
+        res = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, str(login_script), "--self-check"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            cwd=str(settings.BASE_DIR),
+        )
+        success = (res.returncode == 0)
+        output = (res.stdout or "") + "\n" + (res.stderr or "")
+        exec_path = ""
+        for line in output.splitlines():
+            if "Đường dẫn thực thi" in line and ":" in line:
+                exec_path = line.split(":", 1)[1].strip()
+        return {
+            "success": success,
+            "browser": "Playwright Chromium",
+            "executable_path": exec_path,
+            "message": "Chromium mở và đóng bình thường (3s test)." if success else (res.stderr or res.stdout or "Không thể mở Chromium"),
+            "output": output.strip(),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "browser": "Chromium",
+            "executable_path": "",
+            "message": "Self-check quá thời gian (timeout 20s).",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "browser": "Chromium",
+            "executable_path": "",
+            "message": f"Lỗi khi chạy self-check: {e}",
+        }

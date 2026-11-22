@@ -6,6 +6,7 @@ interface FuexamLoginModalProps {
   onClose: () => void;
   onSuccess: () => void;
   isMidJob?: boolean;
+  isBackendReady?: boolean;
 }
 
 export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
@@ -13,27 +14,58 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
   onClose,
   onSuccess,
   isMidJob = false,
+  isBackendReady = true,
 }) => {
   const [state, setState] = useState<FuexamLoginStatus>('idle');
   const [message, setMessage] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [recentLogs, setRecentLogs] = useState<string[]>([]);
+  const [showLogs, setShowLogs] = useState<boolean>(false);
   const pollTimerRef = useRef<any>(null);
 
+  // Sync state on mount / open
   useEffect(() => {
     if (!isOpen) {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
       setState('idle');
       setMessage('');
       setErrorMessage(null);
+      setRecentLogs([]);
       return;
     }
 
-    // Check status on open
+    // Check backend login status on open to restore active session if present
+    fetch('/api/auth/fuexam/login/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((session: FuexamLoginSession | null) => {
+        if (!session) return;
+        if (session.recent_logs) {
+          setRecentLogs(session.recent_logs);
+        }
+        if (session.state === 'waiting') {
+          setState('waiting');
+          setMessage(session.message || 'Hãy đăng nhập trong cửa sổ vừa mở.');
+        } else if (session.state === 'starting') {
+          setState('starting');
+          setMessage(session.message || 'Đang khởi động cửa sổ Chromium...');
+        } else if (session.state === 'success' || session.state === 'authenticated') {
+          setState('success');
+          setTimeout(() => {
+            onSuccess();
+          }, 800);
+        } else if (session.state === 'failed' || session.state === 'error') {
+          setState('failed');
+          setErrorMessage(session.error || session.message || 'Tiến trình đăng nhập thất bại.');
+        }
+      })
+      .catch(() => {});
+
+    // Check if credentials/storage state is already valid
     fetch('/api/auth/fuexam/status')
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data && data.logged_in) {
-          setState('authenticated');
+          setState('success');
           setTimeout(() => {
             onSuccess();
           }, 800);
@@ -42,9 +74,46 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
       .catch(() => {});
   }, [isOpen, onSuccess]);
 
-  // Polling when waiting
+  // Sync when tab visibility changes (requirement 4: switching tab must not drop waiting state)
   useEffect(() => {
-    if (state !== 'waiting') {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && isOpen) {
+        fetch('/api/auth/fuexam/login/status')
+          .then((r) => (r.ok ? r.json() : null))
+          .then((session: FuexamLoginSession | null) => {
+            if (!session) return;
+            if (session.recent_logs) {
+              setRecentLogs(session.recent_logs);
+            }
+            if (session.state === 'waiting') {
+              setState('waiting');
+              setMessage(session.message || 'Hãy đăng nhập trong cửa sổ vừa mở.');
+            } else if (session.state === 'starting') {
+              setState('starting');
+              setMessage(session.message || 'Đang khởi động cửa sổ Chromium...');
+            } else if (session.state === 'success' || session.state === 'authenticated') {
+              setState('success');
+              setTimeout(() => onSuccess(), 800);
+            } else if (session.state === 'failed' || session.state === 'error') {
+              setState('failed');
+              setErrorMessage(session.error || session.message || 'Tiến trình Chromium đã dừng.');
+            } else if (session.state === 'timeout') {
+              setState('timeout');
+            }
+          })
+          .catch(() => {});
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [isOpen, onSuccess]);
+
+  // Polling when waiting or starting
+  useEffect(() => {
+    if (state !== 'waiting' && state !== 'starting') {
       if (pollTimerRef.current) {
         clearInterval(pollTimerRef.current);
         pollTimerRef.current = null;
@@ -57,17 +126,23 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
         const res = await fetch('/api/auth/fuexam/login/status');
         if (res.ok) {
           const session: FuexamLoginSession = await res.json();
-          if (session.state === 'authenticated') {
-            setState('authenticated');
+          if (session.recent_logs) {
+            setRecentLogs(session.recent_logs);
+          }
+          if (session.state === 'success' || session.state === 'authenticated') {
+            setState('success');
             setMessage('Đăng nhập thành công! Đang tự động cập nhật hệ thống...');
             setTimeout(() => {
               onSuccess();
             }, 1000);
+          } else if (session.state === 'waiting') {
+            setState('waiting');
+            setMessage(session.message || 'Hãy đăng nhập trong cửa sổ vừa mở.');
           } else if (session.state === 'timeout') {
             setState('timeout');
             setMessage(session.message || 'Quá thời hạn chờ 5 phút.');
-          } else if (session.state === 'error') {
-            setState('error');
+          } else if (session.state === 'failed' || session.state === 'error') {
+            setState('failed');
             setErrorMessage(session.error || session.message || 'Lỗi không xác định khi mở trình duyệt.');
           } else if (session.state === 'cancelled') {
             setState('idle');
@@ -86,7 +161,13 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
   }, [state, onSuccess]);
 
   const handleStartLogin = async () => {
-    setState('waiting');
+    if (!isBackendReady) {
+      setState('failed');
+      setErrorMessage('Backend chưa sẵn sàng. Vui lòng đợi trong giây lát hoặc kiểm tra backend console.');
+      return;
+    }
+
+    setState('starting');
     setMessage('Đang kết nối và khởi động cửa sổ Chromium...');
     setErrorMessage(null);
 
@@ -94,7 +175,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
       const res = await fetch('/api/auth/fuexam/login/start', { method: 'POST' });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        setState('error');
+        setState('failed');
         setErrorMessage(
           errData.detail ||
             errData.error ||
@@ -102,21 +183,28 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
         );
         return;
       }
-      const data: FuexamLoginSession = await res.json();
-      if (data.state === 'authenticated') {
-        setState('authenticated');
+      const data: FuexamLoginSession & { success?: boolean } = await res.json();
+      if (data.recent_logs) {
+        setRecentLogs(data.recent_logs);
+      }
+      const effectiveState = data.state || (data.success ? 'waiting' : 'failed');
+      if (effectiveState === 'success' || effectiveState === 'authenticated') {
+        setState('success');
         setTimeout(() => onSuccess(), 800);
-      } else if (data.state === 'error') {
-        setState('error');
+      } else if (effectiveState === 'failed' || effectiveState === 'error') {
+        setState('failed');
         setErrorMessage(data.error || data.message || 'Không thể mở cửa sổ trình duyệt Chromium.');
-      } else {
+      } else if (effectiveState === 'waiting') {
         setState('waiting');
         setMessage(data.message || 'Hãy đăng nhập trong cửa sổ vừa mở.');
+      } else {
+        setState(effectiveState);
+        setMessage(data.message || '');
       }
     } catch (err: any) {
-      setState('error');
+      setState('failed');
       setErrorMessage(
-        'Lỗi kết nối máy chủ backend. Khắc phục: Chạy backend từ PowerShell trên máy thật: python run_dev.py'
+        'Lỗi kết nối máy chủ backend (/api/auth/fuexam/login/start bị từ chối kết nối). Backend chưa sẵn sàng hoặc đã dừng.'
       );
     }
   };
@@ -189,7 +277,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
           </h2>
         </div>
 
-        {/* Body based on State Machine */}
+        {/* State: idle */}
         {state === 'idle' && (
           <div>
             <p
@@ -197,7 +285,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 fontSize: '13px',
                 color: 'var(--text-secondary, #475569)',
                 lineHeight: 1.6,
-                margin: '0 0 20px 0',
+                margin: '0 0 16px 0',
               }}
             >
               {isMidJob
@@ -211,7 +299,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 border: '1px solid var(--border-subtle, #e2e8f0)',
                 borderRadius: '6px',
                 padding: '12px 14px',
-                marginBottom: '20px',
+                marginBottom: '16px',
                 fontSize: '12px',
                 color: 'var(--text-secondary, #475569)',
                 lineHeight: 1.5,
@@ -221,9 +309,28 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 Phương thức đăng nhập duy nhất:
               </div>
               <div>
-                Hệ thống sẽ mở cửa sổ Chromium thật để bạn tự gõ tài khoản và mật khẩu trực tiếp trên diễn đàn.
+                Hệ thống sẽ mở cửa sổ Chromium với tiêu đề <strong>"DocxStacked - Đăng nhập fuexam"</strong> để bạn tự gõ tài khoản và mật khẩu trực tiếp trên diễn đàn.
               </div>
             </div>
+
+            {!isBackendReady && (
+              <div
+                data-testid="fuexam-backend-not-ready-notice"
+                style={{
+                  backgroundColor: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: '6px',
+                  padding: '10px 12px',
+                  marginBottom: '16px',
+                  fontSize: '12px',
+                  color: '#991b1b',
+                  lineHeight: 1.5,
+                }}
+              >
+                ⚠️ <strong>Backend chưa sẵn sàng, đang thử lại kết nối...</strong>
+                <div>Không thể mở cửa sổ đăng nhập lúc này. Vui lòng đợi trong giây lát.</div>
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
               <button
@@ -245,16 +352,18 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
               <button
                 type="button"
                 onClick={handleStartLogin}
+                disabled={!isBackendReady}
                 data-testid="btn-open-fuexam-login"
                 style={{
                   padding: '8px 18px',
                   fontSize: '13px',
                   fontWeight: 600,
                   color: '#ffffff',
-                  backgroundColor: '#b45309',
+                  backgroundColor: isBackendReady ? '#b45309' : '#94a3b8',
                   border: 'none',
                   borderRadius: '5px',
-                  cursor: 'pointer',
+                  cursor: isBackendReady ? 'pointer' : 'not-allowed',
+                  opacity: isBackendReady ? 1 : 0.65,
                 }}
               >
                 Mở cửa sổ đăng nhập
@@ -263,6 +372,47 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
           </div>
         )}
 
+        {/* State: starting (Requirement 1: Not waiting yet!) */}
+        {state === 'starting' && (
+          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+            <div
+              style={{
+                width: '36px',
+                height: '36px',
+                border: '3px solid #e2e8f0',
+                borderTopColor: '#b45309',
+                borderRadius: '50%',
+                margin: '0 auto 16px auto',
+                animation: 'spin 1s linear infinite',
+              }}
+            />
+            <h3
+              style={{
+                fontSize: '16px',
+                fontWeight: 600,
+                color: 'var(--text-primary, #0f172a)',
+                margin: '0 0 8px 0',
+              }}
+            >
+              Đang khởi động cửa sổ Chromium...
+            </h3>
+            <p
+              style={{
+                fontSize: '13px',
+                color: 'var(--text-secondary, #475569)',
+                lineHeight: 1.5,
+                margin: '0 0 20px 0',
+              }}
+            >
+              {message || 'Hệ thống đang chuẩn bị tiến trình Chromium và mở trang đăng nhập fuexam.me...'}
+            </p>
+            <div style={{ fontSize: '12px', color: '#64748b' }}>
+              Vui lòng đợi giây lát, cửa sổ sẽ xuất hiện ngay.
+            </div>
+          </div>
+        )}
+
+        {/* State: waiting */}
         {state === 'waiting' && (
           <div style={{ textAlign: 'center', padding: '10px 0' }}>
             <div
@@ -291,11 +441,49 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 fontSize: '13px',
                 color: 'var(--text-secondary, #475569)',
                 lineHeight: 1.5,
-                margin: '0 0 20px 0',
+                margin: '0 0 16px 0',
               }}
             >
-              {message || 'Cửa sổ trình duyệt Chromium đã được khởi động. Hãy nhập tài khoản fuexam.me của bạn trên cửa sổ đó. Hệ thống đang tự động theo dõi (tối đa 5 phút)...'}
+              {message || 'Cửa sổ Chromium với tiêu đề "DocxStacked - Đăng nhập fuexam" đã sẵn sàng. Hãy nhập tài khoản của bạn trên cửa sổ đó. Hệ thống đang tự động theo dõi (tối đa 5 phút)...'}
             </p>
+
+            {/* Collapsible recent logs (filtered) */}
+            {recentLogs.length > 0 && (
+              <div style={{ textAlign: 'left', marginBottom: '16px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowLogs(!showLogs)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#0284c7',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    padding: '2px 0',
+                  }}
+                >
+                  {showLogs ? 'Ẩn nhật ký trình duyệt ▲' : `Xem nhật ký trình duyệt gần nhất (${recentLogs.length} dòng) ▼`}
+                </button>
+                {showLogs && (
+                  <pre
+                    style={{
+                      maxHeight: '130px',
+                      overflowY: 'auto',
+                      backgroundColor: '#0f172a',
+                      color: '#f8fafc',
+                      fontSize: '11px',
+                      padding: '8px 10px',
+                      borderRadius: '4px',
+                      marginTop: '6px',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {recentLogs.join('\n')}
+                  </pre>
+                )}
+              </div>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <button
@@ -319,7 +507,8 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
           </div>
         )}
 
-        {state === 'authenticated' && (
+        {/* State: success / authenticated */}
+        {(state === 'success' || state === 'authenticated') && (
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <div
               style={{
@@ -336,7 +525,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 fontSize: '20px',
               }}
             >
-              [v]
+              [✓]
             </div>
             <h3
               style={{
@@ -354,6 +543,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
           </div>
         )}
 
+        {/* State: timeout */}
         {state === 'timeout' && (
           <div>
             <div
@@ -368,8 +558,7 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 lineHeight: 1.5,
               }}
             >
-              <strong>Quá thời hạn chờ:</strong> Đã quá 5 phút mà chưa hoàn tất đăng nhập. Vui lòng thử lại hoặc đăng
-              nhập qua dòng lệnh CLI.
+              <strong>Quá thời hạn chờ:</strong> Đã quá 5 phút mà chưa hoàn tất đăng nhập. Vui lòng thử lại.
             </div>
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
@@ -408,7 +597,8 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
           </div>
         )}
 
-        {state === 'error' && (
+        {/* State: failed / error (Requirement 1 & 3: Clear error + Retry button) */}
+        {(state === 'failed' || state === 'error') && (
           <div>
             <div
               data-testid="fuexam-error-message"
@@ -423,8 +613,8 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
                 lineHeight: 1.6,
               }}
             >
-              <div style={{ fontWeight: 700, marginBottom: '4px' }}>Không thể mở cửa sổ trình duyệt Chromium:</div>
-              <div>{errorMessage}</div>
+              <div style={{ fontWeight: 700, marginBottom: '4px' }}>Lỗi tiến trình đăng nhập:</div>
+              <div>{errorMessage || 'Không thể mở cửa sổ trình duyệt Chromium hoặc tiến trình đã dừng.'}</div>
             </div>
 
             <div
@@ -440,7 +630,9 @@ export const FuexamLoginModal: React.FC<FuexamLoginModalProps> = ({
               }}
             >
               <strong>Hướng dẫn vận hành:</strong>
-              <div>Mở cửa sổ PowerShell thật trên Windows: <code style={{ color: '#0369a1' }}>python run_dev.py</code> (hoặc chạy <code style={{ color: '#0369a1' }}>python scripts/fuexam_login.py</code>) để mở cửa sổ Chromium.</div>
+              <div>
+                Đảm bảo backend đang chạy từ cửa sổ console tương tác: <code style={{ color: '#0369a1' }}>python run_dev.py</code> hoặc chạy kiểm tra Chromium trong phần <strong>Cài đặt</strong>.
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>

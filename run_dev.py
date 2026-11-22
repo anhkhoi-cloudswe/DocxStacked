@@ -41,15 +41,39 @@ def main():
         cwd=str(PROJECT_ROOT),
     )
 
+    # Chờ backend phản hồi /api/health trước khi báo sẵn sàng và khởi động frontend
+    print(">> Dang cho Backend san sang (/api/health)...")
+    backend_ready = False
+    start_t = time.time()
+    while time.time() - start_t < 45:
+        if backend_proc.poll() is not None:
+            print("\n[!] Backend da dung dot ngot truoc khi san sang!")
+            break
+        try:
+            import urllib.request
+            req = urllib.request.Request("http://127.0.0.1:8000/api/health")
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    backend_ready = True
+                    elapsed = time.time() - start_t
+                    print(f">> [OK] Backend da san sang sau {elapsed:.1f}s.")
+                    break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    if not backend_ready and backend_proc.poll() is None:
+        print("[!] Canh bao: Backend chua phan hoi /api/health sau 45s, tiep tuc khoi dong Frontend...")
+
     # 2. Start Frontend Vite
-    print("[2/2] Dang khoi dong Frontend React Vite tai http://localhost:5173...")
+    print("\n[2/2] Dang khoi dong Frontend React Vite tai http://localhost:5173...")
     npm_cmd = ["cmd.exe", "/c", "npm", "--prefix", "frontend", "run", "dev"] if os.name == "nt" else ["npm", "--prefix", "frontend", "run", "dev"]
     frontend_proc = subprocess.Popen(
         npm_cmd,
         cwd=str(PROJECT_ROOT),
     )
 
-    time.sleep(2)
+    time.sleep(1.5)
     print("\n" + "-" * 60)
     print(">> He thong da san sang!")
     print(">> Giao dien Web UI  : http://localhost:5173")

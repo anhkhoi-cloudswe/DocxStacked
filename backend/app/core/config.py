@@ -172,15 +172,17 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    # Auto-generate INGEST_TOKEN on first run if missing in .env
+    # Auto-generate INGEST_TOKEN on first run if missing or placeholder in .env
     env_file = BASE_DIR / ".env"
+    import secrets
     if env_file.exists():
         try:
             content = env_file.read_text(encoding="utf-8")
-            if not re.search(r"^\s*INGEST_TOKEN\s*=\s*\S+", content, re.MULTILINE):
-                import secrets
+            match = re.search(r"^\s*INGEST_TOKEN\s*=\s*(.*)$", content, re.MULTILINE)
+            token_val = match.group(1).strip() if match else ""
+            if not match or not token_val or token_val == "secret_token_123":
                 token = secrets.token_urlsafe(32)
-                if re.search(r"^\s*INGEST_TOKEN\s*=", content, re.MULTILINE):
+                if match:
                     new_content = re.sub(r"^\s*INGEST_TOKEN\s*=.*$", f"INGEST_TOKEN={token}", content, flags=re.MULTILINE)
                 else:
                     new_content = content.rstrip() + f"\nINGEST_TOKEN={token}\n"
@@ -188,10 +190,16 @@ def get_settings() -> Settings:
                 os.environ["INGEST_TOKEN"] = token
         except Exception:
             pass
+    else:
+        try:
+            token = secrets.token_urlsafe(32)
+            env_file.write_text(f"INGEST_TOKEN={token}\n", encoding="utf-8")
+            os.environ["INGEST_TOKEN"] = token
+        except Exception:
+            pass
 
     settings = Settings()
-    if not settings.INGEST_TOKEN:
-        import secrets
+    if not settings.INGEST_TOKEN or settings.INGEST_TOKEN == "secret_token_123":
         settings.INGEST_TOKEN = os.environ.get("INGEST_TOKEN") or secrets.token_urlsafe(32)
     settings.STORAGE_DIR.mkdir(parents=True, exist_ok=True)
     settings.BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)

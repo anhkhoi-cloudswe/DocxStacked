@@ -133,6 +133,33 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
   const [isCleaning, setIsCleaning] = useState<boolean>(false);
   const [cleanStatus, setCleanStatus] = useState<string | null>(null);
 
+  // Chromium self-check state (Requirement 6)
+  const [isTestingChromium, setIsTestingChromium] = useState<boolean>(false);
+  const [chromiumTestResult, setChromiumTestResult] = useState<{
+    success: boolean;
+    browser?: string;
+    executable_path?: string;
+    message?: string;
+    output?: string;
+  } | null>(null);
+
+  const handleTestChromium = async () => {
+    setIsTestingChromium(true);
+    setChromiumTestResult(null);
+    try {
+      const resp = await fetch('/api/settings/chromium-self-check', { method: 'POST' });
+      const data = await resp.json();
+      setChromiumTestResult(data);
+    } catch (e: any) {
+      setChromiumTestResult({
+        success: false,
+        message: `Lỗi kết nối khi gọi kiểm tra Chromium: ${e.message || e}`,
+      });
+    } finally {
+      setIsTestingChromium(false);
+    }
+  };
+
   const handleCleanData = async () => {
     const retentionDays = settings?.storage?.retention_days ?? 14;
     const ok = await confirmModal({
@@ -1840,6 +1867,83 @@ export const ScreenSettings: React.FC<ScreenSettingsProps> = ({ onBack, platform
               }}
             />
           </div>
+        </div>
+      </div>
+
+      {/* Chromium Environment Check Card (Requirement 6) */}
+      <div style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: 'var(--space-5)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
+          <CpuIcon size={20} style={{ color: 'var(--primary)' }} />
+          <h2 style={{ fontSize: 'var(--text-lg)', fontWeight: 600, color: 'var(--text-primary)' }}>
+            Kiểm tra môi trường Chromium
+          </h2>
+        </div>
+        <p style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-4)', lineHeight: 1.5 }}>
+          Khởi động Playwright Chromium và mở một trang trắng <code>about:blank</code> trong vòng 3 giây để kiểm tra khả năng hiển thị cửa sổ đồ hoạ thực tế trên hệ điều hành của bạn.
+        </p>
+
+        <div>
+          <button
+            type="button"
+            data-testid="btn-test-chromium"
+            onClick={handleTestChromium}
+            disabled={isTestingChromium}
+            style={{
+              padding: '8px 18px',
+              fontSize: '13px',
+              fontWeight: 600,
+              color: '#ffffff',
+              backgroundColor: isTestingChromium ? '#94a3b8' : 'var(--primary)',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: isTestingChromium ? 'not-allowed' : 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+            }}
+          >
+            {isTestingChromium ? (
+              <>
+                <RefreshIcon size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                <span>Đang kiểm tra Chromium (mở 3 giây)...</span>
+              </>
+            ) : (
+              <span>Kiểm tra Chromium</span>
+            )}
+          </button>
+
+          {chromiumTestResult && (
+            <div
+              style={{
+                marginTop: '14px',
+                padding: '12px 14px',
+                borderRadius: '6px',
+                backgroundColor: chromiumTestResult.success ? 'rgba(22, 163, 74, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                border: `1px solid ${chromiumTestResult.success ? '#86efac' : '#fca5a5'}`,
+                fontSize: '13px',
+                lineHeight: 1.6,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                {chromiumTestResult.success ? (
+                  <CheckIcon size={16} style={{ color: '#16a34a' }} />
+                ) : (
+                  <CrossIcon size={16} style={{ color: '#dc2626' }} />
+                )}
+                <strong style={{ color: chromiumTestResult.success ? '#15803d' : '#b91c1c' }}>
+                  {chromiumTestResult.success ? 'Kiểm tra Chromium thành công!' : 'Kiểm tra Chromium thất bại!'}
+                </strong>
+              </div>
+              <div style={{ color: 'var(--text-secondary)' }}>
+                <strong>Kết quả:</strong> {chromiumTestResult.message}
+              </div>
+              {chromiumTestResult.executable_path && (
+                <div style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: '4px' }}>
+                  <strong>Đường dẫn:</strong> <code style={{ wordBreak: 'break-all' }}>{chromiumTestResult.executable_path}</code>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
       </>

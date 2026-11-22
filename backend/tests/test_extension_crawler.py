@@ -193,11 +193,14 @@ def test_ingest_security_checks(tmp_path, monkeypatch):
     assert "Chromium extension" in res3.json()["detail"] or "Origin" in res3.json()["detail"]
 
     # 4. Valid token with chrome-extension origin -> accepted
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
     res4 = client.post(
         "/api/ingest",
         json={
+            "run_id": "test_security_check_run_01",
             "subject_code": "MLN122",
             "exam_title": "MLN122 - SU26 - RE",
+            "exam_url": "https://fuoverflow.com/threads/mln122-su26-re.7207/",
             "questions": [],
             "options": {"ai_enabled": False},
         },
@@ -217,6 +220,7 @@ def test_existing_exam_title_preserved(tmp_path, monkeypatch):
     without prefix duplication ('MLN122 - MLN122') or suffix adding.
     """
     monkeypatch.setattr(settings, "STORAGE_DIR", tmp_path)
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
     original_title = "MLN122 - SU26 - RE"
     exam_url = "https://fuoverflow.com/threads/mln122-su26-re.7207/"
 
@@ -224,6 +228,7 @@ def test_existing_exam_title_preserved(tmp_path, monkeypatch):
     client.post(
         "/api/ingest",
         json={
+            "run_id": "test_title_preservation_run_01",
             "subject_code": "MLN122",
             "exam_title": original_title,
             "exam_url": exam_url,
@@ -235,6 +240,7 @@ def test_existing_exam_title_preserved(tmp_path, monkeypatch):
 
     # Ingest with slightly different or decorated title
     payload = {
+        "run_id": "test_title_preservation_run_02",
         "subject_code": "MLN122",
         "exam_title": "MLN122 - MLN122 - SU26 - RE (Extension Ingested)",
         "exam_url": exam_url,
@@ -264,12 +270,15 @@ def test_ingest_response_download_url_and_docx_valid(tmp_path, monkeypatch):
     Must receive 200 OK and file must be valid Word docx openable by python-docx.
     """
     monkeypatch.setattr(settings, "STORAGE_DIR", tmp_path)
+    client.post("/api/ingest/clear-runs", headers={"X-Ingest-Token": settings.INGEST_TOKEN})
     import docx
     import io
 
     payload = {
+        "run_id": "test_download_valid_run_01",
         "subject_code": "TEST102",
         "exam_title": "TEST102 - SU26 - FE",
+        "exam_url": "https://fuoverflow.com/threads/test102-fe.8888/",
         "questions": [],
         "options": {"ai_enabled": False},
     }
