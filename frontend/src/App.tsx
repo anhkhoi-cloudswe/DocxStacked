@@ -685,7 +685,8 @@ export const App: React.FC = () => {
     selectedSubject: string,
     selectedExamType: 'FE' | 'PE',
     selectedLimit: number,
-    selectedExamIds?: number[]
+    selectedExamIds?: number[],
+    selectedExamTitles?: Record<string, string>
   ) => {
     setIsLoading(true);
     setSubjectCode(selectedSubject);
@@ -703,6 +704,7 @@ export const App: React.FC = () => {
             exam_type: selectedExamType,
             limit: selectedLimit,
             exam_ids: selectedExamIds && selectedExamIds.length > 0 ? selectedExamIds : undefined,
+            exam_titles: selectedExamTitles && Object.keys(selectedExamTitles).length > 0 ? selectedExamTitles : undefined,
           }),
         });
 

@@ -376,6 +376,36 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                           WEAK: {file.weak_count}
                         </span>
                       )}
+                      {file.conflict_count !== undefined && file.conflict_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#FEE2E2',
+                            color: '#991B1B',
+                            border: '1px solid #FCA5A5',
+                            fontWeight: 600,
+                          }}
+                        >
+                          CONFLICT: {file.conflict_count}
+                        </span>
+                      )}
+                      {file.no_data_count !== undefined && file.no_data_count > 0 && (
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            padding: '1px 6px',
+                            borderRadius: '3px',
+                            backgroundColor: '#F3F4F6',
+                            color: '#4B5563',
+                            border: '1px solid #D1D5DB',
+                            fontWeight: 600,
+                          }}
+                        >
+                          CHƯA CÓ ĐÁP ÁN (?): {file.no_data_count}
+                        </span>
+                      )}
                       {file.ai_count !== undefined && file.ai_count > 0 && (
                         <span
                           style={{

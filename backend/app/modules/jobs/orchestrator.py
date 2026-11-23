@@ -105,6 +105,7 @@ class JobOrchestrator:
         force_refresh: bool = False,
         exam_ids: Optional[List[int]] = None,
         platform: str = "fuoverflow",
+        exam_titles: Optional[Dict[str, str]] = None,
     ) -> Job:
         """Create and launch a background exam compilation job."""
         job_uuid = str(uuid.uuid4())
@@ -128,6 +129,7 @@ class JobOrchestrator:
                     "force_refresh": force_refresh,
                     "exam_ids": exam_ids,
                     "platform": platform,
+                    "exam_titles": exam_titles or {},
                 },
             )
             db.add(job)
@@ -937,41 +939,53 @@ class JobOrchestrator:
                 await db.commit()
 
                 exams_to_process = []
+                seen_job_filenames: Dict[str, int] = {}
+                passed_exam_titles = (job.details.get("exam_titles") if job.details else None) or {}
                 if exam_ids and len(exam_ids) > 0:
                     for tid in exam_ids:
                         ex_stmt = select(Exam).where((Exam.id == tid) | (Exam.url.like(f"%/{tid}/%")))
                         ex_res = await db.execute(ex_stmt)
                         ex_obj = ex_res.scalar_one_or_none()
+                        candidate_title = passed_exam_titles.get(str(tid)) or passed_exam_titles.get(tid)
                         if not ex_obj:
-                            default_title = f"{subject_code} - {exam_type.value} (Thread {tid})"
+                            default_title = candidate_title or f"{subject_code} - {exam_type.value} (Thread {tid})"
                             if tid == 1174:
-                                default_title = "PRM393 - SU26 - B5 - FE"
+                                default_title = candidate_title or "PRM393 - SU26 - B5 - FE"
                             elif tid == 941:
-                                default_title = "PRM393 - SU26 - FE - RE"
+                                default_title = candidate_title or "PRM393 - SU26 - FE - RE"
                             elif tid == 1587:
-                                default_title = "MAE101 - FA26 - FE"
+                                default_title = candidate_title or "MAE101 - FA26 - FE"
+                            init_term = normalize_term(default_title) or "FA26"
                             ex_obj = Exam(
                                 id=tid,
                                 subject_id=subject.id,
                                 title=default_title,
                                 url=f"https://fuexam.me/threads/{tid}/",
                                 exam_type=exam_type,
-                                term="SU26" if "SU26" in default_title else ("FA26" if "FA26" in default_title else "SP26"),
+                                term=init_term,
                                 platform="fuexam",
                                 crop_layout="fuexam_2026",
                             )
                             db.add(ex_obj)
                             await db.flush()
+                        else:
+                            if candidate_title and ("Thread" in ex_obj.title or not ex_obj.term):
+                                ex_obj.title = candidate_title
+                                ex_term = normalize_term(candidate_title)
+                                if ex_term:
+                                    ex_obj.term = ex_term
+                                await db.flush()
                         exams_to_process.append(ex_obj)
                 else:
                     ex_stmt = select(Exam).where((Exam.id == 1174) | (Exam.url.like("%/1174/%")))
                     ex_res = await db.execute(ex_stmt)
                     ex_obj = ex_res.scalar_one_or_none()
+                    candidate_title = passed_exam_titles.get("1174") or passed_exam_titles.get(1174)
                     if not ex_obj:
                         ex_obj = Exam(
                             id=1174,
                             subject_id=subject.id,
-                            title="PRM393 - SU26 - B5 - FE",
+                            title=candidate_title or "PRM393 - SU26 - B5 - FE",
                             url="https://fuexam.me/threads/1174/",
                             exam_type=ExamType.FE,
                             term="SU26",
@@ -1002,6 +1016,17 @@ class JobOrchestrator:
                     raw_title, questions_meta = extract_thread_questions(exam.url, session)
                     if not questions_meta:
                         raise RuntimeError(f"Không tìm thấy câu hỏi nào trong thread {exam.url}")
+
+                    # Cập nhật danh tính đề từ TIÊU ĐỀ THREAD (không dùng fallback tạm)
+                    clean_raw_title = re.sub(r"^\s*Đề\s*Thi\s*(?:FE|PE)?\s*[-–—:]\s*", "", raw_title, flags=re.IGNORECASE).strip()
+                    clean_raw_title = re.sub(r"\(?\bThread\s*\d+\b\)?", "", clean_raw_title, flags=re.IGNORECASE).strip()
+                    clean_raw_title = re.sub(r"\s*\|\s*FuExam.*$", "", clean_raw_title, flags=re.IGNORECASE).strip()
+                    if clean_raw_title and not clean_raw_title.startswith("Đề Thi fuexam"):
+                        exam.title = clean_raw_title
+                        parsed_term = normalize_term(clean_raw_title)
+                        if parsed_term:
+                            exam.term = parsed_term
+                        await db.flush()
 
                     tot_q = len(questions_meta)
                     exam.question_count = tot_q
@@ -1146,6 +1171,18 @@ class JobOrchestrator:
 
                     await db.commit()
 
+                    # Check filename collisions within the same job (Requirement 2)
+                    computed_docx_name = format_exam_docx_filename(subject_code, exam, platform="fuexam")
+                    if computed_docx_name in seen_job_filenames and seen_job_filenames[computed_docx_name] != exam.id:
+                        err_msg = (
+                            f"Xung đột tên file trong cùng tiến trình: Đề '{exam.title}' (Thread {exam.id}) "
+                            f"sinh ra tên file trùng với Thread {seen_job_filenames[computed_docx_name]}: '{computed_docx_name}'. "
+                            f"Vui lòng phân biệt hậu tố tiêu đề đề thi."
+                        )
+                        logger.error(err_msg)
+                        raise RuntimeError(err_msg)
+                    seen_job_filenames[computed_docx_name] = exam.id
+
                     # Build .docx for this exam
                     self._broadcast(job_id, {
                         "type": "log",
@@ -1188,6 +1225,8 @@ class JobOrchestrator:
                         "filename": docx_path.name,
                         "path": rel_output,
                         "exam_title": exam.title,
+                        "thread_id": exam.id,
+                        "source_url": exam.url,
                         "questions_count": tot_q,
                         "size_bytes": docx_path.stat().st_size if docx_path.exists() else 0,
                         "cached": False,
@@ -1201,9 +1240,16 @@ class JobOrchestrator:
                         "weak_count": meta_info.get("weak_count", 0),
                         "conflict_count": meta_info.get("conflict_count", 0),
                         "ai_count": meta_info.get("ai_count", 0),
+                        "no_data_count": meta_info.get("no_data_count", 0),
                         "review_needed_questions": meta_info.get("review_needed_questions", []),
                     }
-                    if not any(f.get("filename") == docx_path.name for f in created_files):
+                    existing_idx = next(
+                        (i for i, f in enumerate(created_files) if f.get("thread_id") == exam.id or f.get("filename") == docx_path.name),
+                        None,
+                    )
+                    if existing_idx is not None:
+                        created_files[existing_idx] = file_info
+                    else:
                         created_files.append(file_info)
 
                     job.details = {

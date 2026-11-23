@@ -16,7 +16,13 @@ import {
 } from './icons';
 
 interface Props {
-  onStartJob: (subjectCode: string, examType: 'FE' | 'PE', limit: number, examIds?: number[]) => void;
+  onStartJob: (
+    subjectCode: string,
+    examType: 'FE' | 'PE',
+    limit: number,
+    examIds?: number[],
+    examTitles?: Record<string, string>
+  ) => void;
   isLoading: boolean;
   initialOpenLogin?: boolean;
   loginTrigger?: number;
@@ -348,8 +354,17 @@ export const ScreenSelectSubject: React.FC<Props> = ({
     const activeSubj = selectedCodes[0];
     const chosenIds = selectedExamIds[activeSubj];
     const examIds = chosenIds && chosenIds.length > 0 ? chosenIds : undefined;
+    const examTitles: Record<string, string> = {};
+    if (chosenIds && exams) {
+      for (const tid of chosenIds) {
+        const found = exams.find((e) => e.id === tid);
+        if (found && found.title) {
+          examTitles[String(tid)] = found.title;
+        }
+      }
+    }
     // Launch for first/active subject or batch
-    onStartJob(activeSubj, examType, limit, examIds);
+    onStartJob(activeSubj, examType, limit, examIds, Object.keys(examTitles).length > 0 ? examTitles : undefined);
   };
 
   const formattedSyncTime = lastSyncedAt

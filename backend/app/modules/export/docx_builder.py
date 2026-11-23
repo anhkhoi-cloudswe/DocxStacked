@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 from docx import Document
 from docx.shared import Cm, Pt, RGBColor
@@ -53,6 +53,47 @@ def normalize_term(term_str: Optional[str]) -> Optional[str]:
     return None
 
 
+def parse_exam_tokens(title: str, subject_code: str) -> Tuple[Optional[str], bool, str, bool, List[str]]:
+    """
+    Phân tách tiêu đề đề thi thành các thành phần:
+    (norm_term, has_b5, exam_type, has_re, trailing_tokens)
+    """
+    s = (title or "").strip()
+    s = re.sub(r"\(?\bThread\s*\d+\b\)?", "", s, flags=re.IGNORECASE).strip()
+    s = re.sub(r'[\\/*?:"<>|]', "", s).strip()
+    s = re.sub(r"^\s*Đề\s*Thi\s*(?:FE|PE)?\s*[-–—:]\s*", "", s, flags=re.IGNORECASE).strip()
+
+    term = normalize_term(s)
+    has_b5 = bool(re.search(r"\bB5\b", s, re.IGNORECASE))
+    has_re = bool(re.search(r"\b(RE|RETAKE)\b", s, re.IGNORECASE))
+
+    is_pe = bool(re.search(r"\bPE\b", s, re.IGNORECASE))
+    exam_type = "PE" if is_pe else "FE"
+
+    # Xóa môn học
+    s_clean = re.sub(rf"\b{re.escape(subject_code)}\b", "", s, flags=re.IGNORECASE).strip()
+    # Xóa mẫu kỳ học đã đọc
+    s_clean = re.sub(r"\b(SU|FA|SP|WI|Summer|Fall|Spring|Winter)\s*\d{2,4}\b", "", s_clean, flags=re.IGNORECASE).strip()
+    # Xóa các từ khóa chuẩn B5, RE, RETAKE, FE, PE
+    s_clean = re.sub(r"\b(B5|RE|RETAKE|FE|PE)\b", "", s_clean, flags=re.IGNORECASE).strip()
+
+    trailing_tokens: List[str] = []
+    if any(d in s for d in ("-", "–", "—")):
+        segments = [p.strip() for p in re.split(r"\s*[-–—]\s*", s_clean) if p.strip()]
+        for seg in segments:
+            seg_c = re.sub(r"^[-\s]+|[-\s]+$", "", seg).strip()
+            if seg_c and seg_c.upper() != subject_code.upper():
+                trailing_tokens.append(seg_c)
+    else:
+        words = s_clean.split()
+        for w in words:
+            w_c = w.strip()
+            if w_c and w_c.upper() != subject_code.upper():
+                trailing_tokens.append(w_c)
+
+    return term, has_b5, exam_type, has_re, trailing_tokens
+
+
 def format_exam_docx_filename(
     subject_code: str,
     exam: Exam,
@@ -61,11 +102,12 @@ def format_exam_docx_filename(
 ) -> str:
     """
     Quy ước tên file Word:
-    - "{MÔN} - FUO - {KỲ} - {LOẠI}.docx" cho FUOverflow
-    - "{MÔN} - FUE - {KỲ} - {LOẠI}.docx" cho fuexam
-    Hậu tố giữ nguyên thứ tự: ... - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}].docx
+    - "{MÔN} - FUO - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ/HẬU TỐ}].docx" cho FUOverflow
+    - "{MÔN} - FUE - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ/HẬU TỐ}].docx" cho fuexam
+    Hậu tố giữ nguyên thứ tự: ... - {KỲ} - [B5 -] {LOẠI} [- RE] [- token đuôi khác].docx
     Kỳ chuẩn hóa XX## (SU26, FA26, SP26; "SU 2024" -> SU24).
     Không bao giờ dùng "(Thread N)" làm tên file.
+    Danh tính đề và các token được lấy từ TIÊU ĐỀ THREAD, không từ tên file ảnh.
     """
     code = subject_code.upper().strip()
 
@@ -76,21 +118,17 @@ def format_exam_docx_filename(
     else:
         plat_tag = "FUO"
 
-    # Lấy tiêu đề sạch loại bỏ (Thread N)
     raw_title = (exam.title or "").strip()
-    clean_title = re.sub(r"\(?\bThread\s*\d+\b\)?", "", raw_title, flags=re.IGNORECASE).strip()
-    clean_title = re.sub(r'[\\/*?:"<>|]', "", clean_title).strip()
+    term_from_title, title_b5, title_etype, title_re, trailing = parse_exam_tokens(raw_title, code)
 
     # 2. Chuẩn hóa Kỳ học XX##
-    norm_term = normalize_term(getattr(exam, "term", None))
+    norm_term = term_from_title or normalize_term(getattr(exam, "term", None))
     if not norm_term:
-        norm_term = normalize_term(clean_title)
-    if not norm_term:
-        m_term = re.search(r"\b(SU|FA|SP|WI)\s*\d{2,4}\b", clean_title, re.IGNORECASE)
+        m_term = re.search(r"\b(SU|FA|SP|WI)\s*\d{2,4}\b", raw_title, re.IGNORECASE)
         if m_term:
             norm_term = normalize_term(m_term.group(0))
         else:
-            m_cust = re.search(r"\b(Kỳ\s*\w+|Term\s*\w+|Semester\s*\w+)\b", clean_title, re.IGNORECASE)
+            m_cust = re.search(r"\b(Kỳ\s*\w+|Term\s*\w+|Semester\s*\w+)\b", raw_title, re.IGNORECASE)
             if m_cust:
                 norm_term = re.sub(r"\s+", "", m_cust.group(0)).upper()
                 setattr(exam, "warning", f"Không đọc được kỳ học chuẩn XX##; đã sử dụng '{norm_term}' từ tiêu đề thread.")
@@ -98,40 +136,34 @@ def format_exam_docx_filename(
                 norm_term = "UNKNOWN"
                 setattr(exam, "warning", "Không đọc được kỳ học từ tiêu đề đề thi. Vui lòng kiểm tra lại.")
 
-    # 3. Kiểm tra các thành phần hậu tố theo thứ tự: [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}]
-    combined_info = f"{clean_title} {exam.term or ''} {sub_exam_code or ''}"
-    has_b5 = bool(re.search(r"\bB5\b", combined_info, re.IGNORECASE))
-    has_re = bool(re.search(r"\b(RE|RETAKE)\b", combined_info, re.IGNORECASE))
+    # 3. Kiểm tra các thành phần hậu tố theo thứ tự: [B5 -] {LOẠI} [- RE] [- token đuôi khác]
+    has_b5 = title_b5 or bool(re.search(r"\bB5\b", f"{exam.term or ''} {sub_exam_code or ''}", re.IGNORECASE))
+    has_re = title_re or bool(re.search(r"\b(RE|RETAKE)\b", f"{exam.term or ''} {sub_exam_code or ''}", re.IGNORECASE))
 
     # Loại bài thi {LOẠI}: PE hoặc FE
     e_type_val = exam.exam_type.value if hasattr(exam.exam_type, "value") else str(exam.exam_type or "FE")
-    if "PE" in e_type_val.upper() or re.search(r"\bPE\b", clean_title, re.IGNORECASE):
+    if "PE" in e_type_val.upper() or title_etype == "PE":
         e_type = "PE"
     else:
         e_type = "FE"
 
-    # Mã đề (nếu có: De1, C1, C2...)
-    extra_code = None
-    candidate_sub = sub_exam_code or clean_title
-    if candidate_sub:
-        m_code = re.search(r"\b(C\d+|De\s*\d+|MD\s*\d+|Mã\s*đề\s*\d+)\b", candidate_sub, re.IGNORECASE)
-        if m_code:
-            extra_code = m_code.group(1).replace(" ", "")
-        elif sub_exam_code:
-            clean_sub = re.sub(r"\(?\bThread\s*\d+\b\)?", "", sub_exam_code, flags=re.IGNORECASE).strip()
-            if clean_sub and clean_sub.upper() not in ("B5", "FE", "PE", "RE", "RETAKE", norm_term, code, plat_tag, clean_title.upper(), raw_title.upper()):
-                if not any(token in clean_sub.upper() for token in (code, norm_term, "FE", "PE", "FUE", "FUO")):
-                    extra_code = clean_sub
+    # Hậu tố bổ sung (C1, C2, NO1 HCM, ...)
+    if sub_exam_code:
+        clean_sub = re.sub(r"\(?\bThread\s*\d+\b\)?", "", sub_exam_code, flags=re.IGNORECASE).strip()
+        if clean_sub and clean_sub.upper() not in (code, norm_term, "FE", "PE", "B5", "RE", plat_tag):
+            if clean_sub not in trailing:
+                trailing.append(clean_sub)
 
-    # 4. Ráp theo chuẩn thứ tự: {MÔN} - {PLAT} - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}].docx
+    # 4. Ráp theo chuẩn thứ tự: {MÔN} - {PLAT} - {KỲ} - [B5 -] {LOẠI} [- RE] [- token đuôi khác].docx
     parts = [code, plat_tag, norm_term]
     if has_b5:
         parts.append("B5")
     parts.append(e_type)
     if has_re:
         parts.append("RE")
-    if extra_code and extra_code not in parts:
-        parts.append(extra_code)
+    for tok in trailing:
+        if tok not in parts:
+            parts.append(tok)
 
     return f"{' - '.join(parts)}.docx"
 
@@ -680,6 +712,7 @@ def build_exam_docx(
     sorted_questions = sorted(questions, key=lambda q: q.index)
     rendered_q_mark_count = 0
     available_db_answers_count = 0
+    rendered_answers_map: Dict[int, str] = {}
 
     for q in sorted_questions:
         ans_in_db = answers_map.get(q.id) if answers_map else getattr(q, "answer", None)
@@ -700,6 +733,7 @@ def build_exam_docx(
             subject_code=subject_code,
             exam_title=exam.title,
         )
+        rendered_answers_map[q.id] = ans_rendered
         if ans_rendered == "?" and ans_in_db and ans_in_db.answer_set and ans_in_db.status != AnswerStatus.NO_DATA:
             rendered_q_mark_count += 1
 
@@ -717,6 +751,26 @@ def build_exam_docx(
 
     filename = format_exam_docx_filename(subject_code, exam, platform=platform, sub_exam_code=sub_exam_code)
     file_path = output_dir / filename
+
+    # Overwrite Protection: Check if target file already exists and belongs to a different thread
+    if file_path.exists():
+        meta_file = output_dir / f"{filename}.meta.json"
+        if meta_file.exists():
+            try:
+                old_meta = json.loads(meta_file.read_text(encoding="utf-8"))
+                old_tid = old_meta.get("thread_id")
+                curr_tid = getattr(exam, "id", None)
+                if old_tid is not None and curr_tid is not None and str(old_tid) != str(curr_tid):
+                    err_msg = (
+                        f"Phát hiện xung đột ghi đè: File '{filename}' đã tồn tại và thuộc về Thread {old_tid} "
+                        f"(nguồn: {old_meta.get('source_url', 'N/A')}), khác với Thread {curr_tid} hiện tại. "
+                        f"Hệ thống dừng biên soạn để tránh ghi đè dữ liệu giữa các thread khác nhau."
+                    )
+                    logger.error(err_msg)
+                    raise RuntimeError(err_msg)
+            except (json.JSONDecodeError, OSError):
+                pass
+
     temp_file_path = output_dir / f"{filename}.tmp_{os.getpid()}_{int(time.time())}.docx"
 
     # Save initially to a temporary file
@@ -750,7 +804,7 @@ def build_exam_docx(
     # Atomic replace
     os.replace(str(temp_file_path), str(file_path))
 
-    # Save sidecar metadata .meta.json (Requirement 2 & Requirement 3)
+    # Save sidecar metadata .meta.json (Requirement 2 & Requirement 3 & Requirement 4)
     meta_file = output_dir / f"{filename}.meta.json"
     confident_cnt = 0
     weak_cnt = 0
@@ -761,39 +815,50 @@ def build_exam_docx(
     no_data_cnt = 0
     review_needed_qs: List[int] = []
 
-    if answers_map:
-        for q in questions:
-            ans = answers_map.get(q.id)
-            if ans:
-                st = (ans.status.value if hasattr(ans.status, "value") else str(ans.status or "")).upper()
-                src = ans.vote_breakdown.get("_source", "") if (ans.vote_breakdown and isinstance(ans.vote_breakdown, dict)) else ""
-                is_ai = getattr(ans, "source", None) == "ai" or src == "ai"
-                if is_ai:
-                    ai_cnt += 1
-                elif src == "image":
-                    image_cnt += 1
-                elif src in ("community", "comments"):
-                    comment_cnt += 1
-                elif st == "NO_DATA" or src == "no_data":
-                    no_data_cnt += 1
-                else:
-                    comment_cnt += 1
+    for q in sorted_questions:
+        ans = answers_map.get(q.id) if answers_map else getattr(q, "answer", None)
+        ans_text = rendered_answers_map.get(q.id, "")
+        is_q_mark = (ans_text == "?" or ans_text.startswith("?"))
+        st = (ans.status.value if hasattr(ans.status, "value") else str(getattr(ans, "status", "") or "")).upper() if ans else ""
+        src = ans.vote_breakdown.get("_source", "") if (ans and ans.vote_breakdown and isinstance(ans.vote_breakdown, dict)) else ""
+        is_ai = getattr(ans, "source", None) == "ai" or src == "ai" or st == "AI"
 
-                if st == "CONFIDENT":
-                    confident_cnt += 1
-                elif st == "WEAK":
-                    weak_cnt += 1
-                    review_needed_qs.append(q.index)
-                elif st in ("CONFLICT", "NO_DATA"):
-                    conflict_cnt += 1
-                    review_needed_qs.append(q.index)
-                elif is_ai:
-                    review_needed_qs.append(q.index)
+        if not ans or is_q_mark or st == "NO_DATA" or src == "no_data":
+            no_data_cnt += 1
+            review_needed_qs.append(q.index)
+        elif is_ai:
+            ai_cnt += 1
+            review_needed_qs.append(q.index)
+        elif st == "CONFLICT":
+            conflict_cnt += 1
+            review_needed_qs.append(q.index)
+            if src == "image":
+                image_cnt += 1
+            else:
+                comment_cnt += 1
+        elif st == "WEAK":
+            weak_cnt += 1
+            review_needed_qs.append(q.index)
+            if src == "image":
+                image_cnt += 1
+            else:
+                comment_cnt += 1
+        elif st == "CONFIDENT":
+            confident_cnt += 1
+            if src == "image":
+                image_cnt += 1
+            else:
+                comment_cnt += 1
+        else:
+            no_data_cnt += 1
+            review_needed_qs.append(q.index)
 
     sidecar_meta = {
         "filename": filename,
         "subject_code": subject_code.upper().strip(),
         "exam_title": exam.title,
+        "thread_id": getattr(exam, "id", None),
+        "source_url": getattr(exam, "url", None),
         "platform": platform or ("fuexam" if "FUE" in filename else "fuoverflow"),
         "questions_count": len(questions),
         "confident_count": confident_cnt,

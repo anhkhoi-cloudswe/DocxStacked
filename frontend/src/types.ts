@@ -108,8 +108,11 @@ export interface JobFile {
   weak_count?: number;
   conflict_count?: number;
   ai_count?: number;
+  no_data_count?: number;
   image_count?: number;
   comment_count?: number;
+  thread_id?: number;
+  source_url?: string;
   source_breakdown?: Record<string, number>;
   review_needed_questions?: number[];
 }

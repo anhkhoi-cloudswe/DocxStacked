@@ -25,6 +25,7 @@ class JobCreateRequest(BaseModel):
     force_refresh: bool = Field(default=False, description="Bypass document cache and force re-compilation")
     exam_ids: Optional[List[int]] = Field(default=None, description="Specific exam IDs to compile")
     platform: str = Field(default="fuoverflow", description="Nền tảng: fuoverflow hoặc fuexam")
+    exam_titles: Optional[Dict[str, str]] = Field(default=None, description="Bản đồ thread_id -> tiêu đề thread")
 
 
 class JobResponse(BaseModel):
@@ -144,6 +145,7 @@ async def create_job(payload: JobCreateRequest):
         force_refresh=payload.force_refresh,
         exam_ids=payload.exam_ids,
         platform=payload.platform,
+        exam_titles=payload.exam_titles,
     )
     return JobResponse.from_orm(job)
 
