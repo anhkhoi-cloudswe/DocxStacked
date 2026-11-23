@@ -133,8 +133,10 @@ def format_exam_docx_filename(
                 norm_term = re.sub(r"\s+", "", m_cust.group(0)).upper()
                 setattr(exam, "warning", f"Không đọc được kỳ học chuẩn XX##; đã sử dụng '{norm_term}' từ tiêu đề thread.")
             else:
-                norm_term = "UNKNOWN"
-                setattr(exam, "warning", "Không đọc được kỳ học từ tiêu đề đề thi. Vui lòng kiểm tra lại.")
+                raise RuntimeError(
+                    f"Không thể phân tích kỳ học (term) từ tiêu đề đề thi '{raw_title}'. "
+                    "Hệ thống đã dừng lại để tránh đặt tên đoán mặc định. Vui lòng bổ sung kỳ học vào tiêu đề (ví dụ: FA26, SU26, SP26)."
+                )
 
     # 3. Kiểm tra các thành phần hậu tố theo thứ tự: [B5 -] {LOẠI} [- RE] [- token đuôi khác]
     has_b5 = title_b5 or bool(re.search(r"\bB5\b", f"{exam.term or ''} {sub_exam_code or ''}", re.IGNORECASE))
@@ -646,6 +648,7 @@ def build_exam_docx(
     answers_map: Optional[Dict[int, Answer]] = None,
     platform: Optional[str] = None,
     sub_exam_code: Optional[str] = None,
+    ai_status: Optional[str] = None,
 ) -> Path:
     """
     Build Word (.docx) document following the exact reference style (MLN122, PRN232):
@@ -857,6 +860,7 @@ def build_exam_docx(
         "filename": filename,
         "subject_code": subject_code.upper().strip(),
         "exam_title": exam.title,
+        "term": getattr(exam, "term", None),
         "thread_id": getattr(exam, "id", None),
         "source_url": getattr(exam, "url", None),
         "platform": platform or ("fuexam" if "FUE" in filename else "fuoverflow"),
@@ -877,6 +881,8 @@ def build_exam_docx(
         "review_needed_questions": sorted(list(set(review_needed_qs))),
         "updated_at": datetime.now().isoformat(),
     }
+    if ai_status:
+        sidecar_meta["ai_status"] = ai_status
     meta_file.write_text(json.dumps(sidecar_meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
     logger.info(f"Generated clean Word document: {file_path} (Size: {file_path.stat().st_size} bytes)")

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ from backend.app.modules.crawler.comments import crawl_exam_comments
 from backend.app.modules.crawler.exams import crawl_subject_exams
 from backend.app.modules.crawler.questions import crawl_exam_questions
 from backend.app.modules.crawler.subjects import get_or_fetch_subjects
-from backend.app.modules.export.docx_builder import build_exam_docx, build_merged_docx, format_exam_docx_filename
+from backend.app.modules.export.docx_builder import build_exam_docx, build_merged_docx, format_exam_docx_filename, normalize_term
 from backend.app.modules.export.image_cropper import crop_exam_images, CROP_ALGORITHM_VERSION
 from backend.app.storage.local import LocalStorage
 
@@ -48,6 +49,49 @@ def compute_doc_settings_hash(config_snapshot: Dict[str, Any]) -> str:
         "crop_algorithm_version": CROP_ALGORITHM_VERSION,
     }
     return hashlib.sha256(json.dumps(key_data, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def classify_job_error(e: Exception) -> tuple[str, str, bool]:
+    """
+    Classify error into (user_friendly_message, error_code, is_retryable).
+    Never exposes raw internal tracebacks to the user.
+    """
+    err_str = str(e)
+    err_cls = e.__class__.__name__
+
+    # 1. Auth errors
+    if "AuthenticationRequiredError" in err_cls or "FuexamAuthError" in err_cls or any(
+        k in err_str.lower() for k in ["hết hạn", "chính sách 1 phiên", "đăng nhập lại", "cần đăng nhập", "phiên đăng nhập"]
+    ):
+        return err_str, "AUTH_REQUIRED", True
+
+    # 2. Network / connection / timeout errors
+    if isinstance(e, (asyncio.TimeoutError, ConnectionError, OSError)) or any(
+        k in err_cls.lower() for k in ["timeout", "connection", "network"]
+    ) or any(
+        k in err_str.lower() for k in [
+            "timeout", "timed out", "kết nối mạng", "connection reset",
+            "connection refused", "failed to establish", "ngắt kết nối"
+        ]
+    ):
+        code = f"NET-{uuid.uuid4().hex[:6].upper()}"
+        return f"Lỗi kết nối mạng khi tải dữ liệu, vui lòng kiểm tra kết nối và thử lại. (Mã lỗi: {code})", code, True
+
+    # 3. Known domain validation errors (user actionable or data input errors)
+    known_validation_prefixes = (
+        "Không thể phân tích kỳ học",
+        "Đã tồn tại file",
+        "Không tìm thấy môn",
+        "Không tìm thấy dữ liệu đề thi",
+        "Tiêu đề không hợp lệ",
+    )
+    if isinstance(e, (ValueError, RuntimeError)) and any(err_str.startswith(prefix) for prefix in known_validation_prefixes):
+        code = f"VAL-{uuid.uuid4().hex[:6].upper()}"
+        return f"{err_str} (Mã lỗi: {code})", code, False
+
+    # 4. Unexpected internal errors
+    code = f"ERR-{uuid.uuid4().hex[:8].upper()}"
+    return f"Có lỗi nội bộ khi soạn đề, mã lỗi {code}, xem log.", code, False
 
 
 class JobOrchestrator:
@@ -823,13 +867,16 @@ class JobOrchestrator:
                 })
 
             except Exception as e:
-                logger.exception(f"Unexpected error executing job {job_id}: {e}")
+                user_msg, err_code, is_retryable = classify_job_error(e)
+                logger.exception(f"Unexpected error [{err_code}] executing job {job_id}: {e}")
                 job.status = JobStatus.FAILED
-                job.error_message = str(e)
+                job.error_message = user_msg
                 job.current_step = "failed"
                 job.completed_at = datetime.utcnow()
                 job.details = {
                     **job.details,
+                    "error_code": err_code,
+                    "is_retryable": is_retryable,
                     "files": list(created_files),
                     "failed_at": datetime.utcnow().isoformat(),
                 }
@@ -837,7 +884,9 @@ class JobOrchestrator:
                 self._broadcast(job_id, {
                     "type": "error",
                     "step": "failed",
-                    "message": f"Lỗi trong quá trình xử lý: {str(e)}",
+                    "message": user_msg,
+                    "error_code": err_code,
+                    "is_retryable": is_retryable,
                     "files": list(created_files),
                 })
             finally:
@@ -955,7 +1004,7 @@ class JobOrchestrator:
                                 default_title = candidate_title or "PRM393 - SU26 - FE - RE"
                             elif tid == 1587:
                                 default_title = candidate_title or "MAE101 - FA26 - FE"
-                            init_term = normalize_term(default_title) or "FA26"
+                            init_term = normalize_term(default_title)
                             ex_obj = Exam(
                                 id=tid,
                                 subject_id=subject.id,
@@ -1023,10 +1072,18 @@ class JobOrchestrator:
                     clean_raw_title = re.sub(r"\s*\|\s*FuExam.*$", "", clean_raw_title, flags=re.IGNORECASE).strip()
                     if clean_raw_title and not clean_raw_title.startswith("Đề Thi fuexam"):
                         exam.title = clean_raw_title
-                        parsed_term = normalize_term(clean_raw_title)
-                        if parsed_term:
-                            exam.term = parsed_term
-                        await db.flush()
+
+                    # Không bao giờ đoán bừa kỳ học ("SP26", "FA26"): Phải phân tích được từ tiêu đề
+                    parsed_term = normalize_term(exam.title) or normalize_term(raw_title) or normalize_term(exam.term)
+                    if not parsed_term:
+                        err_msg = (
+                            f"Không thể phân tích kỳ học (term) từ tiêu đề đề thi: '{exam.title}' (Thread {exam.id}). "
+                            "Dừng biên soạn để tránh đặt tên đoán mặc định. Vui lòng bổ sung kỳ học vào tiêu đề thread (ví dụ: FA26, SU26, SP26)."
+                        )
+                        logger.error(err_msg)
+                        raise RuntimeError(err_msg)
+                    exam.term = parsed_term
+                    await db.flush()
 
                     tot_q = len(questions_meta)
                     exam.question_count = tot_q
@@ -1038,6 +1095,17 @@ class JobOrchestrator:
                     question_objs: List[Question] = []
                     answers_map: Dict[int, Answer] = {}
                     exam_sources = {"image": 0, "comments": 0, "ai": 0, "no_data": 0}
+
+                    # Cấu hình AI cho fuexam (Requirement 6)
+                    ai_service = get_ai_check_service()
+                    job_cfg = job.config_snapshot or (await get_active_settings(db))
+                    ai_cfg = job_cfg.get("ai", {})
+                    ai_enabled = ai_cfg.get("enabled", True)
+                    ai_mode = ai_cfg.get("mode", "only_uncertain")
+                    ai_weight = float(job_cfg.get("voting", {}).get("ai_weight", 1.0))
+                    max_opt_letter = job_cfg.get("voting", {}).get("max_option_letter", "H")
+                    warned_no_ai_key = False
+                    ai_skipped_reason = None
 
                     for q_idx, q_item in enumerate(questions_meta, start=1):
                         m_id = q_item["media_id"]
@@ -1112,7 +1180,7 @@ class JobOrchestrator:
                         q_obj.crop_warnings = crop_res.warnings
 
                         # Determine answer:
-                        # 1. Try reading from green answer strip in image
+                        # 1. Thử đọc dải đáp án xanh từ ảnh (CONFIDENT >= 0.80) -> Không bao giờ gọi AI
                         img_ans_res = read_answer_from_image(img_path)
                         if img_ans_res.letter and img_ans_res.confidence >= 0.80:
                             ans_set = img_ans_res.letters or [img_ans_res.letter]
@@ -1121,7 +1189,7 @@ class JobOrchestrator:
                             vb = {"_source": "image", "_method": img_ans_res.method}
                             exam_sources["image"] += 1
                         else:
-                            # 2. Try voting from comments
+                            # 2. Tổng hợp bình luận cộng đồng
                             q_comments: List[Comment] = []
                             for i_c, c_raw in enumerate(parsed_comms, 1):
                                 q_comments.append(Comment(
@@ -1131,19 +1199,73 @@ class JobOrchestrator:
                                     raw_text=c_raw.get("raw_text", ""),
                                     upvotes=0,
                                 ))
-                            if q_comments:
-                                vote_res = tally_votes(q_comments)
-                                ans_set = vote_res.answer_set
-                                ans_status = vote_res.status
-                                ans_conf = vote_res.confidence
-                                vb = {"_source": "community", **(vote_res.vote_breakdown or {})}
+                            prelim_res = tally_votes(q_comments, ai_weight=ai_weight, max_option_letter=max_opt_letter) if q_comments else None
+
+                            # Nếu bình luận đã đạt CONFIDENT (>= 0.80) -> Không gọi AI
+                            if prelim_res and prelim_res.status == AnswerStatus.CONFIDENT and prelim_res.confidence >= 0.80:
+                                ans_set = prelim_res.answer_set
+                                ans_status = AnswerStatus.CONFIDENT
+                                ans_conf = prelim_res.confidence
+                                vb = {"_source": "comments", **(prelim_res.vote_breakdown or {})}
                                 exam_sources["comments"] += 1
                             else:
-                                ans_set = ["?"]
-                                ans_status = AnswerStatus.NO_DATA
-                                ans_conf = 0.0
-                                vb = {"_source": "no_data"}
-                                exam_sources["no_data"] += 1
+                                # Câu rơi vào WEAK, CONFLICT, hoặc NO_DATA -> Đủ điều kiện gọi AI
+                                has_missing_options = "missing_options" in (q_obj.crop_warnings or [])
+                                need_ai = ai_enabled and not has_missing_options and ai_mode != "off"
+                                ai_votes = []
+                                ai_options = {}
+
+                                if need_ai:
+                                    if not ai_service.is_available():
+                                        if not warned_no_ai_key:
+                                            warned_no_ai_key = True
+                                            ai_skipped_reason = "Chưa cấu hình API key hoặc hết hạn mức"
+                                            self._broadcast(job_id, {
+                                                "type": "log",
+                                                "step": "crawling_questions",
+                                                "message": "AI được bật nhưng chưa cấu hình khóa API (hoặc hết hạn mức). Bỏ qua bước gọi AI.",
+                                            })
+                                    else:
+                                        target_img = cropped_out if cropped_out.exists() else img_path
+                                        analyses = ai_service.analyze_question_ensemble(target_img, job_id=job_id)
+                                        for a in analyses:
+                                            ai_votes.append({
+                                                "provider": a.provider or "ai",
+                                                "answers": a.answers,
+                                                "confidence": a.confidence,
+                                            })
+                                            if a.options:
+                                                ai_options.update(a.options)
+
+                                # Bỏ phiếu kết hợp bình luận và AI (AI chỉ là 1 phiếu)
+                                if q_comments or ai_votes:
+                                    final_res = tally_votes(
+                                        q_comments,
+                                        ai_votes=ai_votes if ai_votes else None,
+                                        ai_weight=ai_weight,
+                                        max_option_letter=max_opt_letter,
+                                    )
+                                    ans_set = final_res.answer_set
+                                    ans_status = final_res.status
+                                    ans_conf = final_res.confidence
+                                    vb = dict(final_res.vote_breakdown or {})
+                                    if ai_votes:
+                                        vb["_ai_votes"] = ai_votes
+                                        if not q_comments:
+                                            vb["_source"] = "ai"
+                                            exam_sources["ai"] += 1
+                                        else:
+                                            vb["_source"] = "comments"
+                                            exam_sources["comments"] += 1
+                                    else:
+                                        vb["_source"] = "comments"
+                                        exam_sources["comments"] += 1
+                                else:
+                                    ans_set = ["?"]
+                                    ans_status = AnswerStatus.NO_DATA
+                                    ans_conf = 0.0
+                                    vb = {"_source": "no_data"}
+                                    exam_sources["no_data"] += 1
 
                         # Save or update Answer in DB
                         ans_db_stmt = select(Answer).where(Answer.question_id == q_obj.id)
@@ -1204,6 +1326,7 @@ class JobOrchestrator:
                         add_question_number=False,
                         add_divider=True,
                         answers_map=answers_map,
+                        ai_status=ai_skipped_reason,
                     )
 
                     all_sources_count["image"] += exam_sources["image"]
@@ -1320,12 +1443,16 @@ class JobOrchestrator:
                 })
 
             except Exception as e:
-                logger.exception(f"Unexpected error executing fuexam job {job_id}: {e}")
+                user_msg, err_code, is_retryable = classify_job_error(e)
+                logger.exception(f"Unexpected error [{err_code}] executing fuexam job {job_id}: {e}")
                 job.status = JobStatus.FAILED
-                job.error_message = str(e)
+                job.error_message = user_msg
                 job.current_step = "failed"
+                job.completed_at = datetime.utcnow()
                 job.details = {
                     **job.details,
+                    "error_code": err_code,
+                    "is_retryable": is_retryable,
                     "files": list(created_files),
                     "failed_at": datetime.utcnow().isoformat(),
                 }
@@ -1333,7 +1460,9 @@ class JobOrchestrator:
                 self._broadcast(job_id, {
                     "type": "error",
                     "step": "failed",
-                    "message": f"Lỗi trong quá trình xử lý: {str(e)}",
+                    "message": user_msg,
+                    "error_code": err_code,
+                    "is_retryable": is_retryable,
                     "files": list(created_files),
                 })
             finally:

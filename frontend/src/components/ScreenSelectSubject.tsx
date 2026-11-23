@@ -865,7 +865,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                             {exam.term}
                           </span>
                         )}
-                        {exam.question_count > 0 && <span>{exam.question_count} câu</span>}
+                        {exam.question_count && exam.question_count > 0 ? (
+                          <span>{exam.question_count} câu</span>
+                        ) : (
+                          <span style={{ fontStyle: 'italic', opacity: 0.75 }}>Số câu chưa rõ</span>
+                        )}
                       </div>
                     </label>
                   );

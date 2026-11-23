@@ -26,7 +26,7 @@ export interface ExamItem {
   exam_type: string;
   term?: string | null;
   post_date?: string | null;
-  question_count: number;
+  question_count?: number | null;
   compiled?: boolean;
   has_file?: boolean;
   missing_file?: boolean;
@@ -126,6 +126,8 @@ export interface JobDetails {
   files?: JobFile[];
   total_exams?: number;
   total_questions?: number;
+  is_retryable?: boolean;
+  error_code?: string;
 }
 
 export interface JobStatusResponse {
@@ -152,6 +154,8 @@ export interface SSEEvent {
   total_questions?: number;
   files?: JobFile[];
   completed_file?: JobFile;
+  is_retryable?: boolean;
+  error_code?: string;
 }
 
 export interface AIProviderSetting {

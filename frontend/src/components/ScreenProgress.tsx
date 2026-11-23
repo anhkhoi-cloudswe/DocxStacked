@@ -53,6 +53,7 @@ export const ScreenProgress: React.FC<Props> = ({
   const [totalQuestions, setTotalQuestions] = useState<number>(0);
   const [completedFiles, setCompletedFiles] = useState<JobFile[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isRetryable, setIsRetryable] = useState<boolean>(true);
   const [isResuming, setIsResuming] = useState<boolean>(false);
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0);
   const [isRateLimiting, setIsRateLimiting] = useState<boolean>(false);
@@ -286,6 +287,9 @@ export const ScreenProgress: React.FC<Props> = ({
         }
         if (j.status === 'failed') {
           setErrorMessage(j.error_message || 'Tiến trình đã bị dừng do sự cố hoặc ngắt kết nối.');
+          if (j.details?.is_retryable !== undefined) {
+            setIsRetryable(Boolean(j.details.is_retryable));
+          }
         } else if (j.status === 'completed' && j.details?.files) {
           setProgress(100);
           onComplete(j.details.files, {
@@ -389,6 +393,9 @@ export const ScreenProgress: React.FC<Props> = ({
           }
           const msg = data.message || 'Xảy ra lỗi trong quá trình biên soạn.';
           setErrorMessage(msg);
+          if (data.is_retryable !== undefined) {
+            setIsRetryable(Boolean(data.is_retryable));
+          }
           const isAuthExp = msg.includes('hết hạn') || msg.includes('auth_required') || msg.includes('đăng nhập');
           if (isAuthExp) {
             if (platform === 'fuexam') {
@@ -883,8 +890,8 @@ export const ScreenProgress: React.FC<Props> = ({
                       </button>
                     ) : null}
 
-                    {/* Only show Resume button if not an active auth error, preventing pointless loop */}
-                    {!isAuthError ? (
+                    {/* Only show Resume button if not an active auth error and error is retryable */}
+                    {!isAuthError && isRetryable ? (
                       <button
                         onClick={handleResume}
                         disabled={isResuming}

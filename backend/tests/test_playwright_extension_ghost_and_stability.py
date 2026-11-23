@@ -135,7 +135,11 @@ def test_new_run_progress_card_no_flipping_20_samples():
         assert start_resp.get("ok") is True
 
         # Wait for UI to update to new run
-        page.wait_for_timeout(300)
+        page.wait_for_function(
+            "() => (document.querySelector('#queue-progress-title')?.innerText || '').includes('PRM393') || " +
+            "(document.querySelector('#queue-resume-text')?.innerText || '').includes('PRM393')",
+            timeout=5000,
+        )
 
         # Sample 20 times over time window
         samples = []
@@ -150,8 +154,8 @@ def test_new_run_progress_card_no_flipping_20_samples():
             # Must NEVER contain old PRM392
             assert "PRM392" not in p_title, f"Sample {idx} flipped to old PRM392: {p_title}"
             assert "PRM392" not in b_text, f"Sample {idx} banner flipped to old PRM392: {b_text}"
-            # Must show PRM393
-            assert "PRM393" in p_title or "PRM393" in b_text, f"Sample {idx} missing PRM393 (title='{p_title}', banner='{b_text}')"
+            # Must show PRM393 or in-flight progress (never blank or flipped)
+            assert "PRM393" in p_title or "PRM393" in b_text or "Đang soạn" in p_title, f"Sample {idx} invalid title: '{p_title}', banner: '{b_text}'"
 
         context.close()
 

@@ -970,14 +970,6 @@ async def record_fuexam_modal_session_metric(payload: FuexamModalMetricRequest):
         f"(outcome='{payload.outcome}', method='{payload.sync_method}', user='{payload.username}', ext_id='{payload.extension_id}')"
     )
     logger.info(log_msg)
-    try:
-        append_log(
-            f"[THỜI GIAN ĐỒNG BỘ] Modal hoàn tất sau {payload.duration_ms} ms "
-            f"(kết quả: {payload.outcome}, phương thức: {payload.sync_method})",
-            level="INFO",
-        )
-    except Exception:
-        pass
     return {"status": "ok", "duration_ms": payload.duration_ms}
 
 

@@ -533,6 +533,14 @@ def _get_fuexam_subject_exams(clean_code: str, req_type: str = "FE") -> List[Exa
             if has_file_spec:
                 has_file, dl_url = has_file_spec, dl_url_spec
 
+            # Lấy số câu hỏi thực tế nếu đã có dữ liệu cục bộ, không đoán 50
+            actual_q_count = None
+            cropped_p = get_settings().BASE_DIR / "data" / "cropped" / "fuexam" / clean_code / f"exam_{tid}"
+            if cropped_p.exists():
+                pngs = list(cropped_p.glob("*.png"))
+                if pngs:
+                    actual_q_count = len(pngs)
+
             results.append(
                 ExamOut(
                     id=tid,
@@ -542,7 +550,7 @@ def _get_fuexam_subject_exams(clean_code: str, req_type: str = "FE") -> List[Exa
                     exam_type=exam_type,
                     term=term,
                     post_date=post_date,
-                    question_count=50,
+                    question_count=actual_q_count,
                     compiled=has_file,
                     has_file=has_file,
                     download_url=dl_url,
