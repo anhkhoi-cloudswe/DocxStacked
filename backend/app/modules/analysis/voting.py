@@ -257,12 +257,20 @@ def tally_votes(
                     ))
 
     # 3. Add AI contribution(s) if present
+    # Rule 1: AI weight is strictly less than minimum weight of a single community vote (0.125 for negative agreement, 0.25 for negative direct, 1.0 for normal)
+    # When community comments exist, enforce that AI total effective weight cannot exceed 0.12 or overturn community.
+    community_exists = len(contributions) > 0
+    min_comm_weight = min((c.weight for c in contributions), default=1.0) if community_exists else 1.0
+    safe_ai_weight = min(ai_weight, round(min_comm_weight * 0.5, 3)) if community_exists else ai_weight
+
     if ai_votes:
         for idx, vote in enumerate(ai_votes):
             answers = vote.get("answers", [])
             provider_name = vote.get("provider", f"provider_{idx+1}")
             conf = vote.get("confidence")
-            base_w = vote.get("weight", ai_weight)
+            base_w = vote.get("weight", safe_ai_weight)
+            if community_exists:
+                base_w = min(base_w, safe_ai_weight)
             effective_w = base_w * 0.5 if (conf is not None and conf < 0.6) else base_w
             if answers:
                 contributions.append(
@@ -277,7 +285,8 @@ def tally_votes(
                     )
                 )
     elif ai_answer:
-        effective_w = ai_weight * 0.5 if (ai_confidence is not None and ai_confidence < 0.6) else ai_weight
+        base_w = safe_ai_weight
+        effective_w = base_w * 0.5 if (ai_confidence is not None and ai_confidence < 0.6) else base_w
         contributions.append(
             VoterContribution(
                 author_hash="ai_agent",
@@ -405,12 +414,18 @@ def tally_votes(
         if len(sorted_options) >= 2:
             opt1 = sorted_options[0][0]
             opt2 = sorted_options[1][0]
+            # Use human voters count for community conflict check
+            comm_opt1_voters = len(set(c.author_hash for c in contributions if not c.author_hash.startswith("ai_") and opt1 in [a.upper() for a in c.answers]))
+            comm_opt2_voters = len(set(c.author_hash for c in contributions if not c.author_hash.startswith("ai_") and opt2 in [a.upper() for a in c.answers]))
+
             opt1_voters = len(voters_per_option.get(opt1, set()))
             opt2_voters = len(voters_per_option.get(opt2, set()))
 
-            # Rule A: If top 2 options have equal number of independent voters -> CONFLICT
-            # (Ignore tie if opt2 has negligible/downweighted weight <= 35% of top option)
-            if opt1_voters == opt2_voters:
+            # Rule A: If top 2 options have equal number of independent community voters -> CONFLICT
+            # AI cannot break equal human community ties
+            if comm_opt1_voters > 0 and comm_opt1_voters == comm_opt2_voters:
+                conflict = True
+            elif opt1_voters == opt2_voters:
                 if sorted_options[1][1] > 0.35 * sorted_options[0][1]:
                     conflict = True
             else:
@@ -510,11 +525,24 @@ def tally_votes(
                             conflict = True
 
     winner = answer_set[0]
-    winner_independent_voters = len(voters_per_option.get(winner, set()))
+    # Human independent voters count for the winner (excluding AI)
+    human_voters_per_opt: Dict[str, Set[str]] = {}
+    for vc in contributions:
+        if not vc.author_hash.startswith("ai_"):
+            for letter in vc.answers:
+                opt = letter.upper()
+                if opt not in human_voters_per_opt:
+                    human_voters_per_opt[opt] = set()
+                human_voters_per_opt[opt].add(vc.author_hash)
 
-    if conflict:
+    winner_human_voters = len(human_voters_per_opt.get(winner, set()))
+
+    # AI can only decide answer when there are NO community votes (NO_DATA), and in that case status is ALWAYS WEAK
+    if not community_exists:
+        status = AnswerStatus.WEAK
+    elif conflict:
         status = AnswerStatus.CONFLICT
-    elif confidence >= 0.70 and winner_independent_voters >= 2:
+    elif confidence >= 0.70 and winner_human_voters >= 2:
         status = AnswerStatus.CONFIDENT
     else:
         status = AnswerStatus.WEAK

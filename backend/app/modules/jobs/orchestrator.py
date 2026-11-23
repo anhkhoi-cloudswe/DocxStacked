@@ -916,7 +916,7 @@ class JobOrchestrator:
         )
         from backend.app.modules.crawler.fuexam_subjects import load_subject_map
         from backend.app.modules.export.image_cropper import crop_question_single
-        from backend.app.modules.analysis.image_answer_reader import read_answer_from_image
+        from backend.app.modules.analysis.image_answer_reader import read_answer_from_image, read_choice_hint_n
         from backend.app.modules.analysis.voting import tally_votes
         from backend.app.modules.export.docx_builder import build_exam_docx
 
@@ -1266,6 +1266,22 @@ class JobOrchestrator:
                                     ans_conf = 0.0
                                     vb = {"_source": "no_data"}
                                     exam_sources["no_data"] += 1
+
+                            # Rule 2: Kiểm tra số chữ cái đáp án so với N từ dòng '(Choose N answers)'
+                            expected_n = read_choice_hint_n(img_path, ai_service=ai_service)
+                            valid_answer_letters = [a for a in ans_set if a != "?"]
+                            if expected_n is not None and valid_answer_letters:
+                                if len(valid_answer_letters) != expected_n:
+                                    logger.warning(
+                                        f"Exam {exam.id} Question {q_idx}: Answer count mismatch. "
+                                        f"Expected {expected_n} answers but got {valid_answer_letters}. "
+                                        f"Flagging as '?' and moving to review_needed."
+                                    )
+                                    ans_set = ["?"]
+                                    ans_status = AnswerStatus.CONFLICT
+                                    ans_conf = 0.0
+                                    vb["_mismatch_expected_n"] = expected_n
+                                    vb["_original_answers"] = valid_answer_letters
 
                         # Save or update Answer in DB
                         ans_db_stmt = select(Answer).where(Answer.question_id == q_obj.id)

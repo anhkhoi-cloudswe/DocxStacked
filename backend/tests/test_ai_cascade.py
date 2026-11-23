@@ -65,12 +65,11 @@ def test_cascade_row1_three_community_agree():
 # ---------------------------------------------------------------------------
 
 def test_cascade_row2_one_community_ai_agrees():
-    """1 community voter (WEAK alone) + AI agrees → becomes CONFIDENT."""
+    """Rule 1: 1 community voter (WEAK alone) + AI agrees → increases confidence but remains WEAK (needs 2 real humans)."""
     comments = [_make_comment("user_1", "C")]
     ai_votes = [{"provider": "gemini", "answers": ["C"], "confidence": 0.95}]
     result = tally_votes(comments, ai_votes=ai_votes, ai_weight=1.0)
-    # 1 community (w=1.0) + 1 AI (w=1.0) → 2 voters agree → CONFIDENT
-    assert result.status == AnswerStatus.CONFIDENT
+    assert result.status == AnswerStatus.WEAK
     assert result.answer_set == ["C"]
     assert not result.ai_disagreed
 
@@ -94,28 +93,27 @@ def test_cascade_row3_one_community_ai_disagrees():
 
 
 # ---------------------------------------------------------------------------
-# Row 4: 0 community votes, AI answers → CONFIDENT (AI-only)
+# Row 4: 0 community votes, AI answers → WEAK (AI-only is always WEAK)
 # ---------------------------------------------------------------------------
 
 def test_cascade_row4_no_community_ai_answers():
     """
-    No community votes + 1 AI provider answers.
-    Single AI source → WEAK (needs >= 2 independent voters for CONFIDENT).
-    With 2 AI providers in ensemble both agreeing → CONFIDENT.
+    Rule 1: No community votes + AI answers.
+    AI-only decision is ALWAYS WEAK.
     """
-    # Single AI: → WEAK (1 voter)
+    # Single AI: → WEAK
     ai_votes = [{"provider": "gemini", "answers": ["E"], "confidence": 0.92}]
     result = tally_votes([], ai_votes=ai_votes, ai_weight=1.5)
     assert result.status == AnswerStatus.WEAK
     assert result.answer_set == ["E"]
 
-    # Two AI providers agree → 2 independent voters → CONFIDENT
+    # Two AI providers agree → still WEAK because 0 real human voters
     ai_votes_ensemble = [
         {"provider": "gemini", "answers": ["E"], "confidence": 0.92},
         {"provider": "anthropic", "answers": ["E"], "confidence": 0.90},
     ]
     result2 = tally_votes([], ai_votes=ai_votes_ensemble, ai_weight=1.5)
-    assert result2.status == AnswerStatus.CONFIDENT
+    assert result2.status == AnswerStatus.WEAK
     assert result2.answer_set == ["E"]
 
 
@@ -127,15 +125,13 @@ def test_cascade_row4_no_community_no_ai():
 
 
 # ---------------------------------------------------------------------------
-# Row 5: Community tie (CONFLICT) + AI breaks tie → CONFIDENT
+# Row 5: Community tie (CONFLICT) + AI
 # ---------------------------------------------------------------------------
 
-def test_cascade_row5_conflict_ai_breaks_tie():
+def test_cascade_row5_conflict_ai_cannot_override_tie():
     """
-    Equal community split (A vs B) + AI picks A with higher weight → A wins.
-    AI weight 1.5 → A gets 1.0+1.5=2.5 of total 3.5 = 71.4% > 70% → CONFIDENT.
-    2 independent voters for A (user_1 and ai) → winner_independent_voters=2.
-    Community is split so ai_disagreed may be True (AI picked against one half of community).
+    Rule 1: Equal community split (A vs B) + AI picks A.
+    AI cannot break tie to make it confident or change community equality: remains CONFLICT or WEAK.
     """
     comments = [
         _make_comment("user_1", "A"),
@@ -146,13 +142,10 @@ def test_cascade_row5_conflict_ai_breaks_tie():
         comments,
         ai_votes=ai_votes,
         ai_weight=1.5,
-        ai_disagreement_policy="flag",  # flag only, don't flip to CONFLICT
+        ai_disagreement_policy="flag",
     )
-    # A: user_1(1.0) + AI(1.5) = 2.5; B: user_2(1.0); total=3.5; confidence=2.5/3.5=0.714 >= 0.70
-    # A has 2 independent voters (user_1, ai_gemini) >= 2 → CONFIDENT
-    assert result.answer_set == ["A"]
-    assert result.status == AnswerStatus.CONFIDENT
-    # With policy="flag" status stays CONFIDENT regardless of community split direction.
+    # Both A and B have 1 community voter; margin is small -> CONFLICT
+    assert result.status == AnswerStatus.CONFLICT
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +188,7 @@ def test_cascade_multi_choice_n2_community_agree():
 def test_cascade_multi_choice_ai_fills_missing():
     """
     Multi-choice N=2: 0 community votes.
-    Single AI → WEAK. Two AI providers agree → CONFIDENT.
+    Rule 1: AI only is always WEAK.
     """
     # Single AI provider → WEAK (1 source)
     ai_votes = [{"provider": "gemini", "answers": ["B", "E"], "confidence": 0.91}]
@@ -203,13 +196,13 @@ def test_cascade_multi_choice_ai_fills_missing():
     assert result.status == AnswerStatus.WEAK
     assert sorted(result.answer_set) == ["B", "E"]
 
-    # Two AI providers both agree → CONFIDENT
+    # Two AI providers both agree → still WEAK because 0 real human voters
     ai_votes_ensemble = [
         {"provider": "gemini", "answers": ["B", "E"], "confidence": 0.91},
         {"provider": "anthropic", "answers": ["B", "E"], "confidence": 0.89},
     ]
     result2 = tally_votes([], ai_votes=ai_votes_ensemble, multi_choice_n=2)
-    assert result2.status == AnswerStatus.CONFIDENT
+    assert result2.status == AnswerStatus.WEAK
     assert sorted(result2.answer_set) == ["B", "E"]
 
 

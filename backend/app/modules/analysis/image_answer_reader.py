@@ -503,3 +503,69 @@ def generate_answer_strips_grid(
     logger.info(f"Đã lưu lưới 100 dải đáp án: {output_path}")
     return output_path
 
+
+def read_choice_hint_n(
+    image_input: Union[Path, str, Image.Image],
+    ai_service: Optional[Any] = None,
+) -> Optional[int]:
+    """
+    Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' ở dải đầu ảnh đề thi fuexam (y: 170..280, x: 40..500).
+    Sử dụng bộ đọc glyph offline siêu nhẹ, dự phòng bằng AI nhẹ trên dải đầu ảnh nếu cần.
+    Trả về số nguyên N (ví dụ 1, 2, 3...) hoặc None nếu không nhận diện được.
+    """
+    if isinstance(image_input, (str, Path)):
+        im = Image.open(image_input)
+    else:
+        im = image_input
+
+    a = np.array(im)
+    if a.shape[1] >= 1200 and a.shape[0] >= 500:
+        dark_mask = (a < 180).all(axis=2)
+        # Quét vùng dải chứa dòng (Choose N answer/answers)
+        sub = dark_mask[170:280, 40:500]
+        lab, n_components = ndi.label(sub)
+        if n_components >= 12:
+            objs = ndi.find_objects(lab)
+            valid_boxes = []
+            for sl in objs:
+                y_sl, x_sl = sl
+                h = y_sl.stop - y_sl.start
+                w = x_sl.stop - x_sl.start
+                if 8 <= h <= 35 and 2 <= w <= 40:
+                    valid_boxes.append((x_sl.start, y_sl.start, x_sl.stop, y_sl.stop))
+            valid_boxes.sort(key=lambda b: b[0])
+            if len(valid_boxes) >= 12:
+                # Ký tự số N nằm ở vị trí thứ 7 (chỉ số 6) sau các ký tự '(', 'C', 'h', 'o', 'o', 's', 'e'
+                d_box = valid_boxes[6]
+                w = d_box[2] - d_box[0]
+                h = d_box[3] - d_box[1]
+                # Chữ số '1': đặc trưng cột thẳng hẹp (w ~ 8..13, h ~ 24..32, h/w >= 2.2)
+                if 7 <= w <= 13 and 24 <= h <= 32 and (h / w) >= 2.2:
+                    return 1
+
+    # Nếu glyph offline chưa chắc chắn và có AI service khả dụng, gọi AI nhẹ trên dải đầu ảnh
+    if ai_service and hasattr(ai_service, "is_available") and ai_service.is_available():
+        try:
+            from google.genai import types
+            import io
+            import re
+            provider = ai_service._providers[0] if getattr(ai_service, "_providers", None) else None
+            if provider:
+                client = provider._get_client()
+                strip = im.crop((40, 180, min(im.width, 500), 260))
+                buf = io.BytesIO()
+                strip.save(buf, format="PNG")
+                prompt = "Read the number N inside parentheses like (Choose N answer) or (Choose N answers). Return ONLY a JSON object: {\"n\": <number>}"
+                res = client.models.generate_content(
+                    model=provider.model,
+                    contents=[types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png"), prompt]
+                )
+                m = re.search(r'"n"\s*:\s*(\d+)', res.text or "")
+                if m:
+                    return int(m.group(1))
+        except Exception as e:
+            logger.warning(f"Error reading choice hint N via AI strip: {e}")
+
+    return None
+
+

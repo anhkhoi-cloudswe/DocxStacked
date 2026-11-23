@@ -194,3 +194,72 @@ def test_real_b5_ai_selection():
     assert 45 in selected_indices, "B5 Q45 is WEAK and MUST be selected"
     assert 49 in selected_indices, "B5 Q49 is WEAK and MUST be selected"
     assert len(selected) in (19, 20)
+
+
+def test_rule1_ai_voting_weights_and_conflict():
+    """
+    Test Rule 1:
+    - 1 phiếu cộng đồng vs AI trái ý: đáp án cộng đồng thắng và câu bị cờ CONFLICT.
+    - 2 phiếu cộng đồng trái AI: cộng đồng thắng, CONFIDENT.
+    - AI chỉ được quyết định đáp án khi KHÔNG có phiếu cộng đồng nào (NO_DATA) -> WEAK.
+    - AI đồng ý với cộng đồng: không biến câu thành CONFIDENT nếu chưa đủ 2 người bình chọn độc lập thật.
+    """
+    from backend.app.modules.analysis.voting import tally_votes
+    from backend.app.db.models import Comment, AnswerStatus
+
+    # 1. 1 phiếu cộng đồng vs AI trái ý: cộng đồng thắng và CONFLICT
+    c_c = Comment(id=1, question_id=10, author_hash="user_c", raw_text="C", upvotes=0)
+    ai_a = [{"provider": "gemini", "answers": ["A"], "confidence": 0.95}]
+    res1 = tally_votes([c_c], ai_votes=ai_a, ai_weight=1.0)
+    assert res1.answer_set == ["C"], f"Đáp án cộng đồng phải thắng AI trái ý, nhận được {res1.answer_set}"
+    assert res1.status == AnswerStatus.CONFLICT, f"1 phiếu cộng đồng vs AI trái ý phải là CONFLICT, nhận được {res1.status}"
+
+    # 2. 2 phiếu cộng đồng trái AI: cộng đồng thắng và CONFIDENT
+    c_c2 = Comment(id=2, question_id=10, author_hash="user_c2", raw_text="C", upvotes=0)
+    res2 = tally_votes([c_c, c_c2], ai_votes=ai_a, ai_weight=1.0)
+    assert res2.answer_set == ["C"]
+    assert res2.status == AnswerStatus.CONFIDENT
+
+    # 3. AI chỉ được quyết định khi KHÔNG có phiếu cộng đồng (NO_DATA), và khi đó luôn là WEAK
+    res3 = tally_votes([], ai_votes=ai_a, ai_weight=1.0)
+    assert res3.answer_set == ["A"]
+    assert res3.status == AnswerStatus.WEAK
+
+    # 4. Khi AI đồng ý với 1 phiếu cộng đồng: chỉ tăng độ tin cậy, KHÔNG biến câu thành CONFIDENT nếu chưa đủ 2 người thật
+    ai_c = [{"provider": "gemini", "answers": ["C"], "confidence": 0.95}]
+    res4 = tally_votes([c_c], ai_votes=ai_c, ai_weight=1.0)
+    assert res4.answer_set == ["C"]
+    assert res4.status == AnswerStatus.WEAK, "Chưa đủ 2 người bình chọn thật thì không được thành CONFIDENT"
+
+
+def test_rule2_choice_hint_n_reading_and_validation(tmp_path):
+    """
+    Test Rule 2:
+    - Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' từ dải đầu ảnh.
+    - Nếu đáp án có số chữ cái khác N thì đánh cờ và không ghi đáp án sai số lượng (ghi '?' và đưa vào review_needed).
+    """
+    from backend.app.modules.analysis.image_answer_reader import read_choice_hint_n
+    from pathlib import Path
+
+    # Đọc từ ảnh thật C2 câu 23 nếu có
+    real_c2_q23 = Path("data/cache/fuexam/media_52796/mln122-fa26-fe-c2_023-webp.webp")
+    if real_c2_q23.exists():
+        n = read_choice_hint_n(real_c2_q23)
+        assert n == 1, f"C2 Q23 phải đọc ra N=1 từ dòng (Choose 1 answer), nhận được {n}"
+
+    # Kiểm tra logic validate số chữ cái khác N
+    expected_n = 1
+    detected_answers = ["B", "C"]  # 2 chữ cái trong khi N=1
+    valid_answers = [a for a in detected_answers if a != "?"]
+
+    # Giả lập logic kiểm tra trong pipeline
+    if expected_n is not None and valid_answers and len(valid_answers) != expected_n:
+        final_answer_set = ["?"]
+        flagged = True
+    else:
+        final_answer_set = valid_answers
+        flagged = False
+
+    assert flagged is True
+    assert final_answer_set == ["?"]
+

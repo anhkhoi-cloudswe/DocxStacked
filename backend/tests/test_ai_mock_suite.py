@@ -302,15 +302,22 @@ def test_decision_matrix_ai_weight_adjustment():
 
 def test_decision_matrix_community_plus_ai_agreement():
     """
-    1 community voter (WEAK) + 1 AI voter agreeing -> 2 independent voters -> CONFIDENT.
+    Rule 1: 1 community voter (WEAK) + 1 AI voter agreeing increases confidence but remains WEAK without 2 real humans.
+    2 community voters + AI -> CONFIDENT.
     """
     comments = [_make_comment("user_1", "A")]
     ai_votes = [{"provider": "gemini", "answers": ["A"], "confidence": 0.9, "weight": 1.0}]
 
     res = tally_votes(comments, ai_votes=ai_votes)
-    assert res.status == AnswerStatus.CONFIDENT
+    assert res.status == AnswerStatus.WEAK
     assert res.answer_set == ["A"]
     assert not res.ai_disagreed
+
+    # With 2 real humans + AI -> CONFIDENT
+    comments_2 = [_make_comment("user_1", "A"), _make_comment("user_2", "A")]
+    res_2 = tally_votes(comments_2, ai_votes=ai_votes)
+    assert res_2.status == AnswerStatus.CONFIDENT
+    assert res_2.answer_set == ["A"]
 
 
 def test_decision_matrix_ai_cannot_override_majority():

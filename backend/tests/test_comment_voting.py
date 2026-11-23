@@ -135,17 +135,17 @@ def test_ai_disagree_with_community_causes_conflict():
     assert res_conflict.ai_disagreed is True
 
 
-def test_ai_supports_single_community_voter_makes_confident():
-    """1 community voter + 1 AI voter for same answer = 2 independent sources >= 2 -> CONFIDENT."""
+def test_ai_supports_single_community_voter_keeps_weak_rule1():
+    """Rule 1: 1 community voter + 1 AI voter for same answer keeps answer but does NOT make CONFIDENT without 2 real humans."""
     c1 = Comment(id=1, question_id=1, comment_id="1", author_hash="u1", raw_text="A", upvotes=0)
 
     # Without AI: 1 voter -> WEAK
     res_no_ai = tally_votes([c1])
     assert res_no_ai.status == AnswerStatus.WEAK
 
-    # With AI voting A: 2 voters -> CONFIDENT
+    # With AI voting A: only 1 real human voter -> remains WEAK
     res_with_ai = tally_votes([c1], ai_answer=["A"])
-    assert res_with_ai.status == AnswerStatus.CONFIDENT
+    assert res_with_ai.status == AnswerStatus.WEAK
     assert res_with_ai.answer_set == ["A"]
 
 
