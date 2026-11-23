@@ -120,14 +120,17 @@ def test_new_run_progress_card_no_flipping_20_samples():
         page.goto(SIDEPANEL_URL)
         page.wait_for_load_state("domcontentloaded")
 
-        # Start new run with PRM393
+        # Start new run with PRM393 (2 items so offscreen queue remains active throughout 2-second sampling window)
         start_resp = page.evaluate("""() => {
             return new Promise((resolve) => {
                 chrome.runtime.sendMessage({
                     type: 'QUEUE_START_COMMAND',
                     runId: 'run_new_prm393_verified',
                     subjectCode: 'PRM393',
-                    items: [{ title: 'PRM393 - SU26 - FE', url: 'https://fuoverflow.com/threads/prm393.456/', question_count: 50 }],
+                    items: [
+                        { title: 'PRM393 - SU26 - FE', url: 'https://fuoverflow.com/threads/prm393.456/', question_count: 50 },
+                        { title: 'PRM393 - SU26 - FE 2', url: 'https://fuoverflow.com/threads/prm393.457/', question_count: 50 }
+                    ],
                     force: true,
                 }, (resp) => resolve(resp));
             });
