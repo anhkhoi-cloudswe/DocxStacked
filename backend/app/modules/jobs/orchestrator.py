@@ -1164,7 +1164,6 @@ class JobOrchestrator:
                         output_dir=exam_out_dir,
                         cropped_dir=cropped_dir,
                         platform="fuexam",
-                        sub_exam_code=exam.title,
                         add_question_number=False,
                         add_divider=True,
                         answers_map=answers_map,

@@ -46,7 +46,7 @@ from backend.app.modules.export.image_cropper import (
     crop_question_single,
 )
 
-OUTPUT_DIR = PROJECT_ROOT / "data" / "output" / "fuexam"
+OUTPUT_DIR = PROJECT_ROOT / "data" / "output" / "FUE"
 CROPPED_BASE = PROJECT_ROOT / "data" / "cropped" / "fuexam"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 CROPPED_BASE.mkdir(parents=True, exist_ok=True)
@@ -95,6 +95,7 @@ def compile_exam(
         url=thread_url,
         question_count=len(questions_meta),
         crop_layout="fuexam_2026",
+        platform="fuexam",
     )
 
     cropped_dir = CROPPED_BASE / subject_code / f"exam_{thread_id}"
@@ -288,23 +289,18 @@ def compile_exam(
     # 3. Biên soạn file Word
     exam_out_dir = OUTPUT_DIR / subject_code
     exam_out_dir.mkdir(parents=True, exist_ok=True)
-    target_docx = exam_out_dir / expected_filename
 
-    build_exam_docx(
+    target_docx = build_exam_docx(
         subject_code=subject_code,
         exam=exam_obj,
         questions=question_objs,
         output_dir=exam_out_dir,
         cropped_dir=cropped_dir,
+        platform="fuexam",
         add_question_number=False,  # fuexam KHÔNG có tiêu đề 'Câu N'
         add_divider=True,
         answers_map=answers_map,
     )
-
-    orig_created = exam_out_dir / f"{subject_code} - {term} - FE.docx"
-    if orig_created.exists() and orig_created != target_docx:
-        import shutil
-        shutil.move(str(orig_created), str(target_docx))
 
     # 4. Kiểm định trực tiếp từ chính file Word đã tạo
     doc_bytes = target_docx.read_bytes()
@@ -473,23 +469,30 @@ if __name__ == "__main__":
             "subject_code": "PRM393",
             "term": "SU26",
             "exam_title": "PRM393 - SU26 - B5 - FE",
-            "expected_filename": "PRM393 - SU26 - B5 - FE.docx",
+            "expected_filename": "PRM393 - FUE - SU26 - B5 - FE.docx",
         },
         {
             "thread_id": 1587,
             "subject_code": "MAE101",
             "term": "FA26",
             "exam_title": "MAE101 - FA26 - FE",
-            "expected_filename": "MAE101 - FA26 - FE.docx",
+            "expected_filename": "MAE101 - FUE - FA26 - FE.docx",
         },
         {
             "thread_id": 941,
             "subject_code": "PRM393",
             "term": "SU26",
             "exam_title": "PRM393 - SU26 - FE - RE",
-            "expected_filename": "PRM393 - SU26 - FE - RE.docx",
+            "expected_filename": "PRM393 - FUE - SU26 - FE - RE.docx",
         },
     ]
+
+    if len(sys.argv) > 1:
+        req_args = [a.lower() for a in sys.argv[1:]]
+        exams = [
+            ex for ex in exams
+            if str(ex["thread_id"]) in req_args or ex["subject_code"].lower() in req_args or any(a in ex["exam_title"].lower() for a in req_args)
+        ]
 
     results = []
     for ex in exams:
@@ -503,15 +506,16 @@ if __name__ == "__main__":
         results.append(res)
 
     # 1. Tạo Contact Sheet và ảnh phóng 100%
-    cs_path = OUTPUT_DIR / "contact_sheet_24.png"
-    proof_path = OUTPUT_DIR / "proof_100pct_zoom.png"
-    generate_contact_sheet_and_proofs(results, cs_path, proof_path)
+    if len(results) >= 3:
+        cs_path = OUTPUT_DIR / "contact_sheet_24.png"
+        proof_path = OUTPUT_DIR / "proof_100pct_zoom.png"
+        generate_contact_sheet_and_proofs(results, cs_path, proof_path)
 
-    # 2. Tạo lưới 100 dải đáp án đã cắt (B5 và MAE101)
-    grid_items = results[0]["strip_grid_items"] + results[1]["strip_grid_items"]
-    grid_path = OUTPUT_DIR / "grid_100_answer_strips.png"
-    generate_answer_strips_grid(grid_items, grid_path)
-    print(f"[✓] Đã tạo lưới 100 dải đáp án: {grid_path} ({len(grid_items)} strips)")
+        # 2. Tạo lưới 100 dải đáp án đã cắt (B5 và MAE101)
+        grid_items = results[0]["strip_grid_items"] + results[1]["strip_grid_items"]
+        grid_path = OUTPUT_DIR / "grid_100_answer_strips.png"
+        generate_answer_strips_grid(grid_items, grid_path)
+        print(f"[✓] Đã tạo lưới 100 dải đáp án: {grid_path} ({len(grid_items)} strips)")
 
     # 3. In toàn bộ báo cáo từ chính các file .docx
     print("\n" + "=" * 80)
@@ -544,12 +548,13 @@ if __name__ == "__main__":
         for line in ans_lines:
             print(f"    {line}")
 
-    # In chi tiết từng câu của đề RE
-    re_res = results[2]
-    print("\n" + "=" * 80)
-    print(f"BẢNG CHI TIẾT 50 CÂU ĐỀ RE ({re_res['title']}) - ĐỌC TỪ DỮ LIỆU THỰC TẾ:")
-    print("=" * 80)
-    print(f"{'Câu':<4} | {'Số BL':<5} | {'Voters':<6} | {'Kết quả':<7} | {'Status':<9} | {'Conf':<5} | Danh sách phiếu (Tác giả : Chữ cái, trọng số)")
-    print("-" * 105)
-    for row in re_res["re_detailed_votes"]:
-        print(f"{row['index']:<4} | {row['comments_count']:<5} | {row['voters_count']:<6} | {row['result']:<7} | {row['status']:<9} | {row['confidence']:<5.2f} | {row['votes_str']}")
+    # In chi tiết từng câu của đề RE nếu có
+    re_res = next((r for r in results if "RE" in r["title"] or "RE" in str(r["docx_path"])), None)
+    if re_res and "re_detailed_votes" in re_res:
+        print("\n" + "=" * 80)
+        print(f"BẢNG CHI TIẾT 50 CÂU ĐỀ RE ({re_res['title']}) - ĐỌC TỪ DỮ LIỆU THỰC TẾ:")
+        print("=" * 80)
+        print(f"{'Câu':<4} | {'Số BL':<5} | {'Voters':<6} | {'Kết quả':<7} | {'Status':<9} | {'Conf':<5} | Danh sách phiếu (Tác giả : Chữ cái, trọng số)")
+        print("-" * 105)
+        for row in re_res["re_detailed_votes"]:
+            print(f"{row['index']:<4} | {row['comments_count']:<5} | {row['voters_count']:<6} | {row['result']:<7} | {row['status']:<9} | {row['confidence']:<5.2f} | {row['votes_str']}")

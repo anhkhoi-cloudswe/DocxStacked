@@ -112,14 +112,16 @@ def format_exam_docx_filename(
 
     # Mã đề (nếu có: De1, C1, C2...)
     extra_code = None
-    if sub_exam_code:
-        clean_sub = re.sub(r"\(?\bThread\s*\d+\b\)?", "", sub_exam_code, flags=re.IGNORECASE).strip()
-        if clean_sub and clean_sub.upper() not in ("B5", "FE", "PE", "RE", "RETAKE", norm_term, code, plat_tag):
-            extra_code = clean_sub
-    elif clean_title:
-        m_code = re.search(r"\b(C\d+|De\s*\d+|MD\s*\d+|Mã\s*đề\s*\d+)\b", clean_title, re.IGNORECASE)
+    candidate_sub = sub_exam_code or clean_title
+    if candidate_sub:
+        m_code = re.search(r"\b(C\d+|De\s*\d+|MD\s*\d+|Mã\s*đề\s*\d+)\b", candidate_sub, re.IGNORECASE)
         if m_code:
             extra_code = m_code.group(1).replace(" ", "")
+        elif sub_exam_code:
+            clean_sub = re.sub(r"\(?\bThread\s*\d+\b\)?", "", sub_exam_code, flags=re.IGNORECASE).strip()
+            if clean_sub and clean_sub.upper() not in ("B5", "FE", "PE", "RE", "RETAKE", norm_term, code, plat_tag, clean_title.upper(), raw_title.upper()):
+                if not any(token in clean_sub.upper() for token in (code, norm_term, "FE", "PE", "FUE", "FUO")):
+                    extra_code = clean_sub
 
     # 4. Ráp theo chuẩn thứ tự: {MÔN} - {PLAT} - {KỲ} - [B5 -] {LOẠI} [- RE] [- {MÃ ĐỀ}].docx
     parts = [code, plat_tag, norm_term]
