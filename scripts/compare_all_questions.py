@@ -48,10 +48,16 @@ def check_file(docx_path, exam_id):
             top_answers = [k for k, sc in sorted_human if sc == top_score]
             top_comm = ', '.join(top_answers)
             
-            docx_norm = ', '.join(sorted([x.strip() for x in docx_ans.split(',')]))
-            top_norm = ', '.join(sorted([x.strip() for x in top_comm.split(',')]))
+            docx_list = [x.strip() for x in docx_ans.split(',')]
+            top_list = [x.strip() for x in top_comm.split(',')]
             
-            is_diff = (docx_norm != top_norm)
+            # If community has a tie (e.g. ['A', 'B']), docx picking either A or B is consistent with community
+            if len(top_list) > 1 and len(docx_list) == 1 and docx_list[0] in top_list:
+                is_diff = False
+            else:
+                docx_norm = ', '.join(sorted(docx_list))
+                top_norm = ', '.join(sorted(top_list))
+                is_diff = (docx_norm != top_norm)
             diff_mark = ' [DIFF]' if is_diff else ''
             
             print(f'Q{q_num:02d}: Docx={docx_ans:<8} | TopComm={top_comm:<8} | AI={ai_str:<24} | Status={status:<10}{diff_mark}')
