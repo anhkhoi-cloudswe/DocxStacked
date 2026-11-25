@@ -185,6 +185,16 @@ async def resume_job_endpoint(job_id: str):
     return JobResponse.from_orm(job)
 
 
+@router.post("/{job_id}/retry-failed", response_model=JobResponse)
+async def retry_failed_exams_endpoint(job_id: str):
+    """Retry only failed or warning exams from a job, reusing cache for successful parts."""
+    orchestrator = get_orchestrator()
+    job = await orchestrator.retry_failed_exams(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JobResponse.from_orm(job)
+
+
 @router.get("/{job_id}/answers", response_model=List[AnswerItemOut])
 async def get_job_answers(job_id: str, db: AsyncSession = Depends(get_db)):
     """

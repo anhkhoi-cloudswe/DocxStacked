@@ -649,6 +649,8 @@ def build_exam_docx(
     platform: Optional[str] = None,
     sub_exam_code: Optional[str] = None,
     ai_status: Optional[str] = None,
+    fetch_failed_questions: Optional[List[int]] = None,
+    fetch_failed_details: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """
     Build Word (.docx) document following the exact reference style (MLN122, PRN232):
@@ -879,11 +881,16 @@ def build_exam_docx(
             "no_data": no_data_cnt,
         },
         "review_needed_questions": sorted(list(set(review_needed_qs))),
+        "fetch_failed_questions": sorted(list(set(fetch_failed_questions or []))),
         "updated_at": datetime.now().isoformat(),
     }
+    if fetch_failed_details:
+        sidecar_meta["fetch_failed_details"] = fetch_failed_details
     if ai_status:
         sidecar_meta["ai_status"] = ai_status
-    meta_file.write_text(json.dumps(sidecar_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_meta = output_dir / f".{filename}.meta.json.tmp_{os.getpid()}"
+    tmp_meta.write_text(json.dumps(sidecar_meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp_meta), str(meta_file))
 
     logger.info(f"Generated clean Word document: {file_path} (Size: {file_path.stat().st_size} bytes)")
     return file_path

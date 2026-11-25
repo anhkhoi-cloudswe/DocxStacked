@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin
 
 import requests
@@ -71,8 +71,10 @@ def discover_term_nodes(session: requests.Session) -> List[Dict[str, Any]]:
     Quét trang chủ https://fuexam.me/ để tìm danh sách các danh mục kỳ học.
     Bao gồm: 'Tổng hợp - Chưa rõ kỳ' và 'Kỳ 0' .. 'Kỳ 9'.
     """
+    from backend.app.modules.crawler.fuexam_crawler import FuexamHttpClient
     headers = {"User-Agent": USER_AGENT}
-    resp = session.get(BASE_URL, headers=headers, timeout=20)
+    http = FuexamHttpClient()
+    resp = http.get(session, BASE_URL, headers=headers, expect_html=True)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -151,17 +153,16 @@ def scan_all_term_nodes(
     all_subjects: List[Dict[str, Any]] = []
     seen_codes = set()
 
+    from backend.app.modules.crawler.fuexam_crawler import FuexamHttpClient
+    http = FuexamHttpClient(min_delay_seconds=delay_seconds)
+
     for term in term_nodes:
         term_name = term["term_group"]
         term_url = term["url"]
         logger.info(f"Đang quét kỳ học: {term_name} ({term_url})")
 
-        # Tôn trọng độ trễ 1.6 giây
-        time.sleep(delay_seconds)
-
         try:
-            resp = s.get(term_url, headers=headers, timeout=20)
-            resp.raise_for_status()
+            resp = http.get(s, term_url, headers=headers, expect_html=True)
             sub_list = parse_subjects_from_term_page(resp.text, term_group=term_name)
 
             # Kiểm tra phân trang nếu có
@@ -174,8 +175,7 @@ def scan_all_term_nodes(
                     next_pages.add(urljoin(BASE_URL, p_href))
 
             for page_url in sorted(next_pages):
-                time.sleep(delay_seconds)
-                p_resp = s.get(page_url, headers=headers, timeout=20)
+                p_resp = http.get(s, page_url, headers=headers, expect_html=True)
                 if p_resp.status_code == 200:
                     p_subs = parse_subjects_from_term_page(p_resp.text, term_group=term_name)
                     sub_list.extend(p_subs)
@@ -292,3 +292,205 @@ def refresh_fuexam_subjects(
         "diff": diff_report,
         "total_subjects": len(new_subjects),
     }
+
+
+FUEXAM_TYPE_ORDER: Tuple[str, ...] = ("FE", "RE", "PE", "B5")
+_SUBJECT_CODE_TOKEN_RE = re.compile(r"^[A-Z]{2,6}\d{2,4}[A-Z0-9]*$")
+_NON_EXAM_TITLE_RE = re.compile(
+    r"^(?:hỏi\s*đáp|tải\s*ảnh|hướng\s*dẫn|thảo\s*luận|quy\s*định|thông\s*báo)\b",
+    re.IGNORECASE,
+)
+_NON_EXAM_PREFIXES = {"hỏi đáp", "góp ý", "thảo luận", "hướng dẫn", "thông báo", "quy định"}
+
+
+def extract_fuexam_thread_subject_code(
+    raw_title: str,
+    known_codes: Optional[Set[str]] = None,
+    tag_texts: Optional[List[str]] = None,
+) -> Optional[str]:
+    """
+    Xác định mã môn của một thread fuexam bằng khớp token đầu tiên nguyên văn
+    (không phân biệt hoa thường), hoặc tag/chuyên mục tường minh nếu có.
+    Tuyệt đối không dùng khớp chuỗi con hay tìm kiếm full-text.
+    """
+    if not raw_title or not raw_title.strip():
+        return None
+
+    cleaned = raw_title.strip()
+    tokens = [t for t in re.split(r"[\s\-–—_:/|,\[\]()]+", cleaned) if t]
+    if tokens:
+        first_tok = tokens[0].upper()
+        if known_codes is not None and first_tok in known_codes:
+            return first_tok
+        if _SUBJECT_CODE_TOKEN_RE.match(first_tok):
+            return first_tok
+
+    if tag_texts and not _NON_EXAM_TITLE_RE.match(cleaned):
+        for tag in tag_texts:
+            tag_u = tag.strip().upper()
+            if not tag_u:
+                continue
+            if (known_codes is not None and tag_u in known_codes) or _SUBJECT_CODE_TOKEN_RE.match(tag_u):
+                return tag_u
+
+    return None
+
+
+def classify_fuexam_thread_tokens(
+    raw_title: str,
+    prefix_text: str = "",
+) -> Tuple[Optional[str], List[str], Optional[str]]:
+    """
+    Phân loại thread fuexam dựa trên token loại trong tiêu đề (FE, RE, PE, B5...)
+    và nhãn prefix của XenForo, không dựa vào chuỗi con ngẫu nhiên.
+    Trả về (exam_type, type_tags, term).
+    """
+    cleaned_title = (raw_title or "").strip()
+    cleaned_prefix = (prefix_text or "").strip()
+
+    if not cleaned_title:
+        return None, [], None
+    if cleaned_prefix.lower() in _NON_EXAM_PREFIXES or _NON_EXAM_TITLE_RE.match(cleaned_title):
+        return None, [], None
+
+    term_match = re.search(r"\b(SU|FA|SP|WI)\s*(\d{2,4})\b", cleaned_title, re.IGNORECASE)
+    term = f"{term_match.group(1).upper()}{term_match.group(2)[-2:]}" if term_match else None
+
+    raw_tokens = [t for t in re.split(r"[^A-Za-z0-9À-ỹ]+", cleaned_title) if t]
+    body_tokens = [t.upper() for t in raw_tokens]
+    if body_tokens and _SUBJECT_CODE_TOKEN_RE.match(body_tokens[0]):
+        body_tokens = body_tokens[1:]
+
+    found_tags: Set[str] = set()
+    for tok in body_tokens:
+        if tok == "PE" or re.match(r"^C\d+PE$", tok):
+            found_tags.add("PE")
+        elif tok == "FE" or re.match(r"^C\d+FE$", tok):
+            found_tags.add("FE")
+        elif tok == "RE":
+            found_tags.add("RE")
+        elif tok == "B5":
+            found_tags.add("B5")
+
+    if cleaned_prefix:
+        prefix_tokens = [t.upper() for t in re.split(r"[^A-Za-z0-9À-ỹ]+", cleaned_prefix) if t]
+        if "PE" in prefix_tokens:
+            found_tags.add("PE")
+        elif "FE" in prefix_tokens:
+            found_tags.add("FE")
+
+    ordered_tags = [tag for tag in FUEXAM_TYPE_ORDER if tag in found_tags]
+    if "PE" in found_tags:
+        exam_type = "PE"
+    elif "FE" in found_tags or "RE" in found_tags:
+        exam_type = "FE"
+    else:
+        exam_type = None
+
+    return exam_type, ordered_tags, term
+
+
+def parse_fuexam_forum_threads(
+    html: str,
+    expected_subject_code: str,
+    known_codes: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Phân tích HTML danh sách thread của một môn trên fuexam.me:
+    - Gán môn bằng token đầu tiên khớp chính xác (hoặc tag tường minh).
+    - Bỏ và ghi log cảnh báo nếu không xác định được môn hoặc sai môn hoặc không rõ loại đề.
+    - Không khớp chuỗi con, không thêm dữ liệu giả.
+    """
+    if not html:
+        return []
+
+    target_code = expected_subject_code.strip().upper()
+    soup = BeautifulSoup(html, "html.parser")
+    parsed: List[Dict[str, Any]] = []
+
+    for item in soup.select(".structItem--thread"):
+        title_div = item.select_one(".structItem-title")
+        if not title_div:
+            continue
+
+        label_el = title_div.select_one(".label")
+        prefix_text = label_el.text.strip() if label_el else ""
+
+        anchors = [a for a in title_div.find_all("a") if "labelLink" not in a.get("class", [])]
+        if not anchors:
+            continue
+
+        raw_title = anchors[0].text.strip()
+        href = anchors[0].get("href", "")
+        clean_href = re.sub(r"/unread$", "/", href)
+        full_url = urljoin(BASE_URL, clean_href) if clean_href.startswith("/") else clean_href
+
+        m_id = re.search(r"\.(\d+)/?$", clean_href)
+        if not m_id:
+            continue
+        tid = int(m_id.group(1))
+
+        tag_texts = [el.get_text(strip=True) for el in item.select(".tagItem")]
+        assigned_subject = extract_fuexam_thread_subject_code(
+            raw_title,
+            known_codes=known_codes,
+            tag_texts=tag_texts,
+        )
+        if not assigned_subject:
+            logger.warning(
+                "[fuexam] Bỏ qua thread #%s (%r): không xác định được mã môn học.",
+                tid,
+                raw_title,
+            )
+            continue
+
+        if assigned_subject != target_code:
+            logger.warning(
+                "[fuexam] Bỏ qua thread #%s (%r): thuộc môn %s, không phải %s.",
+                tid,
+                raw_title,
+                assigned_subject,
+                target_code,
+            )
+            continue
+
+        exam_type, type_tags, term = classify_fuexam_thread_tokens(raw_title, prefix_text)
+        if not exam_type:
+            logger.warning(
+                "[fuexam] Bỏ qua thread #%s (%r): không xác định được loại đề (FE/RE/PE).",
+                tid,
+                raw_title,
+            )
+            continue
+
+        date_el = item.select_one("time[datetime]")
+        post_date = None
+        if date_el and date_el.get("datetime"):
+            try:
+                post_date = datetime.fromisoformat(date_el["datetime"])
+            except Exception:
+                post_date = None
+
+        is_valid_exam = exam_type != "PE"
+        warning = None
+        if exam_type == "PE":
+            warning = "PE chưa hỗ trợ trên fuexam"
+        elif "B5" in type_tags:
+            warning = "Mã đề B5: kèm dải đáp án gốc"
+        elif "RE" in type_tags:
+            warning = "Đề thi lại (RE): đáp án từ bình luận"
+
+        parsed.append({
+            "id": tid,
+            "title": raw_title,
+            "url": full_url,
+            "assigned_subject": assigned_subject,
+            "exam_type": exam_type,
+            "type_tags": type_tags,
+            "term": term,
+            "post_date": post_date,
+            "is_valid_exam": is_valid_exam,
+            "warning": warning,
+        })
+
+    return parsed

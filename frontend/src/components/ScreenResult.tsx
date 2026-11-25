@@ -7,11 +7,18 @@ interface Props {
   files: JobFile[];
   details: JobDetails;
   onRestart: () => void;
+  onRetryFailed?: () => void;
 }
 
-export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart }) => {
+export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart, onRetryFailed }) => {
   const [downloadingFolder, setDownloadingFolder] = React.useState(false);
   const [openFolderStatus, setOpenFolderStatus] = React.useState<string | null>(null);
+  const examResults = details.exam_results || [];
+  const failedExams = details.failed_exams || [];
+  const hasAnyFailureOrWarning =
+    failedExams.length > 0 ||
+    examResults.some((e) => e.status === 'failed' || e.status === 'completed_with_warnings') ||
+    files.some((f) => f.fetch_failed_questions && f.fetch_failed_questions.length > 0);
 
   const handleDownload = (path: string) => {
     window.location.href = `/api/exports/download?path=${encodeURIComponent(path)}`;
@@ -129,13 +136,25 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
             </h2>
           </div>
 
-          <button
-            onClick={onRestart}
-            className="btn-secondary"
-            style={{ fontSize: 'var(--text-sm)' }}
-          >
-            Biên soạn môn khác
-          </button>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {hasAnyFailureOrWarning && onRetryFailed && jobId && (
+              <button
+                type="button"
+                onClick={onRetryFailed}
+                className="btn-primary"
+                style={{ fontSize: 'var(--text-sm)', backgroundColor: '#D97706', borderColor: '#B45309' }}
+              >
+                Thử lại các đề lỗi
+              </button>
+            )}
+            <button
+              onClick={onRestart}
+              className="btn-secondary"
+              style={{ fontSize: 'var(--text-sm)' }}
+            >
+              Biên soạn môn khác
+            </button>
+          </div>
         </div>
 
         {/* Status Callout Card */}
@@ -168,6 +187,61 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
             )}
           </ul>
         </div>
+
+        {/* Per-exam status summary (Xong / Xong có cảnh báo / Lỗi + lý do) */}
+        {examResults.length > 0 && (
+          <div
+            data-testid="result-exam-status-list"
+            style={{
+              padding: 'var(--space-4)',
+              backgroundColor: 'var(--bg-subtle)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              marginBottom: 'var(--space-6)',
+              fontSize: 'var(--text-xs)',
+            }}
+          >
+            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
+              Tổng kết từng đề ({examResults.length} đề):
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {examResults.map((er) => (
+                <div
+                  key={er.thread_id}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '12px',
+                    padding: '6px 8px',
+                    backgroundColor: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}
+                >
+                  <span style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{er.exam_title}</span>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      color:
+                        er.status === 'completed'
+                          ? 'var(--status-confident-text)'
+                          : er.status === 'completed_with_warnings'
+                          ? '#B45309'
+                          : '#991B1B',
+                    }}
+                  >
+                    {er.status === 'completed'
+                      ? 'Xong'
+                      : er.status === 'completed_with_warnings'
+                      ? `Xong có cảnh báo (lỗi tải bình luận: Câu ${(er.fetch_failed_questions || []).join(', ')})`
+                      : `Lỗi: ${er.reason || er.error_code || 'Không thành công'}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Files List Table */}
         <div style={{ marginBottom: 'var(--space-6)' }}>
@@ -426,6 +500,23 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                     {file.review_needed_questions && file.review_needed_questions.length > 0 && (
                       <div style={{ fontSize: '11px', color: '#B45309', marginTop: '4px', fontWeight: 500 }}>
                         Cần xem lại: Câu {file.review_needed_questions.join(', ')}
+                      </div>
+                    )}
+                    {file.fetch_failed_questions && file.fetch_failed_questions.length > 0 && (
+                      <div
+                        data-testid="fetch-failed-warning"
+                        style={{
+                          fontSize: '11px',
+                          color: '#991B1B',
+                          backgroundColor: '#FEE2E2',
+                          border: '1px solid #FCA5A5',
+                          borderRadius: '3px',
+                          padding: '3px 8px',
+                          marginTop: '6px',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Cảnh báo: Tải bình luận thất bại ở Câu {file.fetch_failed_questions.join(', ')} (không lưu cache rỗng)
                       </div>
                     )}
                   </div>

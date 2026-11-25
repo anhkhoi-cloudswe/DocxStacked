@@ -36,7 +36,17 @@ export interface ExamItem {
   is_valid_exam?: boolean;
   warning?: string | null;
   sub_exam_count?: number | null;
+  type_tags?: string[];
   platform?: PlatformType;
+}
+
+export interface SubjectExamTypesResponse {
+  subject_code: string;
+  platform: PlatformType;
+  available_types: string[];
+  has_fe: boolean;
+  has_pe: boolean;
+  counts: Record<string, number>;
 }
 
 export interface AuthStatus {
@@ -95,6 +105,18 @@ export interface LoginSession {
   updated_at?: string | null;
 }
 
+export interface ExamResultItem {
+  thread_id: number;
+  exam_title: string;
+  source_url?: string;
+  filename?: string;
+  status: 'completed' | 'completed_with_warnings' | 'failed';
+  reason?: string;
+  error_code?: string;
+  fetch_failed_questions?: number[];
+  questions_count?: number;
+}
+
 export interface JobFile {
   filename: string;
   path: string;
@@ -104,6 +126,7 @@ export interface JobFile {
   cached?: boolean;
   cached_at?: string | null;
   platform?: string;
+  status?: 'completed' | 'completed_with_warnings' | 'failed';
   confident_count?: number;
   weak_count?: number;
   conflict_count?: number;
@@ -115,6 +138,7 @@ export interface JobFile {
   source_url?: string;
   source_breakdown?: Record<string, number>;
   review_needed_questions?: number[];
+  fetch_failed_questions?: number[];
 }
 
 export interface JobDetails {
@@ -124,6 +148,9 @@ export interface JobDetails {
   started_at?: string;
   completed_at?: string;
   files?: JobFile[];
+  exam_results?: ExamResultItem[];
+  failed_exams?: ExamResultItem[];
+  crawl_metrics?: Record<string, any>;
   total_exams?: number;
   total_questions?: number;
   is_retryable?: boolean;
@@ -152,8 +179,16 @@ export interface SSEEvent {
   total_exams?: number;
   current_question?: number;
   total_questions?: number;
+  retry_attempt?: number;
+  max_retries?: number;
+  is_rate_limiting?: boolean;
+  circuit_breaker?: boolean;
+  wait_seconds?: number;
   files?: JobFile[];
   completed_file?: JobFile;
+  exam_results?: ExamResultItem[];
+  failed_exams?: ExamResultItem[];
+  crawl_metrics?: Record<string, any>;
   is_retryable?: boolean;
   error_code?: string;
 }
@@ -205,6 +240,13 @@ export interface AppSettings {
     headless: boolean;
     max_retries: number;
     default_count: number;
+    fuexam_connect_timeout?: number;
+    fuexam_read_timeout?: number;
+    fuexam_max_retries?: number;
+    fuexam_max_concurrency?: number;
+    fuexam_min_delay_seconds?: number;
+    fuexam_circuit_breaker_threshold?: number;
+    fuexam_circuit_breaker_pause_seconds?: number;
   };
   storage?: {
     retention_days: number;

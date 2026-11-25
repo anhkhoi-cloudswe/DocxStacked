@@ -22,6 +22,13 @@ class CrawlConfig(BaseModel):
     concurrency: int = 1
     headless: bool = False
     max_retries: int = 3
+    fuexam_connect_timeout: float = 10.0
+    fuexam_read_timeout: float = 45.0
+    fuexam_max_retries: int = 4
+    fuexam_max_concurrency: int = 2
+    fuexam_min_delay_seconds: float = 0.4
+    fuexam_circuit_breaker_threshold: int = 3
+    fuexam_circuit_breaker_pause_seconds: float = 45.0
 
 
 class AnalysisConfig(BaseModel):

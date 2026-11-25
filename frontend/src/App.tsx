@@ -558,6 +558,9 @@ export const App: React.FC = () => {
                   total_exams: j.details?.total_exams || j.details.files.length,
                   total_questions: j.details?.total_questions || 0,
                   files: j.details.files,
+                  exam_results: j.details?.exam_results,
+                  failed_exams: j.details?.failed_exams,
+                  crawl_metrics: j.details?.crawl_metrics,
                 });
                 setCurrentScreen('result');
               }
@@ -584,6 +587,9 @@ export const App: React.FC = () => {
                 total_exams: j.details?.total_exams || files.length,
                 total_questions: j.details?.total_questions || 0,
                 files: files,
+                exam_results: j.details?.exam_results,
+                failed_exams: j.details?.failed_exams,
+                crawl_metrics: j.details?.crawl_metrics,
               });
             }
           })
@@ -850,6 +856,25 @@ export const App: React.FC = () => {
     navigateTo('select', null);
   };
 
+  const handleRetryFailed = async () => {
+    if (!jobId) return;
+    try {
+      const resp = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/retry-failed`, { method: 'POST' });
+      if (!resp.ok) {
+        throw new Error(`Không thể thử lại các đề lỗi (HTTP ${resp.status})`);
+      }
+      sessionStorage.setItem('docxstacked_active_job_id', jobId);
+      setActiveRunningJobId(jobId);
+      navigateTo('progress', jobId);
+    } catch (err: any) {
+      await alertModal({
+        title: 'Lỗi thử lại đề',
+        message: err.message || 'Không thể gửi yêu cầu thử lại các đề lỗi.',
+        type: 'error',
+      });
+    }
+  };
+
   const [previousScreen, setPreviousScreen] = useState<ScreenType>('select');
 
   const handleOpenSettings = () => {
@@ -963,6 +988,7 @@ export const App: React.FC = () => {
                   files={completedFiles}
                   details={completedDetails}
                   onRestart={handleRestart}
+                  onRetryFailed={handleRetryFailed}
                 />
               )}
 

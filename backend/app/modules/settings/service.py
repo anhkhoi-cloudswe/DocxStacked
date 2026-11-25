@@ -159,6 +159,13 @@ def get_default_settings() -> Dict[str, Any]:
             "headless": bool(getattr(yaml_cfg.crawl, "headless", False)),
             "max_retries": int(getattr(yaml_cfg.crawl, "max_retries", 3)),
             "default_count": int(getattr(yaml_cfg.exam, "default_count", 4)),
+            "fuexam_connect_timeout": float(getattr(yaml_cfg.crawl, "fuexam_connect_timeout", 10.0)),
+            "fuexam_read_timeout": float(getattr(yaml_cfg.crawl, "fuexam_read_timeout", 45.0)),
+            "fuexam_max_retries": int(getattr(yaml_cfg.crawl, "fuexam_max_retries", 4)),
+            "fuexam_max_concurrency": int(getattr(yaml_cfg.crawl, "fuexam_max_concurrency", 2)),
+            "fuexam_min_delay_seconds": float(getattr(yaml_cfg.crawl, "fuexam_min_delay_seconds", 0.4)),
+            "fuexam_circuit_breaker_threshold": int(getattr(yaml_cfg.crawl, "fuexam_circuit_breaker_threshold", 3)),
+            "fuexam_circuit_breaker_pause_seconds": float(getattr(yaml_cfg.crawl, "fuexam_circuit_breaker_pause_seconds", 45.0)),
         },
         "storage": {
             "retention_days": 14,

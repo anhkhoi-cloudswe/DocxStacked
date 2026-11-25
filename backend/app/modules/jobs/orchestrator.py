@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -65,7 +66,11 @@ def classify_job_error(e: Exception) -> tuple[str, str, bool]:
     ):
         return err_str, "AUTH_REQUIRED", True
 
-    # 2. Network / connection / timeout errors
+    # 2. Network / connection / timeout errors (giữ nguyên mã NET-xxxxxx nếu đã có)
+    existing_code = getattr(e, "error_code", None)
+    if existing_code and isinstance(existing_code, str) and existing_code.startswith("NET-"):
+        return f"{err_str} (Mã lỗi: {existing_code})", existing_code, True
+
     if isinstance(e, (asyncio.TimeoutError, ConnectionError, OSError)) or any(
         k in err_cls.lower() for k in ["timeout", "connection", "network"]
     ) or any(
@@ -103,6 +108,7 @@ class JobOrchestrator:
         self._listeners: Dict[str, List[asyncio.Queue]] = {}
         self._event_history: Dict[str, List[Dict[str, Any]]] = {}
         self._running_tasks: Dict[str, asyncio.Task] = {}
+        self._cancel_events: Dict[str, threading.Event] = {}
         self.storage = LocalStorage()
 
     def _broadcast(self, job_id: str, event_data: Dict[str, Any]):
@@ -181,6 +187,7 @@ class JobOrchestrator:
             await db.refresh(job)
 
         self._event_history[job_uuid] = []
+        self._cancel_events[job_uuid] = threading.Event()
         task = asyncio.create_task(
             self._run_job_pipeline(job_uuid, subject_code.upper(), exam_type, effective_count, force_refresh, exam_ids=exam_ids, platform=platform)
         )
@@ -188,7 +195,11 @@ class JobOrchestrator:
         return job
 
     async def cancel_job(self, job_id: str) -> bool:
-        """Cancel a running or pending job."""
+        """Cancel a running or pending job (including during backoff/circuit breaker)."""
+        cancel_ev = self._cancel_events.get(job_id)
+        if cancel_ev:
+            cancel_ev.set()
+
         task = self._running_tasks.get(job_id)
         if task and not task.done():
             task.cancel()
@@ -201,12 +212,15 @@ class JobOrchestrator:
                 job.status = JobStatus.FAILED
                 job.error_message = "Đã huỷ bởi người dùng"
                 await db.commit()
-                self._broadcast(job_id, {"type": "error", "message": "Tiến trình đã bị huỷ bởi người dùng."})
+                self._broadcast(job_id, {"type": "error", "step": "cancelled", "message": "Tiến trình đã bị huỷ bởi người dùng."})
                 return True
         return False
 
     async def resume_job(self, job_id: str) -> Optional[Job]:
         """Resume a stopped or failed job from its last completed state."""
+        existing_cancel = self._cancel_events.get(job_id)
+        if existing_cancel:
+            existing_cancel.set()
         existing_task = self._running_tasks.get(job_id)
         if existing_task and not existing_task.done():
             existing_task.cancel()
@@ -234,8 +248,77 @@ class JobOrchestrator:
         force_ref = bool(job.details.get("force_refresh", False)) if job.details else False
         saved_exam_ids = job.details.get("exam_ids") if job.details else None
         platform = job.details.get("platform", "fuoverflow") if job.details else "fuoverflow"
+        self._cancel_events[job.job_id] = threading.Event()
         task = asyncio.create_task(
             self._run_job_pipeline(job.job_id, job.subject_code, job.exam_type, job.exam_count, force_ref, exam_ids=saved_exam_ids, platform=platform)
+        )
+        self._running_tasks[job.job_id] = task
+        return job
+
+    async def retry_failed_exams(self, job_id: str) -> Optional[Job]:
+        """Retry only failed (or warning) exams from a previous job, reusing cache for successful parts."""
+        existing_cancel = self._cancel_events.get(job_id)
+        if existing_cancel:
+            existing_cancel.set()
+        existing_task = self._running_tasks.get(job_id)
+        if existing_task and not existing_task.done():
+            existing_task.cancel()
+
+        async with async_session_factory() as db:
+            stmt = select(Job).where(Job.job_id == job_id)
+            res = await db.execute(stmt)
+            job = res.scalar_one_or_none()
+            if not job:
+                return None
+
+            details = dict(job.details or {})
+            exam_results = list(details.get("exam_results") or [])
+            failed_exams = list(details.get("failed_exams") or [])
+
+            retry_ids: List[int] = []
+            for item in failed_exams:
+                tid = item.get("thread_id")
+                if tid is not None and tid not in retry_ids:
+                    retry_ids.append(int(tid))
+            for item in exam_results:
+                if item.get("status") in ("failed", "completed_with_warnings"):
+                    tid = item.get("thread_id")
+                    if tid is not None and tid not in retry_ids:
+                        retry_ids.append(int(tid))
+
+            if not retry_ids:
+                return job
+
+            # Giữ lại các file đã thành công hoàn toàn; các đề cần thử lại sẽ chạy với force_refresh=False để tận dụng cache
+            details["retry_exam_ids"] = retry_ids
+            details["failed_exams"] = [f for f in failed_exams if f.get("thread_id") not in retry_ids]
+            job.details = details
+            job.status = JobStatus.PENDING
+            job.error_message = None
+            job.current_step = "retrying_failed"
+            await db.commit()
+            await db.refresh(job)
+
+        self._event_history[job.job_id] = []
+        self._cancel_events[job.job_id] = threading.Event()
+        self._broadcast(job.job_id, {
+            "type": "log",
+            "step": "retrying_failed",
+            "message": f"Đang thử lại {len(retry_ids)} đề bị lỗi/cảnh báo (dùng lại cache phần đã xong)...",
+            "progress": 5,
+        })
+
+        platform = (job.details or {}).get("platform", "fuexam")
+        task = asyncio.create_task(
+            self._run_job_pipeline(
+                job.job_id,
+                job.subject_code,
+                job.exam_type,
+                len(retry_ids),
+                force_refresh=False,
+                exam_ids=retry_ids,
+                platform=platform,
+            )
         )
         self._running_tasks[job.job_id] = task
         return job
@@ -892,6 +975,7 @@ class JobOrchestrator:
             finally:
                 if job_id in self._running_tasks:
                     del self._running_tasks[job_id]
+                self._cancel_events.pop(job_id, None)
 
     async def _run_fuexam_job_pipeline(
         self,
@@ -902,9 +986,11 @@ class JobOrchestrator:
         force_refresh: bool = False,
         exam_ids: Optional[List[int]] = None,
     ):
-        """Execute real compilation pipeline for fuexam.me."""
+        """Execute real compilation pipeline for fuexam.me with retry, circuit breaker, and per-question/per-exam isolation."""
         logger.info(f"Starting fuexam job pipeline {job_id} for {subject_code} ({exam_type.value}, limit={limit})...")
         created_files: List[Dict[str, Any]] = []
+        exam_results: List[Dict[str, Any]] = []
+        failed_exams: List[Dict[str, Any]] = []
 
         from backend.app.modules.crawler.fuexam_crawler import (
             get_authenticated_session,
@@ -912,6 +998,10 @@ class JobOrchestrator:
             extract_thread_questions,
             fetch_and_cache_media_image,
             fetch_and_cache_media_comments,
+            FuexamHttpClient,
+            CommentFetchError,
+            JobCancelledError,
+            set_active_fuexam_client,
             AuthenticationRequiredError as FuexamAuthError,
         )
         from backend.app.modules.crawler.fuexam_subjects import load_subject_map
@@ -919,6 +1009,25 @@ class JobOrchestrator:
         from backend.app.modules.analysis.image_answer_reader import read_answer_from_image, read_choice_hint_n
         from backend.app.modules.analysis.voting import tally_votes
         from backend.app.modules.export.docx_builder import build_exam_docx
+
+        cancel_ev = self._cancel_events.get(job_id) or threading.Event()
+        self._cancel_events[job_id] = cancel_ev
+        loop = asyncio.get_running_loop()
+
+        def _thread_event_cb(ev: Dict[str, Any]) -> None:
+            try:
+                loop.call_soon_threadsafe(self._broadcast, job_id, ev)
+            except RuntimeError:
+                pass
+
+        def _call_with_client(client: FuexamHttpClient, fn: Any, *args: Any, **kwargs: Any) -> Any:
+            set_active_fuexam_client(client)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                set_active_fuexam_client(None)
+
+        http_client: Optional[FuexamHttpClient] = None
 
         async with async_session_factory() as db:
             try:
@@ -930,6 +1039,24 @@ class JobOrchestrator:
                 job.current_step = "auth_check"
                 initial_details = dict(job.details or {})
                 created_files = list(initial_details.get("files", []))
+                exam_results = list(initial_details.get("exam_results", []))
+                failed_exams = list(initial_details.get("failed_exams", []))
+                job_cfg = job.config_snapshot or (await get_active_settings(db))
+                crawl_cfg = job_cfg.get("crawl", {})
+                min_delay = float(crawl_cfg.get("fuexam_min_delay_seconds", 0.4))
+
+                http_client = FuexamHttpClient(
+                    connect_timeout=crawl_cfg.get("fuexam_connect_timeout"),
+                    read_timeout=crawl_cfg.get("fuexam_read_timeout"),
+                    max_attempts=crawl_cfg.get("fuexam_max_retries"),
+                    max_concurrency=crawl_cfg.get("fuexam_max_concurrency"),
+                    min_delay_seconds=min_delay,
+                    circuit_breaker_threshold=crawl_cfg.get("fuexam_circuit_breaker_threshold"),
+                    circuit_breaker_pause_seconds=crawl_cfg.get("fuexam_circuit_breaker_pause_seconds"),
+                    cancel_event=cancel_ev,
+                    event_callback=_thread_event_cb,
+                )
+
                 job.details = {**initial_details, "started_at": datetime.utcnow().isoformat(), "platform": "fuexam"}
                 await db.commit()
 
@@ -943,8 +1070,11 @@ class JobOrchestrator:
                 # 2. Check Auth
                 try:
                     session = get_authenticated_session()
-                    if not check_session_validity(session):
+                    is_valid = await asyncio.to_thread(_call_with_client, http_client, check_session_validity, session)
+                    if not is_valid:
                         raise FuexamAuthError("Phiên đăng nhập fuexam.me đã hết hạn hoặc chưa đăng nhập.")
+                except (JobCancelledError, asyncio.CancelledError):
+                    raise
                 except Exception as auth_err:
                     error_msg = f"Cần đăng nhập fuexam.me: {auth_err}"
                     logger.error(f"Fuexam job {job_id} failed auth: {error_msg}")
@@ -1045,12 +1175,30 @@ class JobOrchestrator:
                         await db.flush()
                     exams_to_process.append(ex_obj)
 
-                total_exams = len(exams_to_process)
+                exam_specs = [{"id": ex.id, "title": ex.title, "url": ex.url} for ex in exams_to_process]
+                await db.commit()
+
+                total_exams = len(exam_specs)
                 total_all_questions = 0
                 all_sources_count = {"image": 0, "comments": 0, "ai": 0, "total": 0}
 
-                # 5. Process each exam
-                for exam_idx, exam in enumerate(exams_to_process, start=1):
+                def _upsert_exam_result(entry: Dict[str, Any]) -> None:
+                    tid = entry.get("thread_id")
+                    idx = next((i for i, x in enumerate(exam_results) if x.get("thread_id") == tid), None)
+                    if idx is not None:
+                        exam_results[idx] = entry
+                    else:
+                        exam_results.append(entry)
+
+                # 5. Process each exam with per-exam error isolation
+                for exam_idx, ex_spec in enumerate(exam_specs, start=1):
+                    if cancel_ev.is_set():
+                        raise JobCancelledError("Tiến trình đã bị huỷ bởi người dùng.")
+
+                    exam_id_val = ex_spec["id"]
+                    exam_title_val = ex_spec["title"]
+                    exam_url_val = ex_spec["url"]
+                    exam = (await db.execute(select(Exam).where(Exam.id == exam_id_val))).scalar_one()
                     exam_progress_base = int(((exam_idx - 1) / total_exams) * 90)
 
                     self._broadcast(job_id, {
@@ -1062,357 +1210,501 @@ class JobOrchestrator:
                         "total_exams": total_exams,
                     })
 
-                    raw_title, questions_meta = extract_thread_questions(exam.url, session)
-                    if not questions_meta:
-                        raise RuntimeError(f"Không tìm thấy câu hỏi nào trong thread {exam.url}")
-
-                    # Cập nhật danh tính đề từ TIÊU ĐỀ THREAD (không dùng fallback tạm)
-                    clean_raw_title = re.sub(r"^\s*Đề\s*Thi\s*(?:FE|PE)?\s*[-–—:]\s*", "", raw_title, flags=re.IGNORECASE).strip()
-                    clean_raw_title = re.sub(r"\(?\bThread\s*\d+\b\)?", "", clean_raw_title, flags=re.IGNORECASE).strip()
-                    clean_raw_title = re.sub(r"\s*\|\s*FuExam.*$", "", clean_raw_title, flags=re.IGNORECASE).strip()
-                    if clean_raw_title and not clean_raw_title.startswith("Đề Thi fuexam"):
-                        exam.title = clean_raw_title
-
-                    # Không bao giờ đoán bừa kỳ học ("SP26", "FA26"): Phải phân tích được từ tiêu đề
-                    parsed_term = normalize_term(exam.title) or normalize_term(raw_title) or normalize_term(exam.term)
-                    if not parsed_term:
-                        err_msg = (
-                            f"Không thể phân tích kỳ học (term) từ tiêu đề đề thi: '{exam.title}' (Thread {exam.id}). "
-                            "Dừng biên soạn để tránh đặt tên đoán mặc định. Vui lòng bổ sung kỳ học vào tiêu đề thread (ví dụ: FA26, SU26, SP26)."
+                    try:
+                        raw_title, questions_meta = await asyncio.to_thread(
+                            _call_with_client,
+                            http_client,
+                            extract_thread_questions,
+                            exam.url,
+                            session,
                         )
-                        logger.error(err_msg)
-                        raise RuntimeError(err_msg)
-                    exam.term = parsed_term
-                    await db.flush()
+                        if not questions_meta:
+                            raise RuntimeError(f"Không tìm thấy câu hỏi nào trong thread {exam.url}")
 
-                    tot_q = len(questions_meta)
-                    exam.question_count = tot_q
-                    total_all_questions += tot_q
+                        # Cập nhật danh tính đề từ TIÊU ĐỀ THREAD (không dùng fallback tạm)
+                        clean_raw_title = re.sub(r"^\s*Đề\s*Thi\s*(?:FE|PE)?\s*[-–—:]\s*", "", raw_title, flags=re.IGNORECASE).strip()
+                        clean_raw_title = re.sub(r"\(?\bThread\s*\d+\b\)?", "", clean_raw_title, flags=re.IGNORECASE).strip()
+                        clean_raw_title = re.sub(r"\s*\|\s*FuExam.*$", "", clean_raw_title, flags=re.IGNORECASE).strip()
+                        if clean_raw_title and not clean_raw_title.startswith("Đề Thi fuexam"):
+                            exam.title = clean_raw_title
 
-                    cropped_dir = settings.BASE_DIR / "data" / "cropped" / "fuexam" / subject_code / f"exam_{exam.id}"
-                    cropped_dir.mkdir(parents=True, exist_ok=True)
+                        # Không bao giờ đoán bừa kỳ học ("SP26", "FA26"): Phải phân tích được từ tiêu đề
+                        parsed_term = normalize_term(exam.title) or normalize_term(raw_title) or normalize_term(exam.term)
+                        if not parsed_term:
+                            err_msg = (
+                                f"Không thể phân tích kỳ học (term) từ tiêu đề đề thi: '{exam.title}' (Thread {exam.id}). "
+                                "Dừng biên soạn để tránh đặt tên đoán mặc định. Vui lòng bổ sung kỳ học vào tiêu đề thread (ví dụ: FA26, SU26, SP26)."
+                            )
+                            logger.error(err_msg)
+                            raise RuntimeError(err_msg)
+                        exam.term = parsed_term
+                        await db.flush()
 
-                    question_objs: List[Question] = []
-                    answers_map: Dict[int, Answer] = {}
-                    exam_sources = {"image": 0, "comments": 0, "ai": 0, "no_data": 0}
+                        tot_q = len(questions_meta)
+                        exam.question_count = tot_q
+                        total_all_questions += tot_q
 
-                    # Cấu hình AI cho fuexam (Requirement 6)
-                    ai_service = get_ai_check_service()
-                    job_cfg = job.config_snapshot or (await get_active_settings(db))
-                    ai_cfg = job_cfg.get("ai", {})
-                    ai_enabled = ai_cfg.get("enabled", True)
-                    ai_mode = ai_cfg.get("mode", "only_uncertain")
-                    ai_weight = float(job_cfg.get("voting", {}).get("ai_weight", 1.0))
-                    max_opt_letter = job_cfg.get("voting", {}).get("max_option_letter", "H")
-                    warned_no_ai_key = False
-                    ai_skipped_reason = None
+                        cropped_dir = settings.BASE_DIR / "data" / "cropped" / "fuexam" / subject_code / f"exam_{exam.id}"
+                        cropped_dir.mkdir(parents=True, exist_ok=True)
 
-                    for q_idx, q_item in enumerate(questions_meta, start=1):
-                        m_id = q_item["media_id"]
-                        slug = q_item["slug"]
-                        att_url = q_item["attachment_url"]
+                        question_objs: List[Question] = []
+                        answers_map: Dict[int, Answer] = {}
+                        exam_sources = {"image": 0, "comments": 0, "ai": 0, "no_data": 0}
+                        fetch_failed_questions: List[int] = []
+                        fetch_failed_details: List[Dict[str, Any]] = []
 
-                        computed_prog = min(95, max(10, int((((exam_idx - 1) * tot_q + q_idx) / (total_exams * tot_q)) * 100)))
+                        # Cấu hình AI cho fuexam (Requirement 6)
+                        ai_service = get_ai_check_service()
+                        ai_cfg = job_cfg.get("ai", {})
+                        ai_enabled = ai_cfg.get("enabled", True)
+                        ai_mode = ai_cfg.get("mode", "only_uncertain")
+                        ai_weight = float(job_cfg.get("voting", {}).get("ai_weight", 1.0))
+                        max_opt_letter = job_cfg.get("voting", {}).get("max_option_letter", "H")
+                        warned_no_ai_key = False
+                        ai_skipped_reason = None
 
-                        self._broadcast(job_id, {
-                            "type": "progress",
-                            "step": "crawling_questions",
-                            "message": f"Đang tải câu {q_idx}/{tot_q}: {slug}",
-                            "current_question": q_idx,
-                            "total_questions": tot_q,
-                            "current_exam": exam_idx,
-                            "total_exams": total_exams,
-                            "progress": computed_prog,
-                        })
+                        for q_idx, q_item in enumerate(questions_meta, start=1):
+                            if cancel_ev.is_set():
+                                raise JobCancelledError("Tiến trình đã bị huỷ bởi người dùng.")
 
-                        # Ghi sự kiện từng chặng (mỗi 5 câu)
-                        if q_idx == 1 or q_idx % 5 == 0 or q_idx == tot_q:
+                            m_id = q_item["media_id"]
+                            slug = q_item["slug"]
+                            att_url = q_item["attachment_url"]
+
+                            computed_prog = min(95, max(10, int((((exam_idx - 1) * tot_q + q_idx) / (total_exams * tot_q)) * 100)))
+
                             self._broadcast(job_id, {
-                                "type": "log",
+                                "type": "progress",
                                 "step": "crawling_questions",
-                                "message": f"[{exam_idx}/{total_exams}] Đã tải xong chặng câu {q_idx}/{tot_q} cho đề: {exam.title}",
+                                "message": f"Đang tải câu {q_idx}/{tot_q}: {slug}",
+                                "current_question": q_idx,
+                                "total_questions": tot_q,
+                                "current_exam": exam_idx,
+                                "total_exams": total_exams,
+                                "retry_attempt": 0,
                                 "progress": computed_prog,
                             })
 
-                        # Download image (delay 1.6s)
-                        img_path, img_cached = fetch_and_cache_media_image(
-                            media_id=m_id,
-                            attachment_url=att_url,
-                            slug=slug,
-                            session=session,
-                            force_refresh=force_refresh,
-                            delay_seconds=1.6,
-                        )
+                            # Ghi sự kiện từng chặng (mỗi 5 câu)
+                            if q_idx == 1 or q_idx % 5 == 0 or q_idx == tot_q:
+                                self._broadcast(job_id, {
+                                    "type": "log",
+                                    "step": "crawling_questions",
+                                    "message": f"[{exam_idx}/{total_exams}] Đang xử lý câu {q_idx}/{tot_q} cho đề: {exam.title}",
+                                    "progress": computed_prog,
+                                })
 
-                        # Download comments (delay 1.6s)
-                        parsed_comms, comm_cached = fetch_and_cache_media_comments(
-                            media_id=m_id,
-                            slug=slug,
-                            session=session,
-                            force_refresh=force_refresh,
-                            delay_seconds=1.6,
-                        )
-
-                        # DB Question object
-                        q_db_stmt = select(Question).where(Question.exam_id == exam.id, Question.index == q_idx)
-                        q_db_res = await db.execute(q_db_stmt)
-                        q_obj = q_db_res.scalar_one_or_none()
-                        if not q_obj:
-                            q_obj = Question(
-                                exam_id=exam.id,
-                                index=q_idx,
-                                file_name=img_path.name,
-                                media_id=str(m_id),
-                                local_image_path=str(img_path.resolve()),
+                            # Download image (rate-limited & retried via FuexamHttpClient)
+                            img_path, img_cached = await asyncio.to_thread(
+                                _call_with_client,
+                                http_client,
+                                fetch_and_cache_media_image,
+                                media_id=m_id,
+                                attachment_url=att_url,
+                                slug=slug,
+                                session=session,
+                                force_refresh=force_refresh,
+                                delay_seconds=min_delay,
                             )
-                            db.add(q_obj)
-                            await db.flush()
-                        else:
-                            q_obj.file_name = img_path.name
-                            q_obj.media_id = str(m_id)
-                            q_obj.local_image_path = str(img_path.resolve())
 
-                        # Crop image with layout fuexam_2026
-                        cropped_out = cropped_dir / f"q{q_idx:03d}.png"
-                        crop_res = crop_question_single(img_path, output_path=cropped_out)
-                        q_obj.cropped_image_path = str(cropped_out.resolve())
-                        q_obj.crop_layout = crop_res.layout
-                        q_obj.crop_warnings = crop_res.warnings
+                            # Download comments (isolated per question: never crashes exam on CommentFetchError)
+                            comment_fetch_failed = False
+                            comment_fetch_err_code: Optional[str] = None
+                            try:
+                                parsed_comms, comm_cached = await asyncio.to_thread(
+                                    _call_with_client,
+                                    http_client,
+                                    fetch_and_cache_media_comments,
+                                    media_id=m_id,
+                                    slug=slug,
+                                    session=session,
+                                    force_refresh=force_refresh,
+                                    delay_seconds=min_delay,
+                                )
+                            except CommentFetchError as cfe:
+                                parsed_comms = []
+                                comm_cached = False
+                                comment_fetch_failed = True
+                                comment_fetch_err_code = cfe.error_code
+                                fetch_failed_questions.append(q_idx)
+                                fetch_failed_details.append({
+                                    "question": q_idx,
+                                    "media_id": m_id,
+                                    "error_type": cfe.error_type,
+                                    "error_code": cfe.error_code,
+                                    "message": str(cfe),
+                                })
+                                self._broadcast(job_id, {
+                                    "type": "log",
+                                    "step": "crawling_questions",
+                                    "message": f"[{exam_idx}/{total_exams}] Câu {q_idx}/{tot_q}: Tải bình luận thất bại ({cfe.error_code}), cô lập câu lỗi và tiếp tục.",
+                                    "progress": computed_prog,
+                                })
 
-                        # Determine answer:
-                        # 1. Thử đọc dải đáp án xanh từ ảnh (CONFIDENT >= 0.80) -> Không bao giờ gọi AI
-                        img_ans_res = read_answer_from_image(img_path)
-                        if img_ans_res.letter and img_ans_res.confidence >= 0.80:
-                            ans_set = img_ans_res.letters or [img_ans_res.letter]
-                            ans_status = AnswerStatus.CONFIDENT
-                            ans_conf = img_ans_res.confidence
-                            vb = {"_source": "image", "_method": img_ans_res.method}
-                            exam_sources["image"] += 1
-                        else:
-                            # 2. Tổng hợp bình luận cộng đồng
-                            q_comments: List[Comment] = []
-                            for i_c, c_raw in enumerate(parsed_comms, 1):
-                                q_comments.append(Comment(
-                                    question_id=q_obj.id,
-                                    comment_id=str(c_raw.get("comment_id", i_c)),
-                                    author_hash=c_raw.get("author_hash", f"user_{i_c}"),
-                                    raw_text=c_raw.get("raw_text", ""),
-                                    upvotes=0,
-                                ))
-                            prelim_res = tally_votes(q_comments, ai_weight=ai_weight, max_option_letter=max_opt_letter) if q_comments else None
-
-                            # Nếu bình luận đã đạt CONFIDENT (>= 0.80) -> Không gọi AI
-                            if prelim_res and prelim_res.status == AnswerStatus.CONFIDENT and prelim_res.confidence >= 0.80:
-                                ans_set = prelim_res.answer_set
-                                ans_status = AnswerStatus.CONFIDENT
-                                ans_conf = prelim_res.confidence
-                                vb = {"_source": "comments", **(prelim_res.vote_breakdown or {})}
-                                exam_sources["comments"] += 1
+                            # DB Question object
+                            q_db_stmt = select(Question).where(Question.exam_id == exam.id, Question.index == q_idx)
+                            q_db_res = await db.execute(q_db_stmt)
+                            q_obj = q_db_res.scalar_one_or_none()
+                            if not q_obj:
+                                q_obj = Question(
+                                    exam_id=exam.id,
+                                    index=q_idx,
+                                    file_name=img_path.name,
+                                    media_id=str(m_id),
+                                    local_image_path=str(img_path.resolve()),
+                                )
+                                db.add(q_obj)
+                                await db.flush()
                             else:
-                                # Câu rơi vào WEAK, CONFLICT, hoặc NO_DATA -> Đủ điều kiện gọi AI
-                                has_missing_options = "missing_options" in (q_obj.crop_warnings or [])
-                                need_ai = ai_enabled and not has_missing_options and ai_mode != "off"
-                                ai_votes = []
-                                ai_options = {}
+                                q_obj.file_name = img_path.name
+                                q_obj.media_id = str(m_id)
+                                q_obj.local_image_path = str(img_path.resolve())
 
-                                if need_ai:
-                                    if not ai_service.is_available():
-                                        if not warned_no_ai_key:
-                                            warned_no_ai_key = True
-                                            ai_skipped_reason = "Chưa cấu hình API key hoặc hết hạn mức"
-                                            self._broadcast(job_id, {
-                                                "type": "log",
-                                                "step": "crawling_questions",
-                                                "message": "AI được bật nhưng chưa cấu hình khóa API (hoặc hết hạn mức). Bỏ qua bước gọi AI.",
-                                            })
-                                    else:
-                                        target_img = cropped_out if cropped_out.exists() else img_path
-                                        analyses = ai_service.analyze_question_ensemble(target_img, job_id=job_id)
-                                        for a in analyses:
-                                            ai_votes.append({
-                                                "provider": a.provider or "ai",
-                                                "answers": a.answers,
-                                                "confidence": a.confidence,
-                                            })
-                                            if a.options:
-                                                ai_options.update(a.options)
+                            # Crop image with layout fuexam_2026
+                            cropped_out = cropped_dir / f"q{q_idx:03d}.png"
+                            crop_res = crop_question_single(img_path, output_path=cropped_out)
+                            q_obj.cropped_image_path = str(cropped_out.resolve())
+                            q_obj.crop_layout = crop_res.layout
+                            q_obj.crop_warnings = crop_res.warnings
 
-                                # Bỏ phiếu kết hợp bình luận và AI (AI chỉ là 1 phiếu)
-                                if q_comments or ai_votes:
-                                    final_res = tally_votes(
-                                        q_comments,
-                                        ai_votes=ai_votes if ai_votes else None,
-                                        ai_weight=ai_weight,
-                                        max_option_letter=max_opt_letter,
-                                    )
-                                    ans_set = final_res.answer_set
-                                    ans_status = final_res.status
-                                    ans_conf = final_res.confidence
-                                    vb = dict(final_res.vote_breakdown or {})
-                                    if ai_votes:
-                                        vb["_ai_votes"] = ai_votes
-                                        if not q_comments:
-                                            vb["_source"] = "ai"
-                                            exam_sources["ai"] += 1
+                            # Determine answer:
+                            # 1. Thử đọc dải đáp án xanh từ ảnh (CONFIDENT >= 0.80) -> Không bao giờ gọi AI
+                            img_ans_res = read_answer_from_image(img_path)
+                            if img_ans_res.letter and img_ans_res.confidence >= 0.80:
+                                ans_set = img_ans_res.letters or [img_ans_res.letter]
+                                ans_status = AnswerStatus.CONFIDENT
+                                ans_conf = img_ans_res.confidence
+                                vb = {"_source": "image", "_method": img_ans_res.method}
+                                exam_sources["image"] += 1
+                            else:
+                                # 2. Tổng hợp bình luận cộng đồng
+                                q_comments: List[Comment] = []
+                                for i_c, c_raw in enumerate(parsed_comms, 1):
+                                    q_comments.append(Comment(
+                                        question_id=q_obj.id,
+                                        comment_id=str(c_raw.get("comment_id", i_c)),
+                                        author_hash=c_raw.get("author_hash", f"user_{i_c}"),
+                                        raw_text=c_raw.get("raw_text", ""),
+                                        upvotes=0,
+                                    ))
+                                prelim_res = tally_votes(q_comments, ai_weight=ai_weight, max_option_letter=max_opt_letter) if q_comments else None
+
+                                # Nếu bình luận đã đạt CONFIDENT (>= 0.80) -> Không gọi AI
+                                if prelim_res and prelim_res.status == AnswerStatus.CONFIDENT and prelim_res.confidence >= 0.80:
+                                    ans_set = prelim_res.answer_set
+                                    ans_status = AnswerStatus.CONFIDENT
+                                    ans_conf = prelim_res.confidence
+                                    vb = {"_source": "comments", **(prelim_res.vote_breakdown or {})}
+                                    exam_sources["comments"] += 1
+                                else:
+                                    # Câu rơi vào WEAK, CONFLICT, hoặc NO_DATA -> Đủ điều kiện gọi AI
+                                    has_missing_options = "missing_options" in (q_obj.crop_warnings or [])
+                                    need_ai = ai_enabled and not has_missing_options and ai_mode != "off"
+                                    ai_votes = []
+                                    ai_options = {}
+
+                                    if need_ai:
+                                        if not ai_service.is_available():
+                                            if not warned_no_ai_key:
+                                                warned_no_ai_key = True
+                                                ai_skipped_reason = "Chưa cấu hình API key hoặc hết hạn mức"
+                                                self._broadcast(job_id, {
+                                                    "type": "log",
+                                                    "step": "crawling_questions",
+                                                    "message": "AI được bật nhưng chưa cấu hình khóa API (hoặc hết hạn mức). Bỏ qua bước gọi AI.",
+                                                })
+                                        else:
+                                            target_img = cropped_out if cropped_out.exists() else img_path
+                                            analyses = ai_service.analyze_question_ensemble(target_img, job_id=job_id)
+                                            for a in analyses:
+                                                ai_votes.append({
+                                                    "provider": a.provider or "ai",
+                                                    "answers": a.answers,
+                                                    "confidence": a.confidence,
+                                                })
+                                                if a.options:
+                                                    ai_options.update(a.options)
+
+                                    # Bỏ phiếu kết hợp bình luận và AI (AI chỉ là 1 phiếu)
+                                    if q_comments or ai_votes:
+                                        final_res = tally_votes(
+                                            q_comments,
+                                            ai_votes=ai_votes if ai_votes else None,
+                                            ai_weight=ai_weight,
+                                            max_option_letter=max_opt_letter,
+                                        )
+                                        ans_set = final_res.answer_set
+                                        ans_status = final_res.status
+                                        ans_conf = final_res.confidence
+                                        vb = dict(final_res.vote_breakdown or {})
+                                        if ai_votes:
+                                            vb["_ai_votes"] = ai_votes
+                                            if not q_comments:
+                                                vb["_source"] = "ai"
+                                                exam_sources["ai"] += 1
+                                            else:
+                                                vb["_source"] = "comments"
+                                                exam_sources["comments"] += 1
                                         else:
                                             vb["_source"] = "comments"
                                             exam_sources["comments"] += 1
                                     else:
-                                        vb["_source"] = "comments"
-                                        exam_sources["comments"] += 1
-                                else:
-                                    ans_set = ["?"]
-                                    ans_status = AnswerStatus.NO_DATA
-                                    ans_conf = 0.0
-                                    vb = {"_source": "no_data"}
-                                    exam_sources["no_data"] += 1
+                                        ans_set = ["?"]
+                                        ans_status = AnswerStatus.NO_DATA
+                                        ans_conf = 0.0
+                                        vb = {"_source": "no_data"}
+                                        exam_sources["no_data"] += 1
 
-                            # Rule 2: Kiểm tra số chữ cái đáp án so với N từ dòng '(Choose N answers)'
-                            expected_n = read_choice_hint_n(img_path, ai_service=ai_service)
-                            valid_answer_letters = [a for a in ans_set if a != "?"]
-                            if expected_n is not None and valid_answer_letters:
-                                if len(valid_answer_letters) != expected_n:
-                                    logger.warning(
-                                        f"Exam {exam.id} Question {q_idx}: Answer count mismatch. "
-                                        f"Expected {expected_n} answers but got {valid_answer_letters}. "
-                                        f"Flagging as '?' and moving to review_needed."
-                                    )
-                                    ans_set = ["?"]
-                                    ans_status = AnswerStatus.CONFLICT
-                                    ans_conf = 0.0
-                                    vb["_mismatch_expected_n"] = expected_n
-                                    vb["_original_answers"] = valid_answer_letters
+                                # Rule 2: Kiểm tra số chữ cái đáp án so với N từ dòng '(Choose N answers)'
+                                expected_n = read_choice_hint_n(img_path, ai_service=ai_service)
+                                valid_answer_letters = [a for a in ans_set if a != "?"]
+                                if expected_n is not None and valid_answer_letters:
+                                    if len(valid_answer_letters) != expected_n:
+                                        logger.warning(
+                                            f"Exam {exam.id} Question {q_idx}: Answer count mismatch. "
+                                            f"Expected {expected_n} answers but got {valid_answer_letters}. "
+                                            f"Flagging as '?' and moving to review_needed."
+                                        )
+                                        ans_set = ["?"]
+                                        ans_status = AnswerStatus.CONFLICT
+                                        ans_conf = 0.0
+                                        vb["_mismatch_expected_n"] = expected_n
+                                        vb["_original_answers"] = valid_answer_letters
 
-                        # Save or update Answer in DB
-                        ans_db_stmt = select(Answer).where(Answer.question_id == q_obj.id)
-                        ans_db_res = await db.execute(ans_db_stmt)
-                        ans_obj = ans_db_res.scalar_one_or_none()
-                        if not ans_obj:
-                            ans_obj = Answer(
-                                question_id=q_obj.id,
-                                answer_set=ans_set,
-                                status=ans_status,
-                                confidence=ans_conf,
-                                vote_breakdown=vb,
+                            if comment_fetch_failed:
+                                vb["_comment_fetch_failed"] = True
+                                if comment_fetch_err_code:
+                                    vb["_comment_fetch_error"] = comment_fetch_err_code
+
+                            # Save or update Answer in DB
+                            ans_db_stmt = select(Answer).where(Answer.question_id == q_obj.id)
+                            ans_db_res = await db.execute(ans_db_stmt)
+                            ans_obj = ans_db_res.scalar_one_or_none()
+                            if not ans_obj:
+                                ans_obj = Answer(
+                                    question_id=q_obj.id,
+                                    answer_set=ans_set,
+                                    status=ans_status,
+                                    confidence=ans_conf,
+                                    vote_breakdown=vb,
+                                )
+                                db.add(ans_obj)
+                                await db.flush()
+                            else:
+                                ans_obj.answer_set = ans_set
+                                ans_obj.status = ans_status
+                                ans_obj.confidence = ans_conf
+                                ans_obj.vote_breakdown = vb
+
+                            q_obj.answer = ans_obj
+                            question_objs.append(q_obj)
+                            answers_map[q_obj.id] = ans_obj
+
+                        await db.commit()
+
+                        # Check filename collisions within the same job (Requirement 2)
+                        computed_docx_name = format_exam_docx_filename(subject_code, exam, platform="fuexam")
+                        if computed_docx_name in seen_job_filenames and seen_job_filenames[computed_docx_name] != exam.id:
+                            err_msg = (
+                                f"Xung đột tên file trong cùng tiến trình: Đề '{exam.title}' (Thread {exam.id}) "
+                                f"sinh ra tên file trùng với Thread {seen_job_filenames[computed_docx_name]}: '{computed_docx_name}'. "
+                                f"Vui lòng phân biệt hậu tố tiêu đề đề thi."
                             )
-                            db.add(ans_obj)
-                            await db.flush()
-                        else:
-                            ans_obj.answer_set = ans_set
-                            ans_obj.status = ans_status
-                            ans_obj.confidence = ans_conf
-                            ans_obj.vote_breakdown = vb
+                            logger.error(err_msg)
+                            raise RuntimeError(err_msg)
+                        seen_job_filenames[computed_docx_name] = exam.id
 
-                        q_obj.answer = ans_obj
-                        question_objs.append(q_obj)
-                        answers_map[q_obj.id] = ans_obj
+                        # Build .docx for this exam
+                        self._broadcast(job_id, {
+                            "type": "log",
+                            "step": "building_docx",
+                            "message": f"Đang xuất file .docx cho đề: {exam.title} ({tot_q} câu)...",
+                            "progress": 92,
+                        })
 
-                    await db.commit()
+                        exam_out_dir = settings.BASE_DIR / "data" / "output" / "FUE" / subject_code
+                        exam_out_dir.mkdir(parents=True, exist_ok=True)
 
-                    # Check filename collisions within the same job (Requirement 2)
-                    computed_docx_name = format_exam_docx_filename(subject_code, exam, platform="fuexam")
-                    if computed_docx_name in seen_job_filenames and seen_job_filenames[computed_docx_name] != exam.id:
-                        err_msg = (
-                            f"Xung đột tên file trong cùng tiến trình: Đề '{exam.title}' (Thread {exam.id}) "
-                            f"sinh ra tên file trùng với Thread {seen_job_filenames[computed_docx_name]}: '{computed_docx_name}'. "
-                            f"Vui lòng phân biệt hậu tố tiêu đề đề thi."
+                        docx_path = build_exam_docx(
+                            subject_code=subject_code,
+                            exam=exam,
+                            questions=question_objs,
+                            output_dir=exam_out_dir,
+                            cropped_dir=cropped_dir,
+                            platform="fuexam",
+                            add_question_number=False,
+                            add_divider=True,
+                            answers_map=answers_map,
+                            ai_status=ai_skipped_reason,
+                            fetch_failed_questions=fetch_failed_questions,
+                            fetch_failed_details=fetch_failed_details,
                         )
-                        logger.error(err_msg)
-                        raise RuntimeError(err_msg)
-                    seen_job_filenames[computed_docx_name] = exam.id
 
-                    # Build .docx for this exam
-                    self._broadcast(job_id, {
-                        "type": "log",
-                        "step": "building_docx",
-                        "message": f"Đang xuất file .docx cho đề: {exam.title} ({tot_q} câu)...",
-                        "progress": 92,
-                    })
+                        all_sources_count["image"] += exam_sources["image"]
+                        all_sources_count["comments"] += exam_sources["comments"]
+                        all_sources_count["ai"] += exam_sources["ai"]
+                        all_sources_count["total"] += tot_q
 
-                    exam_out_dir = settings.BASE_DIR / "data" / "output" / "FUE" / subject_code
-                    exam_out_dir.mkdir(parents=True, exist_ok=True)
+                        # Read sidecar .meta.json
+                        meta_file = exam_out_dir / f"{docx_path.name}.meta.json"
+                        meta_info = {}
+                        if meta_file.exists():
+                            try:
+                                meta_info = json.loads(meta_file.read_text(encoding="utf-8"))
+                            except Exception:
+                                pass
 
-                    docx_path = build_exam_docx(
-                        subject_code=subject_code,
-                        exam=exam,
-                        questions=question_objs,
-                        output_dir=exam_out_dir,
-                        cropped_dir=cropped_dir,
-                        platform="fuexam",
-                        add_question_number=False,
-                        add_divider=True,
-                        answers_map=answers_map,
-                        ai_status=ai_skipped_reason,
+                        rel_output = str(docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
+                        exam_status_val = "completed_with_warnings" if fetch_failed_questions else "completed"
+                        file_info = {
+                            "filename": docx_path.name,
+                            "path": rel_output,
+                            "exam_title": exam.title,
+                            "thread_id": exam.id,
+                            "source_url": exam.url,
+                            "questions_count": tot_q,
+                            "size_bytes": docx_path.stat().st_size if docx_path.exists() else 0,
+                            "cached": False,
+                            "cached_at": datetime.now().strftime("%H:%M %d/%m/%Y"),
+                            "can_rebuild": True,
+                            "platform": "fuexam",
+                            "status": exam_status_val,
+                            "image_count": meta_info.get("image_count", exam_sources.get("image", 0)),
+                            "comment_count": meta_info.get("comment_count", exam_sources.get("comments", 0)),
+                            "source_breakdown": meta_info.get("source_breakdown", exam_sources),
+                            "confident_count": meta_info.get("confident_count", 0),
+                            "weak_count": meta_info.get("weak_count", 0),
+                            "conflict_count": meta_info.get("conflict_count", 0),
+                            "ai_count": meta_info.get("ai_count", 0),
+                            "no_data_count": meta_info.get("no_data_count", 0),
+                            "review_needed_questions": meta_info.get("review_needed_questions", []),
+                            "fetch_failed_questions": meta_info.get("fetch_failed_questions", fetch_failed_questions),
+                        }
+                        existing_idx = next(
+                            (i for i, f in enumerate(created_files) if f.get("thread_id") == exam.id or f.get("filename") == docx_path.name),
+                            None,
+                        )
+                        if existing_idx is not None:
+                            created_files[existing_idx] = file_info
+                        else:
+                            created_files.append(file_info)
+
+                        _upsert_exam_result({
+                            "thread_id": exam.id,
+                            "exam_title": exam.title,
+                            "source_url": exam.url,
+                            "filename": docx_path.name,
+                            "status": exam_status_val,
+                            "fetch_failed_questions": list(fetch_failed_questions),
+                            "questions_count": tot_q,
+                        })
+                        failed_exams = [fe for fe in failed_exams if fe.get("thread_id") != exam.id]
+
+                        job.details = {
+                            **job.details,
+                            "files": list(created_files),
+                            "exam_results": list(exam_results),
+                            "failed_exams": list(failed_exams),
+                            "completed_exams": exam_idx,
+                            "total_exams": total_exams,
+                            "answer_sources": all_sources_count,
+                        }
+                        if not job.result_file_path:
+                            job.result_file_path = rel_output
+                        await db.commit()
+
+                        self._broadcast(job_id, {
+                            "type": "exam_completed",
+                            "step": "building_docx",
+                            "message": (
+                                f"Đã hoàn tất đề {exam.title} (có {len(fetch_failed_questions)} câu lỗi tải bình luận)"
+                                if fetch_failed_questions
+                                else f"Đã hoàn tất biên soạn đề: {exam.title}"
+                            ),
+                            "completed_file": file_info,
+                            "files": list(created_files),
+                            "exam_results": list(exam_results),
+                            "failed_exams": list(failed_exams),
+                            "answer_sources": all_sources_count,
+                            "progress": 95,
+                        })
+
+                    except (FuexamAuthError, JobCancelledError, asyncio.CancelledError):
+                        raise
+                    except Exception as exam_err:
+                        await db.rollback()
+                        user_msg, err_code, err_retryable = classify_job_error(exam_err)
+                        logger.exception(f"[{err_code}] Exam {exam_id_val} ({exam_title_val}) failed in job {job_id}: {exam_err}")
+                        fail_entry = {
+                            "thread_id": exam_id_val,
+                            "exam_title": exam_title_val,
+                            "source_url": exam_url_val,
+                            "status": "failed",
+                            "reason": user_msg,
+                            "error_code": err_code,
+                            "is_retryable": err_retryable,
+                        }
+                        _upsert_exam_result(fail_entry)
+                        failed_exams = [fe for fe in failed_exams if fe.get("thread_id") != exam_id_val] + [fail_entry]
+                        job_res = await db.execute(select(Job).where(Job.job_id == job_id))
+                        job = job_res.scalar_one()
+                        job.details = {
+                            **dict(job.details or {}),
+                            "files": list(created_files),
+                            "exam_results": list(exam_results),
+                            "failed_exams": list(failed_exams),
+                            "answer_sources": all_sources_count,
+                        }
+                        await db.commit()
+                        self._broadcast(job_id, {
+                            "type": "log",
+                            "step": "exam_failed",
+                            "message": f"[{exam_idx}/{total_exams}] Đề '{exam_title_val}' lỗi ({err_code}): {user_msg}. Tiếp tục các đề còn lại...",
+                            "exam_results": list(exam_results),
+                            "failed_exams": list(failed_exams),
+                            "progress": max(10, exam_progress_base),
+                        })
+
+                crawl_metrics = http_client.get_metrics_summary() if http_client else {}
+
+                # Complete or Fail Job depending on whether any exam succeeded
+                if len(created_files) == 0 and len(failed_exams) > 0:
+                    first_fail = failed_exams[0]
+                    first_reason = first_fail.get("reason", "Không thể biên soạn đề nào.")
+                    first_code = first_fail.get("error_code", "ERR-FAILED")
+                    first_retryable = bool(first_fail.get("is_retryable", True))
+                    job.status = JobStatus.FAILED
+                    job.current_step = "failed"
+                    job.error_message = (
+                        first_reason if len(failed_exams) == 1 else f"Tất cả {len(failed_exams)} đề đều lỗi. {first_reason}"
                     )
-
-                    all_sources_count["image"] += exam_sources["image"]
-                    all_sources_count["comments"] += exam_sources["comments"]
-                    all_sources_count["ai"] += exam_sources["ai"]
-                    all_sources_count["total"] += tot_q
-
-                    # Read sidecar .meta.json
-                    meta_file = exam_out_dir / f"{docx_path.name}.meta.json"
-                    meta_info = {}
-                    if meta_file.exists():
-                        try:
-                            meta_info = json.loads(meta_file.read_text(encoding="utf-8"))
-                        except Exception:
-                            pass
-
-                    rel_output = str(docx_path.resolve().relative_to(settings.BASE_DIR.resolve())).replace("\\", "/")
-                    file_info = {
-                        "filename": docx_path.name,
-                        "path": rel_output,
-                        "exam_title": exam.title,
-                        "thread_id": exam.id,
-                        "source_url": exam.url,
-                        "questions_count": tot_q,
-                        "size_bytes": docx_path.stat().st_size if docx_path.exists() else 0,
-                        "cached": False,
-                        "cached_at": datetime.now().strftime("%H:%M %d/%m/%Y"),
-                        "can_rebuild": True,
-                        "platform": "fuexam",
-                        "image_count": meta_info.get("image_count", exam_sources.get("image", 0)),
-                        "comment_count": meta_info.get("comment_count", exam_sources.get("comments", 0)),
-                        "source_breakdown": meta_info.get("source_breakdown", exam_sources),
-                        "confident_count": meta_info.get("confident_count", 0),
-                        "weak_count": meta_info.get("weak_count", 0),
-                        "conflict_count": meta_info.get("conflict_count", 0),
-                        "ai_count": meta_info.get("ai_count", 0),
-                        "no_data_count": meta_info.get("no_data_count", 0),
-                        "review_needed_questions": meta_info.get("review_needed_questions", []),
-                    }
-                    existing_idx = next(
-                        (i for i, f in enumerate(created_files) if f.get("thread_id") == exam.id or f.get("filename") == docx_path.name),
-                        None,
-                    )
-                    if existing_idx is not None:
-                        created_files[existing_idx] = file_info
-                    else:
-                        created_files.append(file_info)
-
                     job.details = {
                         **job.details,
-                        "files": list(created_files),
-                        "completed_exams": exam_idx,
+                        "completed_at": datetime.utcnow().isoformat(),
+                        "files": created_files,
+                        "exam_results": exam_results,
+                        "failed_exams": failed_exams,
+                        "crawl_metrics": crawl_metrics,
+                        "error_code": first_code,
+                        "is_retryable": first_retryable,
                         "total_exams": total_exams,
+                        "total_questions": total_all_questions,
                         "answer_sources": all_sources_count,
                     }
-                    if not job.result_file_path:
-                        job.result_file_path = rel_output
                     await db.commit()
-
                     self._broadcast(job_id, {
-                        "type": "exam_completed",
-                        "step": "building_docx",
-                        "message": f"Đã hoàn tất biên soạn đề: {exam.title}",
-                        "completed_file": file_info,
-                        "files": list(created_files),
-                        "answer_sources": all_sources_count,
-                        "progress": 95,
+                        "type": "error",
+                        "step": "failed",
+                        "message": job.error_message,
+                        "error_code": first_code,
+                        "is_retryable": first_retryable,
+                        "files": created_files,
+                        "exam_results": exam_results,
+                        "failed_exams": failed_exams,
+                        "crawl_metrics": crawl_metrics,
                     })
+                    return
 
-                # Complete Job
                 job.status = JobStatus.COMPLETED
                 job.current_step = "completed"
                 job.progress_percentage = 100.0
@@ -1422,23 +1714,57 @@ class JobOrchestrator:
                     **job.details,
                     "completed_at": datetime.utcnow().isoformat(),
                     "files": created_files,
+                    "exam_results": exam_results,
+                    "failed_exams": failed_exams,
+                    "crawl_metrics": crawl_metrics,
                     "total_exams": total_exams,
                     "total_questions": total_all_questions,
                     "answer_sources": all_sources_count,
                 }
                 await db.commit()
 
+                summary_msg = f"Hoàn tất biên soạn {len(created_files)}/{total_exams} đề ({total_all_questions} câu hỏi)!"
+                if failed_exams:
+                    summary_msg = f"Hoàn tất {len(created_files)} đề, {len(failed_exams)} đề lỗi."
+
                 self._broadcast(job_id, {
                     "type": "completed",
                     "step": "completed",
-                    "message": f"Hoàn tất biên soạn {total_exams} đề ({total_all_questions} câu hỏi)!",
+                    "message": summary_msg,
                     "progress": 100,
                     "files": created_files,
+                    "exam_results": exam_results,
+                    "failed_exams": failed_exams,
+                    "crawl_metrics": crawl_metrics,
                     "total_exams": total_exams,
                     "total_questions": total_all_questions,
                     "answer_sources": all_sources_count,
                 })
-                logger.info(f"Fuexam Job {job_id} completed successfully.")
+                logger.info(f"Fuexam Job {job_id} completed (files={len(created_files)}, failed={len(failed_exams)}).")
+
+            except (JobCancelledError, asyncio.CancelledError):
+                logger.info(f"Fuexam job {job_id} cancelled by user.")
+                await db.rollback()
+                job.status = JobStatus.FAILED
+                job.error_message = "Đã huỷ bởi người dùng"
+                job.current_step = "cancelled"
+                job.details = {
+                    **job.details,
+                    "files": list(created_files),
+                    "exam_results": list(exam_results),
+                    "failed_exams": list(failed_exams),
+                    "crawl_metrics": http_client.get_metrics_summary() if http_client else {},
+                    "cancelled_at": datetime.utcnow().isoformat(),
+                }
+                await db.commit()
+                self._broadcast(job_id, {
+                    "type": "error",
+                    "step": "cancelled",
+                    "message": "Tiến trình đã bị huỷ bởi người dùng.",
+                    "files": list(created_files),
+                    "exam_results": list(exam_results),
+                    "failed_exams": list(failed_exams),
+                })
 
             except FuexamAuthError as auth_err:
                 logger.error(f"Fuexam job {job_id} requires login: {auth_err}")
@@ -1448,6 +1774,8 @@ class JobOrchestrator:
                 job.details = {
                     **job.details,
                     "files": list(created_files),
+                    "exam_results": list(exam_results),
+                    "failed_exams": list(failed_exams),
                     "failed_at": datetime.utcnow().isoformat(),
                 }
                 await db.commit()
@@ -1484,6 +1812,7 @@ class JobOrchestrator:
             finally:
                 if job_id in self._running_tasks:
                     del self._running_tasks[job_id]
+                self._cancel_events.pop(job_id, None)
 
 
 _orchestrator: Optional[JobOrchestrator] = None

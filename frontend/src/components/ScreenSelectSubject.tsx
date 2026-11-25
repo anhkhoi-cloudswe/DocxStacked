@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
-import type { Subject, ExamItem } from '../types';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import type { Subject, ExamItem, SubjectExamTypesResponse } from '../types';
 import {
   ArrowRightIcon,
   BookIcon,
@@ -67,6 +67,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
   const [exams, setExams] = useState<ExamItem[]>([]);
   const [isLoadingExams, setIsLoadingExams] = useState<boolean>(false);
   const [selectedExamIds, setSelectedExamIds] = useState<Record<string, number[]>>({});
+  const [subjectTypesMap, setSubjectTypesMap] = useState<Record<string, SubjectExamTypesResponse & { fallback?: boolean }>>({});
 
   // Modal statuses
   const [showCookieModal, setShowCookieModal] = useState<boolean>(Boolean(initialOpenLogin));
@@ -79,6 +80,23 @@ export const ScreenSelectSubject: React.FC<Props> = ({
   const [cookieError, setCookieError] = useState<string | null>(null);
   const [isSavingCookie, setIsSavingCookie] = useState<boolean>(false);
   const [filterSelectedOnly, setFilterSelectedOnly] = useState<boolean>(false);
+  const [crawlConfig, setCrawlConfig] = useState<{
+    fuexam_min_delay_seconds?: number;
+    fuexam_max_concurrency?: number;
+    delay_seconds?: [number, number];
+    concurrency?: number;
+  }>({});
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.crawl) {
+          setCrawlConfig(data.crawl);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Close modal on Escape key
   useEffect(() => {
@@ -135,9 +153,73 @@ export const ScreenSelectSubject: React.FC<Props> = ({
       });
   }, [debouncedQuery, platform]);
 
+  // Fetch available exam types (FE, RE, PE, B5) for active and selected subjects
+  useEffect(() => {
+    const codes = Array.from(new Set([...(activeCode ? [activeCode] : []), ...selectedCodes]));
+    codes.forEach((code) => {
+      const cacheKey = `${platform}:${code}`;
+      if (subjectTypesMap[cacheKey]) return;
+      fetch(`/api/subjects/${code}/exam-types?platform=${platform}`)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data: SubjectExamTypesResponse) => {
+          setSubjectTypesMap((prev) => ({ ...prev, [cacheKey]: data }));
+        })
+        .catch(() => {
+          // Fallback for mocked tests that only stub /exams without /exam-types
+          setSubjectTypesMap((prev) => ({
+            ...prev,
+            [cacheKey]: {
+              subject_code: code,
+              platform,
+              available_types: ['FE'],
+              has_fe: true,
+              has_pe: false,
+              counts: { FE: 0, RE: 0, PE: 0, B5: 0 },
+              fallback: true,
+            },
+          }));
+        });
+    });
+  }, [activeCode, selectedCodes, platform, subjectTypesMap]);
+
+  const codesForPeCheck = useMemo(() => {
+    const set = new Set<string>();
+    selectedCodes.forEach((c) => set.add(c));
+    if (activeCode) set.add(activeCode);
+    return Array.from(set);
+  }, [selectedCodes, activeCode]);
+
+  const showPeButton = useMemo(() => {
+    if (codesForPeCheck.length === 0) return false;
+    return codesForPeCheck.some((code) => Boolean(subjectTypesMap[`${platform}:${code}`]?.has_pe));
+  }, [codesForPeCheck, subjectTypesMap, platform]);
+
+  const activeHasPe = useMemo(() => {
+    if (!activeCode) return false;
+    return Boolean(subjectTypesMap[`${platform}:${activeCode}`]?.has_pe);
+  }, [activeCode, subjectTypesMap, platform]);
+
+  // Auto-select FE when only FE is available
+  useEffect(() => {
+    if (!showPeButton && examType === 'PE') {
+      setExamType('FE');
+    }
+  }, [showPeButton, examType]);
+
+  // Reset selected exam IDs when switching exam type or platform so counts never leak across types
+  useEffect(() => {
+    setSelectedExamIds({});
+  }, [examType, platform]);
+
   // Fetch exams for activeCode
   useEffect(() => {
-    if (!activeCode) return;
+    if (!activeCode) {
+      setExams([]);
+      return;
+    }
     setIsLoadingExams(true);
     fetch(`/api/subjects/${activeCode}/exams?platform=${platform}&type=${examType}`)
       .then((res) => {
@@ -147,7 +229,37 @@ export const ScreenSelectSubject: React.FC<Props> = ({
       .then((data: ExamItem[]) => {
         const list = data || [];
         setExams(list);
-        const count = list.length;
+
+        // If /exam-types fell back (e.g. test mock without /exam-types), infer PE presence from payload
+        const cacheKey = `${platform}:${activeCode}`;
+        setSubjectTypesMap((prev) => {
+          const cur = prev[cacheKey];
+          if (cur?.fallback) {
+            const hasPeInList = list.some((e) => (e.exam_type || '').toUpperCase() === 'PE');
+            if (hasPeInList && !cur.has_pe) {
+              return {
+                ...prev,
+                [cacheKey]: {
+                  ...cur,
+                  has_pe: true,
+                  available_types: Array.from(new Set([...cur.available_types, 'PE'])),
+                },
+              };
+            }
+          }
+          return prev;
+        });
+
+        const isFuexamPe = platform === 'fuexam' && examType === 'PE';
+        const filteredForType = list.filter((e) => {
+          const eType = (e.exam_type || 'FE').toUpperCase();
+          if (examType === 'FE') {
+            return eType !== 'PE' && e.is_valid_exam !== false;
+          }
+          return eType === 'PE' && e.is_valid_exam !== false;
+        });
+        const selectable = isFuexamPe ? [] : filteredForType;
+        const count = selectable.length;
         let targetLimit = 1;
         if (count >= 4) {
           targetLimit = 4;
@@ -158,8 +270,8 @@ export const ScreenSelectSubject: React.FC<Props> = ({
         }
         setLimit(targetLimit);
 
-        // Auto select top targetLimit exams if none selected yet or reset to targetLimit
-        const defaultSelected = list.slice(0, targetLimit).map((e) => e.id);
+        // Auto select top targetLimit valid exams only
+        const defaultSelected = count > 0 ? selectable.slice(0, targetLimit).map((e) => e.id) : [];
         setSelectedExamIds((prev) => ({ ...prev, [activeCode]: defaultSelected }));
       })
       .catch((err) => {
@@ -333,18 +445,46 @@ export const ScreenSelectSubject: React.FC<Props> = ({
     }
   };
 
-  // Calculate summary counts
-  const totalExamsSelected = selectedCodes.reduce((sum, code) => {
-    const chosen = selectedExamIds[code]?.length;
-    return sum + (chosen !== undefined ? chosen : Math.min(limit, exams.length || limit));
-  }, 0);
+  // Filtered visible and selectable exams according to selected examType
+  const isFuexamPeUnsupported = platform === 'fuexam' && examType === 'PE';
+
+  const visibleExams = useMemo(() => {
+    if (isFuexamPeUnsupported) {
+      return [];
+    }
+    return exams.filter((e) => {
+      const eType = (e.exam_type || 'FE').toUpperCase();
+      if (examType === 'FE') {
+        return eType !== 'PE' && e.is_valid_exam !== false;
+      }
+      return eType === 'PE' && e.is_valid_exam !== false;
+    });
+  }, [exams, examType, isFuexamPeUnsupported]);
+
+  const selectableExams = useMemo(
+    () => visibleExams.filter((e) => e.is_valid_exam !== false),
+    [visibleExams]
+  );
+
+  // Calculate summary counts (never count filtered or unsupported exams)
+  const totalExamsSelected = isFuexamPeUnsupported
+    ? 0
+    : selectedCodes.reduce((sum, code) => {
+        const chosen = selectedExamIds[code]?.length;
+        if (chosen !== undefined) {
+          return sum + chosen;
+        }
+        const typeInfo = subjectTypesMap[`${platform}:${code}`];
+        const availCount = typeInfo?.counts?.[examType] ?? 0;
+        return sum + Math.min(limit, availCount);
+      }, 0);
 
   const isSubmittingRef = useRef<boolean>(false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (isLoading || isSubmittingRef.current) return;
-    if (selectedCodes.length === 0) return;
+    if (selectedCodes.length === 0 || totalExamsSelected === 0) return;
 
     isSubmittingRef.current = true;
     setTimeout(() => {
@@ -678,6 +818,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                 return (
                   <div
                     key={subject.code}
+                    data-testid={`subject-row-${subject.code}`}
                     onClick={() => setActiveCode(subject.code)}
                     style={{
                       display: 'flex',
@@ -693,6 +834,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
                       <input
                         type="checkbox"
+                        data-testid={`checkbox-subject-${subject.code}`}
                         checked={isChecked}
                         onChange={(e) => {
                           e.stopPropagation();
@@ -768,7 +910,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                 </p>
               </div>
 
-              {exams.length > 0 && exams.length < limit && (
+              {selectableExams.length > 0 && selectableExams.length < limit && (
                 <div
                   style={{
                     padding: '4px 8px',
@@ -784,7 +926,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                   }}
                 >
                   <WarningIcon size={13} />
-                  <span>Môn này chỉ có {exams.length} đề {examType}</span>
+                  <span>Môn này chỉ có {selectableExams.length} đề {examType}</span>
                 </div>
               )}
             </div>
@@ -793,7 +935,24 @@ export const ScreenSelectSubject: React.FC<Props> = ({
               <div style={{ padding: 'var(--space-4)', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
                 Đang quét danh sách đề từ {platform === 'fuexam' ? 'fuexam.me' : 'diễn đàn'}...
               </div>
-            ) : exams.length === 0 ? (
+            ) : isFuexamPeUnsupported ? (
+              <div
+                data-testid="fuexam-pe-unsupported-notice"
+                style={{
+                  padding: 'var(--space-4)',
+                  textAlign: 'center',
+                  color: 'var(--text-secondary)',
+                  fontSize: 'var(--text-xs)',
+                  backgroundColor: 'var(--bg-subtle)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                }}
+              >
+                {activeHasPe
+                  ? 'Nền tảng fuexam.me hiện chưa hỗ trợ tải và soạn đề PE (Thực hành).'
+                  : `Môn ${activeCode} không có đề PE trên fuexam.me.`}
+              </div>
+            ) : visibleExams.length === 0 ? (
               <div style={{ padding: 'var(--space-4)', textAlign: 'center', color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
                 Chưa tìm thấy đề {examType} nào cho môn {activeCode} trên {platform === 'fuexam' ? 'fuexam.me' : 'diễn đàn'}.
               </div>
@@ -807,7 +966,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                   overflowY: 'auto',
                 }}
               >
-                {exams.map((exam, index) => {
+                {visibleExams.map((exam, index) => {
                   const isExamSelected = (selectedExamIds[activeCode] || []).includes(exam.id);
                   const isInvalid = exam.is_valid_exam === false;
                   return (
@@ -951,9 +1110,10 @@ export const ScreenSelectSubject: React.FC<Props> = ({
             <label style={{ display: 'block', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginBottom: 'var(--space-1)' }}>
               Phân loại đề thi
             </label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: showPeButton ? '1fr 1fr' : '1fr', gap: 'var(--space-2)' }}>
               <button
                 type="button"
+                data-testid="btn-exam-type-fe"
                 onClick={() => setExamType('FE')}
                 style={{
                   padding: 'var(--space-2) var(--space-3)',
@@ -970,29 +1130,32 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                   Ảnh câu hỏi + AI & Word
                 </div>
               </button>
-              <button
-                type="button"
-                onClick={() => setExamType('PE')}
-                style={{
-                  padding: 'var(--space-2) var(--space-3)',
-                  textAlign: 'left',
-                  backgroundColor: examType === 'PE' ? 'var(--primary-subtle)' : 'var(--bg-canvas)',
-                  color: examType === 'PE' ? 'var(--primary)' : 'var(--text-primary)',
-                  border: `2px solid ${examType === 'PE' ? 'var(--primary)' : 'var(--border-subtle)'}`,
-                  borderRadius: 'var(--radius-sm)',
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ fontWeight: 700, fontSize: 'var(--text-sm)' }}>Đề PE (Thực hành)</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                  Tải file .pdf / .zip gốc
-                </div>
-              </button>
+              {showPeButton && (
+                <button
+                  type="button"
+                  data-testid="btn-exam-type-pe"
+                  onClick={() => setExamType('PE')}
+                  style={{
+                    padding: 'var(--space-2) var(--space-3)',
+                    textAlign: 'left',
+                    backgroundColor: examType === 'PE' ? 'var(--primary-subtle)' : 'var(--bg-canvas)',
+                    color: examType === 'PE' ? 'var(--primary)' : 'var(--text-primary)',
+                    border: `2px solid ${examType === 'PE' ? 'var(--primary)' : 'var(--border-subtle)'}`,
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div style={{ fontWeight: 700, fontSize: 'var(--text-sm)' }}>Đề PE (Thực hành)</div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {platform === 'fuexam' ? 'Chưa hỗ trợ trên fuexam' : 'Tải file .pdf / .zip gốc'}
+                  </div>
+                </button>
+              )}
             </div>
           </div>
 
-          {/* PE Guidance Note */}
-          {examType === 'PE' && (
+          {/* PE Guidance Note (only when PE is available & selected) */}
+          {showPeButton && examType === 'PE' && (
             <div
               style={{
                 padding: 'var(--space-3)',
@@ -1007,15 +1170,17 @@ export const ScreenSelectSubject: React.FC<Props> = ({
             >
               <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <BookIcon size={14} />
-                <span>Quy tắc tải đề PE (Thực hành)</span>
+                <span>{platform === 'fuexam' ? 'Trạng thái đề PE trên fuexam.me' : 'Quy tắc tải đề PE (Thực hành)'}</span>
               </div>
-              Đề PE là bài thi thực hành lập trình. DocxStacked chỉ tải trực tiếp tệp đề bài gốc (.pdf) và mã nguồn mẫu (.zip) về thư mục lưu trữ, không có ảnh từng câu, không gọi AI và không tạo tệp .docx.
+              {platform === 'fuexam'
+                ? 'Nền tảng fuexam.me hiện chưa hỗ trợ tải và biên soạn đề PE (Thực hành).'
+                : 'Đề PE là bài thi thực hành lập trình. DocxStacked chỉ tải trực tiếp tệp đề bài gốc (.pdf) và mã nguồn mẫu (.zip) về thư mục lưu trữ, không có ảnh từng câu, không gọi AI và không tạo tệp .docx.'}
             </div>
           )}
 
-          {/* Limit Number Selector (adaptive to exams.length) */}
+          {/* Limit Number Selector (adaptive to selectableExams.length) */}
           {(() => {
-            const maxAvailable = exams.length;
+            const maxAvailable = selectableExams.length;
             const isLocked = maxAvailable <= 1;
             const canDecrease = !isLocked && limit > 1;
             const canIncrease = !isLocked && limit < Math.min(20, maxAvailable);
@@ -1024,9 +1189,9 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                 if (canDecrease) {
                   const next = limit - 1;
                   setLimit(next);
-                  // Uncheck from bottom up: keep first `next` checked items in order of exams list
+                  // Uncheck from bottom up: keep first `next` checked items in order of selectableExams list
                   const currentSelected = selectedExamIds[activeCode] || [];
-                  const orderedSelected = exams.filter((e) => currentSelected.includes(e.id)).map((e) => e.id);
+                  const orderedSelected = selectableExams.filter((e) => currentSelected.includes(e.id)).map((e) => e.id);
                   const nextSelected = orderedSelected.slice(0, next);
                   setSelectedExamIds((prev) => ({
                     ...prev,
@@ -1041,11 +1206,11 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                   setLimit(next);
                   // Check next available exam from top down
                   const currentSelected = selectedExamIds[activeCode] || [];
-                  const unselected = exams.filter((e) => !currentSelected.includes(e.id));
+                  const unselected = selectableExams.filter((e) => !currentSelected.includes(e.id));
                   const nextExam = unselected[0];
                   const nextSelected = nextExam
                     ? [...currentSelected, nextExam.id]
-                    : exams.slice(0, next).map((e) => e.id);
+                    : selectableExams.slice(0, next).map((e) => e.id);
                   setSelectedExamIds((prev) => ({
                     ...prev,
                     [activeCode]: nextSelected,
@@ -1060,7 +1225,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                 setLimit(clamped);
                 setSelectedExamIds((prev) => ({
                   ...prev,
-                  [activeCode]: exams.slice(0, clamped).map((item) => item.id),
+                  [activeCode]: selectableExams.slice(0, clamped).map((item) => item.id),
                 }));
               };
 
@@ -1195,13 +1360,45 @@ export const ScreenSelectSubject: React.FC<Props> = ({
               <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <FileTextIcon size={14} />
                 <span>
-                  {selectedCodes.length} môn · {totalExamsSelected} đề {examType} · {examType === 'FE' ? `tạo ${totalExamsSelected} file .docx` : `tải ${totalExamsSelected} file .pdf / .zip gốc`}
+                  {selectedCodes.length} môn · {totalExamsSelected} đề {examType}
+                  {examType === 'FE'
+                    ? ` · tạo ${totalExamsSelected} file .docx`
+                    : platform === 'fuexam'
+                      ? ' · chưa hỗ trợ trên fuexam'
+                      : ` · tải ${totalExamsSelected} file .pdf / .zip gốc`}
                 </span>
               </div>
               <div style={{ color: 'var(--text-secondary)' }}>
                 {selectedCodes.length > 0 ? `Đang chọn: ${selectedCodes.join(', ')}` : 'Chưa chọn môn học nào'}
               </div>
-              {exams.length > 0 && exams.length < limit && (
+              {totalExamsSelected > 5 && (() => {
+                const isFue = platform === 'fuexam';
+                const delaySec = isFue
+                  ? (crawlConfig.fuexam_min_delay_seconds ?? 0.4)
+                  : (((crawlConfig.delay_seconds?.[0] ?? 1.5) + (crawlConfig.delay_seconds?.[1] ?? 4.0)) / 2);
+                const conc = isFue ? (crawlConfig.fuexam_max_concurrency ?? 2) : (crawlConfig.concurrency ?? 1);
+                const reqsPerExam = isFue ? 90 : 45;
+                const estSeconds = (totalExamsSelected * reqsPerExam * (delaySec + 0.3)) / Math.max(1, conc);
+                const estMinutes = Math.max(1, Math.round(estSeconds / 60));
+                return (
+                  <div
+                    data-testid="estimated-duration"
+                    style={{
+                      marginTop: '6px',
+                      padding: '4px 8px',
+                      backgroundColor: 'rgba(37, 99, 235, 0.06)',
+                      border: '1px solid rgba(37, 99, 235, 0.2)',
+                      borderRadius: 'var(--radius-sm)',
+                      color: 'var(--text-primary)',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                    }}
+                  >
+                    ⏱ Ước tính thời gian: <strong>~{estMinutes} phút</strong> ({totalExamsSelected} đề · giãn cách {delaySec}s · {conc} luồng)
+                  </div>
+                );
+              })()}
+              {selectableExams.length > 0 && selectableExams.length < limit && (
                 <div
                   style={{
                     marginTop: '6px',
@@ -1218,7 +1415,7 @@ export const ScreenSelectSubject: React.FC<Props> = ({
                   }}
                 >
                   <WarningIcon size={12} />
-                  <span>Môn {activeCode} chỉ có {exams.length} đề (yêu cầu {limit} đề).</span>
+                  <span>Môn {activeCode} chỉ có {selectableExams.length} đề (yêu cầu {limit} đề).</span>
                 </div>
               )}
             </div>

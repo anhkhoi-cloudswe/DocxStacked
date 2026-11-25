@@ -7,6 +7,13 @@ crawl:
   concurrency: 1
   headless: false          # để false giúp qua bot-detection và đăng nhập
   max_retries: 3
+  fuexam_connect_timeout: 10.0
+  fuexam_read_timeout: 45.0
+  fuexam_max_retries: 4
+  fuexam_max_concurrency: 2
+  fuexam_min_delay_seconds: 0.4
+  fuexam_circuit_breaker_threshold: 3
+  fuexam_circuit_breaker_pause_seconds: 45.0
 analysis:
   use_ai: true               # công tắc AI kiểm tra đáp án và trích xuất từ khoá
   max_ai_calls: 300          # trần số lần gọi AI mỗi job

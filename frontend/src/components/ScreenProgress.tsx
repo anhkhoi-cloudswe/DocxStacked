@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { AnswerSourceSummary, JobDetails, JobFile, SSEEvent } from '../types';
+import type { AnswerSourceSummary, ExamResultItem, JobDetails, JobFile, SSEEvent } from '../types';
 import { FuexamLoginModal } from './FuexamLoginModal';
 import { confirmModal } from './ModalDialog';
 import {
@@ -57,6 +57,12 @@ export const ScreenProgress: React.FC<Props> = ({
   const [isResuming, setIsResuming] = useState<boolean>(false);
   const [reconnectTrigger, setReconnectTrigger] = useState<number>(0);
   const [isRateLimiting, setIsRateLimiting] = useState<boolean>(false);
+  const [circuitBreakerMsg, setCircuitBreakerMsg] = useState<string | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState<number>(0);
+  const [maxRetries, setMaxRetries] = useState<number>(3);
+  const [examResults, setExamResults] = useState<ExamResultItem[]>([]);
+  const [failedExams, setFailedExams] = useState<ExamResultItem[]>([]);
+  const [isRetryingFailed, setIsRetryingFailed] = useState<boolean>(false);
   const [answerSources, setAnswerSources] = useState<AnswerSourceSummary | null>(null);
   const [showFuexamModal, setShowFuexamModal] = useState<boolean>(false);
 
@@ -263,6 +269,12 @@ export const ScreenProgress: React.FC<Props> = ({
         if (j.details?.files && Array.isArray(j.details.files) && j.details.files.length > 0) {
           setCompletedFiles(j.details.files);
         }
+        if (j.details?.exam_results) {
+          setExamResults(j.details.exam_results);
+        }
+        if (j.details?.failed_exams) {
+          setFailedExams(j.details.failed_exams);
+        }
         if (j.details?.total_questions !== undefined && j.details.total_questions > 0) {
           setTotalQuestions(j.details.total_questions);
         }
@@ -298,6 +310,9 @@ export const ScreenProgress: React.FC<Props> = ({
             total_exams: j.details.total_exams || j.details.files.length,
             total_questions: j.details.total_questions || 0,
             files: j.details.files,
+            exam_results: j.details.exam_results,
+            failed_exams: j.details.failed_exams,
+            crawl_metrics: j.details.crawl_metrics,
           });
         }
       })
@@ -337,16 +352,27 @@ export const ScreenProgress: React.FC<Props> = ({
           if ((data as any).answer_sources) {
             setAnswerSources((data as any).answer_sources);
           }
+          if (data.exam_results) setExamResults(data.exam_results);
+          if (data.failed_exams) setFailedExams(data.failed_exams);
+          setCircuitBreakerMsg(null);
           if (data.progress !== undefined) setProgress(data.progress);
           if (data.total_exams !== undefined) setTotalExams(data.total_exams);
           if (data.current_exam !== undefined) setCurrentExam(data.current_exam);
         } else if (data.type === 'log') {
-          if (data.message) {
+          if (data.exam_results) setExamResults(data.exam_results);
+          if (data.failed_exams) setFailedExams(data.failed_exams);
+          if (data.circuit_breaker || data.step === 'circuit_breaker') {
+            setIsRateLimiting(true);
+            setCircuitBreakerMsg(data.message || 'fuexam phản hồi chậm, đang chờ...');
+          } else if (data.message) {
             if (data.message.includes('1.6') || data.message.includes('giãn cách') || data.step === 'rate_limit') {
               setIsRateLimiting(true);
             } else if (!data.message.includes('giãn cách')) {
               setIsRateLimiting(false);
+              setCircuitBreakerMsg(null);
             }
+          }
+          if (data.message) {
             setLogs((prev) => [
               ...prev,
               { id: Math.random().toString(), time: timeStr, text: data.message!, step: data.step },
@@ -366,15 +392,24 @@ export const ScreenProgress: React.FC<Props> = ({
           if (data.progress !== undefined) setProgress(data.progress);
           if (data.current_question !== undefined) setCurrentQuestion(data.current_question);
           if (data.total_questions !== undefined) setTotalQuestions(data.total_questions);
+          if (data.current_exam !== undefined) setCurrentExam(data.current_exam);
+          if (data.total_exams !== undefined) setTotalExams(data.total_exams);
+          if (data.retry_attempt !== undefined) setRetryAttempt(data.retry_attempt);
+          if (data.max_retries !== undefined) setMaxRetries(data.max_retries);
+          if (data.step !== 'circuit_breaker') setCircuitBreakerMsg(null);
           if (data.message) setCurrentStep(data.message);
         } else if (data.type === 'completed') {
           setProgress(100);
           setIsRateLimiting(false);
+          setCircuitBreakerMsg(null);
+          setRetryAttempt(0);
           eventSource.close();
           const files = data.files || [];
           if (files.length > 0) {
             setCompletedFiles(files);
           }
+          if (data.exam_results) setExamResults(data.exam_results);
+          if (data.failed_exams) setFailedExams(data.failed_exams);
           // Set answer sources summary from server if provided
           if ((data as any).answer_sources) {
             setAnswerSources((data as any).answer_sources);
@@ -385,9 +420,15 @@ export const ScreenProgress: React.FC<Props> = ({
             total_exams: data.total_exams || files.length,
             total_questions: data.total_questions,
             files: files,
+            exam_results: data.exam_results,
+            failed_exams: data.failed_exams,
+            crawl_metrics: data.crawl_metrics,
           });
         } else if (data.type === 'error') {
           setIsRateLimiting(false);
+          setCircuitBreakerMsg(null);
+          if (data.exam_results) setExamResults(data.exam_results);
+          if (data.failed_exams) setFailedExams(data.failed_exams);
           if (data.files && data.files.length > 0) {
             setCompletedFiles(data.files);
           }
@@ -617,8 +658,8 @@ export const ScreenProgress: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Rate Limiting Waiting Indicator */}
-        {isRateLimiting && (
+        {/* Rate Limiting / Circuit Breaker Waiting Indicator */}
+        {(isRateLimiting || circuitBreakerMsg) && (
           <div
             data-testid="rate-limit-indicator"
             style={{
@@ -644,7 +685,72 @@ export const ScreenProgress: React.FC<Props> = ({
                 display: 'inline-block',
               }}
             />
-            <span>Đang chờ giãn cách 1,6s giữa các lượt tải trang theo quy định fuexam...</span>
+            <span>
+              {circuitBreakerMsg ||
+                (platform === 'fuexam'
+                  ? 'fuexam phản hồi chậm, đang chờ giãn cách...'
+                  : 'Đang chờ giãn cách 1,6s giữa các lượt tải trang...')}
+            </span>
+          </div>
+        )}
+
+        {retryAttempt > 0 && (
+          <div
+            data-testid="retry-attempt-indicator"
+            style={{
+              marginBottom: 'var(--space-3)',
+              padding: '6px 10px',
+              backgroundColor: 'rgba(217, 119, 6, 0.08)',
+              border: '1px solid rgba(217, 119, 6, 0.25)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '12px',
+              color: '#b45309',
+              fontWeight: 600,
+            }}
+          >
+            Đang thử lại lần {retryAttempt}/{maxRetries}
+          </div>
+        )}
+
+        {examResults.length > 0 && (
+          <div
+            data-testid="progress-exam-results"
+            style={{
+              marginBottom: 'var(--space-4)',
+              padding: 'var(--space-3)',
+              backgroundColor: 'var(--bg-subtle)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '12px',
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--text-primary)' }}>
+              Trạng thái từng đề ({examResults.length}):
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {examResults.map((er) => (
+                <div key={er.thread_id} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                  <span style={{ color: 'var(--text-primary)' }}>{er.exam_title}</span>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      color:
+                        er.status === 'completed'
+                          ? 'var(--status-confident-text)'
+                          : er.status === 'completed_with_warnings'
+                          ? '#b45309'
+                          : 'var(--status-conflict-text)',
+                    }}
+                  >
+                    {er.status === 'completed'
+                      ? 'Xong'
+                      : er.status === 'completed_with_warnings'
+                      ? `Xong có cảnh báo (${er.fetch_failed_questions?.length || 0} câu lỗi BL)`
+                      : `Lỗi: ${er.reason || er.error_code || 'Thất bại'}`}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -891,6 +997,35 @@ export const ScreenProgress: React.FC<Props> = ({
                     ) : null}
 
                     {/* Only show Resume button if not an active auth error and error is retryable */}
+                    {!isAuthError && (failedExams.length > 0 || examResults.some((e) => e.status !== 'completed')) && (
+                      <button
+                        type="button"
+                        disabled={isRetryingFailed}
+                        onClick={async () => {
+                          setIsRetryingFailed(true);
+                          setErrorMessage(null);
+                          try {
+                            const r = await fetch(`/api/jobs/${jobId}/retry-failed`, { method: 'POST' });
+                            if (r.ok) {
+                              setReconnectTrigger((prev) => prev + 1);
+                            }
+                          } finally {
+                            setIsRetryingFailed(false);
+                          }
+                        }}
+                        className="btn-primary"
+                        style={{
+                          fontSize: 'var(--text-xs)',
+                          padding: 'var(--space-2) var(--space-4)',
+                          backgroundColor: '#D97706',
+                          borderColor: '#B45309',
+                          fontWeight: 600,
+                        }}
+                      >
+                        {isRetryingFailed ? 'Đang thử lại...' : 'Thử lại các đề lỗi'}
+                      </button>
+                    )}
+
                     {!isAuthError && isRetryable ? (
                       <button
                         onClick={handleResume}
