@@ -1458,7 +1458,7 @@ class JobOrchestrator:
                                 # Rule 2: Kiểm tra số chữ cái đáp án so với N từ dòng '(Choose N answers)'
                                 expected_n = read_choice_hint_n(img_path, ai_service=ai_service)
                                 valid_answer_letters = [a for a in ans_set if a != "?"]
-                                if expected_n is not None and valid_answer_letters:
+                                if expected_n is not None and expected_n > 0 and valid_answer_letters:
                                     if len(valid_answer_letters) != expected_n:
                                         logger.warning(
                                             f"Exam {exam.id} Question {q_idx}: Answer count mismatch. "
@@ -1578,6 +1578,7 @@ class JobOrchestrator:
                             "ai_count": meta_info.get("ai_count", 0),
                             "no_data_count": meta_info.get("no_data_count", 0),
                             "review_needed_questions": meta_info.get("review_needed_questions", []),
+                            "image_warnings": meta_info.get("image_warnings", {}),
                             "fetch_failed_questions": meta_info.get("fetch_failed_questions", fetch_failed_questions),
                         }
                         existing_idx = next(

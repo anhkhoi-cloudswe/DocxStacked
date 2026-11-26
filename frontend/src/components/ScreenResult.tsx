@@ -502,6 +502,16 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                         Cần xem lại: Câu {file.review_needed_questions.join(', ')}
                       </div>
                     )}
+                    {file.image_warnings && Object.keys(file.image_warnings).length > 0 && (
+                      <div data-testid="image-warnings-note" style={{ fontSize: '11px', color: '#92400E', marginTop: '3px' }}>
+                        Cảnh báo ảnh ({Object.keys(file.image_warnings).length} câu):{' '}
+                        {Object.entries(file.image_warnings)
+                          .slice(0, 6)
+                          .map(([qNum, ws]) => `Câu ${qNum} (${ws.join(', ')})`)
+                          .join('; ')}
+                        {Object.keys(file.image_warnings).length > 6 ? '…' : ''}
+                      </div>
+                    )}
                     {file.fetch_failed_questions && file.fetch_failed_questions.length > 0 && (
                       <div
                         data-testid="fetch-failed-warning"

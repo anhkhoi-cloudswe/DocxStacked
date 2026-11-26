@@ -138,6 +138,7 @@ export interface JobFile {
   source_url?: string;
   source_breakdown?: Record<string, number>;
   review_needed_questions?: number[];
+  image_warnings?: Record<string, string[]>;
   fetch_failed_questions?: number[];
 }
 

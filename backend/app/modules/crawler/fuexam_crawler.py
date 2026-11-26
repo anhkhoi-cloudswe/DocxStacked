@@ -721,10 +721,18 @@ def fetch_and_cache_media_image(
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             if meta.get("file_size", 0) > 0 and raw_image_path.stat().st_size > 0:
+                from PIL import Image
+                with Image.open(raw_image_path) as verify_im:
+                    verify_im.verify()
                 logger.debug(f"[Cache Hit] Sử dụng ảnh từ cache: {raw_image_path}")
                 return raw_image_path, True
-        except Exception:
-            pass
+        except Exception as cache_err:
+            logger.warning(f"[Cache Corrupt] Xóa ảnh cache hỏng {raw_image_path}: {cache_err}")
+            try:
+                raw_image_path.unlink(missing_ok=True)
+                meta_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     http = client or get_active_fuexam_client() or FuexamHttpClient(min_delay_seconds=delay_seconds)
     resp: Optional[requests.Response] = None
@@ -760,6 +768,20 @@ def fetch_and_cache_media_image(
             status_code=resp.status_code if resp is not None else None,
             url=_sanitize_url(attachment_url),
         )
+
+    # Xác thực dữ liệu tải về là ảnh hợp lệ bằng PIL trước khi ghi vào cache
+    try:
+        import io as _io
+        from PIL import Image
+        with Image.open(_io.BytesIO(resp.content)) as verify_im:
+            verify_im.verify()
+    except Exception as img_err:
+        raise FuexamRequestError(
+            f"Dữ liệu tải về cho media {media_id} không phải ảnh hợp lệ ({type(img_err).__name__})",
+            error_type="invalid_image",
+            status_code=resp.status_code if resp is not None else None,
+            url=_sanitize_url(attachment_url),
+        ) from img_err
 
     # Lưu ảnh và metadata nguyên tử vào cache
     _atomic_write_bytes(raw_image_path, resp.content)

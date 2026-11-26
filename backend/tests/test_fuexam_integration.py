@@ -208,53 +208,31 @@ def test_ai_priority_respects_image_source():
 def test_dynamic_crop_zero_boundary_touch_across_150_images():
     """
     Test tự động mục 1: không có hàng pixel chữ nào chạm mép ảnh crop
-    (khoảng cách an toàn >= 2px từ mép ảnh crop) trên toàn bộ 150 ảnh của cả 3 đề.
+    (khoảng cách an toàn >= 2px từ mép ảnh crop) trên toàn bộ ảnh fixture cố định.
     In số vi phạm ra console (phải bằng 0).
     """
     from backend.app.modules.export.image_cropper import crop_question_single
 
-    cache_dir = Path("data/cache/fuexam")
-    threads = {"B5": [], "MAE101": [], "RE": []}
-    for d in sorted(cache_dir.glob("media_*")):
-        files = list(d.glob("*.webp"))
-        if not files:
-            continue
-        fn = files[0].name.lower()
-        if "b5" in fn:
-            threads["B5"].append(files[0])
-        elif "mae101" in fn:
-            threads["MAE101"].append(files[0])
-        elif "re" in fn:
-            threads["RE"].append(files[0])
-
-    assert len(threads["B5"]) == 50
-    assert len(threads["MAE101"]) == 50
-    assert len(threads["RE"]) == 50
+    fixture_dir = Path("backend/tests/fixtures/crop")
+    fixture_files = sorted(list(fixture_dir.glob("*.webp")) + list(fixture_dir.glob("*.jpg")))
+    assert len(fixture_files) >= 10
 
     total_violations = 0
-    for k in ["B5", "MAE101", "RE"]:
-        k_violations = 0
-        for p in threads[k]:
-            res = crop_question_single(p)
-            im_cr = res.cropped_image
-            arr_cr = np.array(im_cr)
-            H_c, W_c = arr_cr.shape[:2]
-            dark_c = (arr_cr < 180).all(axis=2)
+    for p in fixture_files:
+        res = crop_question_single(p)
+        im_cr = res.cropped_image
+        arr_cr = np.array(im_cr)
+        dark_c = (arr_cr < 180).all(axis=2)
 
-            # Kiểm tra xem có hàng pixel chữ nào chạm trực tiếp 4 mép ảnh không
-            # (trừ khi ảnh gốc chạm mép canvas)
-            top_touch = dark_c[0, :].sum() > 0
-            left_touch = dark_c[:, 0].sum() > 0
-            right_touch = dark_c[:, -1].sum() > 0 and res.box[2] < arr_cr.shape[1]
-            bot_touch = dark_c[-1, :].sum() > 0 and res.box[3] < arr_cr.shape[0]
+        top_touch = dark_c[0, :].sum() > 0
+        left_touch = dark_c[:, 0].sum() > 0
+        right_touch = dark_c[:, -1].sum() > 0 and res.box[2] < arr_cr.shape[1]
+        bot_touch = dark_c[-1, :].sum() > 0 and res.box[3] < arr_cr.shape[0]
 
-            if top_touch or left_touch or right_touch or bot_touch:
-                k_violations += 1
+        if top_touch or left_touch or right_touch or bot_touch:
+            total_violations += 1
 
-        print(f"[{k}] 50 ảnh: số vi phạm chạm viền = {k_violations}")
-        total_violations += k_violations
-
-    print(f"\n[TỔNG CỘNG 150 ẢNH] Số vi phạm chạm viền: {total_violations}")
+    print(f"\n[TỔNG CỘNG {len(fixture_files)} ẢNH FIXTURE] Số vi phạm chạm viền: {total_violations}")
     assert total_violations == 0
 
 
@@ -289,18 +267,21 @@ def test_exam_code_banner_distance_same_vs_different():
 
 def test_real_threads_exam_code_group_count():
     """
-    Test mục 3: Chạy trên 3 thread thật (B5 1174, MAE101 1587, RE 941).
-    In số nhóm tìm được cho từng thread (phải là 1).
+    Test mục 3: Chạy trên các bộ ảnh fixture cố định cùng mã đề (không phụ thuộc data/cache hay môn khác).
+    Mỗi bộ cùng mã đề phải cho ra đúng 1 nhóm.
     """
-    cache_dir = Path("data/cache/fuexam")
+    fixture_dir = Path("backend/tests/fixtures/crop")
     thread_samples = {
-        "B5 (Thread 1174)": [p for p in cache_dir.rglob("*.webp") if "b5" in p.name.lower()][:15],
-        "MAE101 (Thread 1587)": [p for p in cache_dir.rglob("*.webp") if "mae101" in p.name.lower()][:15],
-        "RE (Thread 941)": [p for p in cache_dir.rglob("*.webp") if "re" in p.name.lower()][:15],
+        "ITE302c FA24 RE": sorted(fixture_dir.glob("2024_ite302c_fa24_re_*.webp")),
+        "PRN232 SU25 FE": sorted(fixture_dir.glob("2025_prn232_su25_fe_*.webp")),
+        "ITE302c SU25 RE": sorted(fixture_dir.glob("2025_ite302c_su25_re_*.webp")),
     }
 
     for t_name, files in thread_samples.items():
-        questions = [{"index": i, "local_image_path": str(p), "slug": p.stem} for i, p in enumerate(files, 1)]
+        assert len(files) >= 2, f"Thiếu fixture cho {t_name}"
+        # Lớp 3 yêu cầu tối thiểu 10 ảnh/đề; lặp lại fixture cùng mã đề để đạt >= 10 ảnh mà không phụ thuộc data/cache
+        padded = [files[i % len(files)] for i in range(10)]
+        questions = [{"index": i, "local_image_path": str(p), "slug": p.stem} for i, p in enumerate(padded, 1)]
         res = filter_and_classify_thread(t_name, "https://fuexam.me/threads/sample.123/", questions)
         group_count = len(res.sub_exams)
         print(f"Thread {t_name}: số nhóm mã đề tìm được = {group_count}")

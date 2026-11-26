@@ -413,6 +413,19 @@ def _render_question_to_doc(
 
                     target_img = Image.open(target_img_path)
 
+                # Hard safety gate: if cropped image is too small (<150w or <60h) and raw is larger, never insert tiny crop
+                if not use_raw_fallback and (target_img.width < 150 or target_img.height < 60):
+                    with Image.open(full_raw_path) as raw_chk:
+                        if raw_chk.width >= 300 and raw_chk.height >= 100:
+                            raw_fb_png = cropped_dir / f"q{q.index:03d}_raw_fallback.png"
+                            raw_chk.convert("RGB").save(raw_fb_png, format="PNG")
+                            target_img = Image.open(raw_fb_png)
+                            target_img_path = raw_fb_png
+                            cur_w = list(getattr(q, "crop_warnings", []) or [])
+                            if "crop_too_small_fallback" not in cur_w:
+                                cur_w.append("crop_too_small_fallback")
+                                q.crop_warnings = cur_w
+
                 # Ensure image passed to python-docx is strictly PNG (python-docx lacks WebP support)
                 if str(target_img_path).lower().endswith(".webp"):
                     converted_png = cropped_dir / f"q{q.index:03d}_converted.png"
@@ -571,9 +584,8 @@ def _render_question_to_doc(
     if has_missing_options:
         text_answer = cluster_text_answers(q_comms)
         if text_answer:
-            ans_text = f"{text_answer} (ảnh nguồn thiếu phương án)"
-        else:
-            ans_text = f"{ans_text} (ảnh nguồn thiếu phương án)"
+            ans_text = text_answer
+        # Note: missing_options warning is recorded in .meta.json (image_warnings), NOT in Word answer line.
 
     # Quality gate on answer string: no newlines/tabs, no timestamp, max 120 chars
     if any(c in ans_text for c in ['\n', '\r', '\t']):
@@ -583,31 +595,13 @@ def _render_question_to_doc(
     if len(ans_text) > 120:
         raise ValueError(f"Quality gate error: answer length exceeds 120 chars ({len(ans_text)} chars): {repr(ans_text[:50])}...")
 
-    # Answer letter run
+    # Answer letter run (ONLY letter or letter + short keyword; NO image warning suffixes in Word)
     run_ans = ans_paragraph.add_run(ans_text)
     run_ans.bold = True
     run_ans.font.size = Pt(20)
     run_ans.font.color.rgb = RGBColor(0xEE, 0x00, 0x00)  # Teacher Red #EE0000
 
-    # 1. Cờ phiếu (Vote consensus / uncertainty)
-    # BỎ hậu tố "(cần kiểm tra lại)" theo Requirement 2. Cảnh báo độ tin cậy chuyển vào .meta.json.
-
-    # 2. Cờ ảnh (Crop / image quality warnings on this specific question only)
-    image_note = ""
-    if has_content_clipping or "source_clipped_content" in raw_warnings:
-        image_note = " (ảnh có thể thiếu)"
-    elif has_missing_options or "missing_options" in raw_warnings:
-        image_note = " (ảnh thiếu phương án)"
-    elif "crop_too_large" in raw_warnings:
-        image_note = " (ảnh chưa cắt gọn)"
-    elif "no_text" in raw_warnings:
-        image_note = " (ảnh không có chữ)"
-
-    if image_note:
-        run_img_note = ans_paragraph.add_run(image_note)
-        run_img_note.bold = False
-        run_img_note.font.size = Pt(11)
-        run_img_note.font.color.rgb = RGBColor(0x7F, 0x7F, 0x7F)  # Muted grey 11pt
+    # 1. Cờ phiếu & 2. Cờ ảnh -> đã chuyển toàn bộ sang .meta.json (image_warnings & review_needed_questions), KHÔNG ghi hậu tố vào dòng đáp án Word.
 
     # C. Horizontal Divider (Double Border '===')
     if add_divider:
@@ -819,8 +813,17 @@ def build_exam_docx(
     comment_cnt = 0
     no_data_cnt = 0
     review_needed_qs: List[int] = []
+    image_warnings_map: Dict[str, List[str]] = {}
 
     for q in sorted_questions:
+        q_img_warns = getattr(q, "crop_warnings", []) or []
+        if isinstance(q_img_warns, str):
+            try:
+                q_img_warns = json.loads(q_img_warns)
+            except Exception:
+                q_img_warns = [q_img_warns]
+        if q_img_warns:
+            image_warnings_map[str(q.index)] = list(q_img_warns)
         ans = answers_map.get(q.id) if answers_map else getattr(q, "answer", None)
         ans_text = rendered_answers_map.get(q.id, "")
         is_q_mark = (ans_text == "?" or ans_text.startswith("?"))
@@ -881,6 +884,7 @@ def build_exam_docx(
             "no_data": no_data_cnt,
         },
         "review_needed_questions": sorted(list(set(review_needed_qs))),
+        "image_warnings": image_warnings_map,
         "fetch_failed_questions": sorted(list(set(fetch_failed_questions or []))),
         "updated_at": datetime.now().isoformat(),
     }

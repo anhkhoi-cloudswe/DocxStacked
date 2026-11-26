@@ -39,6 +39,7 @@ class DocumentItem(BaseModel):
     comment_count: Optional[int] = 0
     source_breakdown: Optional[Dict[str, Any]] = None
     review_needed_questions: Optional[List[int]] = None
+    image_warnings: Optional[Dict[str, List[str]]] = None
 
 
 class UserProfileResponse(BaseModel):
@@ -279,6 +280,7 @@ async def get_my_documents(
                 comment_count=sidecar_meta.get("comment_count", 0),
                 source_breakdown=sidecar_meta.get("source_breakdown", {}),
                 review_needed_questions=sidecar_meta.get("review_needed_questions", []),
+                image_warnings=sidecar_meta.get("image_warnings", {}),
             )
         )
 

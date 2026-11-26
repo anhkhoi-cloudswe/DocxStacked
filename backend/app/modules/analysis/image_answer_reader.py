@@ -562,7 +562,9 @@ def read_choice_hint_n(
                 )
                 m = re.search(r'"n"\s*:\s*(\d+)', res.text or "")
                 if m:
-                    return int(m.group(1))
+                    n_val = int(m.group(1))
+                    if n_val >= 1:
+                        return n_val
         except Exception as e:
             logger.warning(f"Error reading choice hint N via AI strip: {e}")
 

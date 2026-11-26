@@ -72,7 +72,7 @@ class ExportConfig(BaseModel):
 
 
 class ImageCropConfig(BaseModel):
-    red_min_r: int = 170
+    red_min_r: int = 135
     red_max_g: int = 80
     red_max_b: int = 80
     red_min_frac: float = 0.3

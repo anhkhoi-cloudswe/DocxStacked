@@ -209,9 +209,9 @@ def test_single_choice_rejects_unmatched_or_translated_keyword():
 
 def test_missing_options_crops_and_word_output():
     """
-    Requirement 4:
-    - Flag 'missing_options' on images with height < 80px or few lines.
-    - Word output includes note '(ảnh nguồn thiếu phương án)'.
+    Requirement 4 + Item 2:
+    - Flag 'missing_options' on images with height < 80px or few lines (stored in .meta.json image_warnings).
+    - Word answer line must NOT contain '(ảnh nguồn thiếu phương án)' or '(ảnh thiếu phương án)' suffixes.
     - Placeholders like 'Không rõ từ hình ảnh' must NEVER leak into Word.
     """
     doc = Document()
@@ -238,13 +238,16 @@ def test_missing_options_crops_and_word_output():
         subject_code="MLN122",
     )
 
-    # Must contain majority letter and "(ảnh nguồn thiếu phương án)"
-    assert "A (ảnh nguồn thiếu phương án)" in rendered
-    # Must NEVER contain placeholder
+    # Must contain ONLY the clean answer letter (no image warning suffix in Word)
+    assert rendered == "A"
+    # Must NEVER contain placeholder or image warning suffixes
     assert "Không rõ từ hình ảnh" not in rendered
+    assert "(ảnh nguồn thiếu phương án)" not in rendered
+    assert "(ảnh thiếu phương án)" not in rendered
 
-    # Check paragraph text in document (per requirement: BỎ hậu tố "(cần kiểm tra lại)" from docx)
+    # Check paragraph text in document
     full_text = " ".join(p.text for p in doc.paragraphs)
-    assert "A (ảnh nguồn thiếu phương án)" in full_text
     assert "(cần kiểm tra lại)" not in full_text
+    assert "(ảnh nguồn thiếu phương án)" not in full_text
+    assert "(ảnh thiếu phương án)" not in full_text
     assert "Không rõ từ hình ảnh" not in full_text

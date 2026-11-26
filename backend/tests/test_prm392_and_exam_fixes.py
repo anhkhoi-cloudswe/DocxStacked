@@ -120,7 +120,8 @@ def test_flag_separation_vote_vs_image_in_docx(tmp_path: Path):
     )
     p_ans_clipped = doc.paragraphs[-2]
     assert "B, C" in p_ans_clipped.text
-    assert "(ảnh có thể thiếu)" in p_ans_clipped.text
+    assert "(ảnh có thể thiếu)" not in p_ans_clipped.text
+    assert "(" not in p_ans_clipped.text
     assert "cần kiểm tra lại" not in p_ans_clipped.text
 
     # Case C: WEAK / CONFLICT vote with clean image

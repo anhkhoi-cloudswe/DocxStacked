@@ -52,7 +52,7 @@ def get_crop_config() -> ImageCropConfig:
 def find_red_bar(
     a: np.ndarray,
     min_frac: float = 0.3,
-    r_min: int = 170,
+    r_min: int = 135,
     g_max: int = 80,
     b_max: int = 80,
 ) -> Optional[Tuple[int, int]]:
@@ -62,7 +62,7 @@ def find_red_bar(
     """
     H = a.shape[0]
     r, g, b = [a[..., i].astype(int) for i in range(3)]
-    cols = ((r > r_min) & (g < g_max) & (b < b_max)).sum(0)
+    cols = ((r > r_min) & (g < g_max) & (b < b_max) & ((r - np.maximum(g, b)) >= 60)).sum(0)
     xs = np.where(cols >= min_frac * H)[0]
     if len(xs) == 0:
         return None
@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "3.4.0-fuexam-dynamic-profile"
+CROP_ALGORITHM_VERSION = "3.5.0-red-bar-and-su24-tight"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -371,7 +371,7 @@ def crop_question_single(
         bar = find_red_bar(
             a,
             min_frac=cfg.red_min_frac,
-            r_min=cfg.red_min_r,
+            r_min=min(cfg.red_min_r, 135),
             g_max=cfg.red_max_g,
             b_max=cfg.red_max_b,
         )
@@ -438,6 +438,61 @@ def crop_question_single(
                     border_dark_ratio=cfg.border_dark_ratio,
                     border_edge_depth=cfg.border_edge_depth,
                 )
+                ys, xs = np.where(m)
+                if len(ys) == 0:
+                    warnings.append("no_text")
+                    bx = box
+                else:
+                    bx = (
+                        int(box[0] + xs.min()),
+                        int(box[1] + ys.min()),
+                        int(box[0] + xs.max() + 1),
+                        int(box[1] + ys.max() + 1),
+                    )
+                    num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                    if num_lines < 3:
+                        warnings.append("few_lines")
+                    if (bx[3] - bx[1]) < 60 or num_lines <= 1:
+                        warnings.append("missing_options")
+            elif bar[0] >= int(0.90 * W):
+                # Exam software screenshot with red right-border (e.g. SU24 FE):
+                # Left sidebar (x < 120) has 'Answer / A B C D / Back / Next'; main white question box is x >= 120..bar[0]-2, y >= 95.
+                layout = "red_right_border_exam_ui"
+                y_start_ui = 95
+                # Find left border of the white question box (or default to x=126)
+                wp_ui = white_panel(
+                    a[y_start_ui:, : bar[0] - 2],
+                    115,
+                    min_area_ratio=cfg.white_panel_min_area_ratio,
+                    max_width_ratio=0.98,
+                    closing_size=cfg.closing_kernel_size,
+                    min_val=cfg.white_min_val,
+                )
+                if wp_ui:
+                    box = (
+                        wp_ui[0] + 8,
+                        wp_ui[1] + y_start_ui + 8,
+                        min(bar[0] - 8, wp_ui[2] - 8),
+                        min(H - 18, wp_ui[3] + y_start_ui - 8),
+                    )
+                else:
+                    box = (128, y_start_ui + 8, bar[0] - 8, H - 18)
+                choice_hint_im = None
+                choice_hint_w = None
+                m = text_mask(
+                    a,
+                    box,
+                    dark_threshold=cfg.dark_threshold,
+                    color_diff_threshold=cfg.color_diff_threshold,
+                    allow_subpixel=True,
+                    border_dark_ratio=cfg.border_dark_ratio,
+                    border_edge_depth=cfg.border_edge_depth,
+                )
+                # Exclude bottom-right corner watermark if it overlaps box
+                wm_y0 = max(0, (H - 120) - box[1])
+                wm_x0 = max(0, (W - 300) - box[0])
+                if wm_y0 < m.shape[0] and wm_x0 < m.shape[1]:
+                    m[wm_y0:, wm_x0:] = False
                 ys, xs = np.where(m)
                 if len(ys) == 0:
                     warnings.append("no_text")
@@ -784,6 +839,17 @@ def crop_question_single(
         if final_cropped is None:
             cropped_core = im.crop(bx)
             final_cropped = ImageOps.expand(cropped_core, border=cfg.padding_px, fill="white")
+
+        # Hard safety gate: never output a tiny/broken crop (e.g. 139x38 '(Choose 1 answer)' only)
+        if (final_cropped.width < 150 or final_cropped.height < 60) and (W >= 300 and H >= 100):
+            logger.warning(
+                f"Crop too small ({final_cropped.width}x{final_cropped.height}) for {input_path.name}; "
+                f"falling back to raw image ({W}x{H})."
+            )
+            if "crop_too_small_fallback" not in warnings:
+                warnings.append("crop_too_small_fallback")
+            final_cropped = im
+            bx = (0, 0, W, H)
 
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
