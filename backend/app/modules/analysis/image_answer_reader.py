@@ -510,8 +510,8 @@ def read_choice_hint_n(
 ) -> Optional[int]:
     """
     Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' ở dải đầu ảnh đề thi fuexam (y: 170..280, x: 40..500).
-    Sử dụng bộ đọc glyph offline siêu nhẹ, dự phòng bằng AI nhẹ trên dải đầu ảnh nếu cần.
-    Trả về số nguyên N (ví dụ 1, 2, 3...) hoặc None nếu không nhận diện được.
+    Chỉ dùng nhận dạng cục bộ (không gọi Gemini AI để tránh tốn hạn mức).
+    Trả về số nguyên N (>= 1) hoặc None nếu không nhận diện được.
     """
     if isinstance(image_input, (str, Path)):
         im = Image.open(image_input)
@@ -543,31 +543,7 @@ def read_choice_hint_n(
                 if 7 <= w <= 13 and 24 <= h <= 32 and (h / w) >= 2.2:
                     return 1
 
-    # Nếu glyph offline chưa chắc chắn và có AI service khả dụng, gọi AI nhẹ trên dải đầu ảnh
-    if ai_service and hasattr(ai_service, "is_available") and ai_service.is_available():
-        try:
-            from google.genai import types
-            import io
-            import re
-            provider = ai_service._providers[0] if getattr(ai_service, "_providers", None) else None
-            if provider:
-                client = provider._get_client()
-                strip = im.crop((40, 180, min(im.width, 500), 260))
-                buf = io.BytesIO()
-                strip.save(buf, format="PNG")
-                prompt = "Read the number N inside parentheses like (Choose N answer) or (Choose N answers). Return ONLY a JSON object: {\"n\": <number>}"
-                res = client.models.generate_content(
-                    model=provider.model,
-                    contents=[types.Part.from_bytes(data=buf.getvalue(), mime_type="image/png"), prompt]
-                )
-                m = re.search(r'"n"\s*:\s*(\d+)', res.text or "")
-                if m:
-                    n_val = int(m.group(1))
-                    if n_val >= 1:
-                        return n_val
-        except Exception as e:
-            logger.warning(f"Error reading choice hint N via AI strip: {e}")
-
+    # Không gọi Gemini AI; nếu không đọc được N cục bộ thì trả None để bỏ qua kiểm tra N.
     return None
 
 

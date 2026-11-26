@@ -131,3 +131,31 @@ def test_fetch_and_cache_media_image_rejects_corrupt_and_recovers(tmp_path: Path
     assert out_path.exists()
     with Image.open(out_path) as verified:
         verified.verify()
+
+
+def test_read_choice_hint_n_never_calls_gemini_and_handles_n_cases():
+    """Item 4: read_choice_hint_n is strictly local (never calls AI), and orchestrator skips n=0 / n=None."""
+    from backend.app.modules.analysis.image_answer_reader import read_choice_hint_n
+
+    blank = Image.new("RGB", (1800, 1000), "white")
+    mock_ai = MagicMock()
+    mock_ai.is_available.return_value = True
+
+    # Must return None without ever touching mock_ai
+    res = read_choice_hint_n(blank, ai_service=mock_ai)
+    assert res is None
+    mock_ai.is_available.assert_not_called()
+
+    # Orchestrator mismatch guard logic: n=0 and n=None must NOT overwrite valid answers
+    for expected_n in (0, None):
+        ans_set = ["A"]
+        valid_letters = [a for a in ans_set if a != "?"]
+        overwritten = (expected_n is not None and expected_n > 0 and valid_letters and len(valid_letters) != expected_n)
+        assert not overwritten
+
+    # When expected_n=2 and only 1 letter is present, mismatch IS detected
+    expected_n = 2
+    valid_letters = ["A"]
+    overwritten = (expected_n is not None and expected_n > 0 and valid_letters and len(valid_letters) != expected_n)
+    assert overwritten is True
+

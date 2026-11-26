@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "3.5.0-red-bar-and-su24-tight"
+CROP_ALGORITHM_VERSION = "3.6.0-fuexam2026-tight-no-ans-strip"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -670,37 +670,73 @@ def crop_question_single(
                     y0 = 0
 
                 # 2. Content-based bottom cut:
-                # Exclude isolated corner watermark stamp at bottom-right (x > W-300, y > H-120)
-                dark_main = dark_mask.copy()
-                dark_main[max(0, H - 120):, max(0, W - 300):] = False
-                content_main = dark_main | green_mask
-
-                main_rows = content_main[y0:, :].sum(axis=1)
-                ys_below = np.where(main_rows > 10)[0]
-                if len(ys_below) > 0:
-                    last_y = y0 + ys_below.max()
-                    if H - last_y <= 110:
-                        # Nội dung chạm gần đáy: giữ nguyên đáy và chiều rộng ảnh
-                        y1 = H
+                # Detect bottom green 'Đáp án: X' strip (y > H-200, x < 600)
+                bottom_green = green_mask[max(0, H - 200):, : min(600, W)]
+                has_bottom_ans_strip = int(bottom_green.sum()) >= 30
+                if has_bottom_ans_strip:
+                    gy = np.where(bottom_green.sum(axis=1) > 5)[0]
+                    y_strip_top = max(0, H - 200) + int(gy.min()) - 12 if len(gy) > 0 else max(0, H - 150)
+                    # Tight crop: exclude 'Đáp án: X' strip, watermark, and inner card whitespace; pad >= 16px
+                    m_inner = text_mask(
+                        a,
+                        (0, y0, W, y_strip_top),
+                        dark_threshold=160,
+                        color_diff_threshold=60,
+                        border_dark_ratio=cfg.border_dark_ratio,
+                        border_edge_depth=cfg.border_edge_depth,
+                    )
+                    # Also exclude card border lines (light gray ~200..230 already excluded by dark_threshold=160,
+                    # and remove thin full-width horizontal/vertical frame lines if any)
+                    row_frac = m_inner.mean(axis=1)
+                    col_frac = m_inner.mean(axis=0)
+                    m_inner[row_frac > 0.50, :] = False
+                    m_inner[:, col_frac > 0.50] = False
+                    ys_in, xs_in = np.where(m_inner)
+                    if len(ys_in) > 0:
+                        bx_tight = (
+                            int(xs_in.min()),
+                            int(y0 + ys_in.min()),
+                            int(xs_in.max() + 1),
+                            int(y0 + ys_in.max() + 1),
+                        )
+                        pad = max(16, cfg.padding_px)
+                        bx = bx_tight
+                        final_cropped = ImageOps.expand(im.crop(bx), border=pad, fill="white")
                     else:
-                        # Đủ lề dưới cho ký tự có đuôi (g, y, p)
-                        y1 = min(H, last_y + 18)
+                        bx = (0, y0, W, y_strip_top)
+                        final_cropped = im.crop(bx)
                 else:
-                    y1 = H
+                    # Exclude isolated corner watermark stamp at bottom-right (x > W-300, y > H-120)
+                    dark_main = dark_mask.copy()
+                    dark_main[max(0, H - 120):, max(0, W - 300):] = False
+                    content_main = dark_main | green_mask
 
-                # 3. Horizontal frame bounds: preserve entire card container frame and longest text
-                bg = a[5, 5].astype(int)
-                diff = np.abs(a[y0:y1, :].astype(int) - bg).sum(axis=2)
-                frame_cols = np.where(diff > 25)[1]
-                if len(frame_cols) > 0:
-                    x0 = max(0, frame_cols.min() - 16)
-                    x1 = min(W, frame_cols.max() + 16)
-                else:
-                    x0 = 0
-                    x1 = W
+                    main_rows = content_main[y0:, :].sum(axis=1)
+                    ys_below = np.where(main_rows > 10)[0]
+                    if len(ys_below) > 0:
+                        last_y = y0 + ys_below.max()
+                        if H - last_y <= 110:
+                            # Nội dung chạm gần đáy: giữ nguyên đáy và chiều rộng ảnh
+                            y1 = H
+                        else:
+                            # Đủ lề dưới cho ký tự có đuôi (g, y, p)
+                            y1 = min(H, last_y + 18)
+                    else:
+                        y1 = H
 
-                bx = (x0, y0, x1, y1)
-                final_cropped = im.crop(bx)
+                    # 3. Horizontal frame bounds: preserve entire card container frame and longest text
+                    bg = a[5, 5].astype(int)
+                    diff = np.abs(a[y0:y1, :].astype(int) - bg).sum(axis=2)
+                    frame_cols = np.where(diff > 25)[1]
+                    if len(frame_cols) > 0:
+                        x0 = max(0, frame_cols.min() - 16)
+                        x1 = min(W, frame_cols.max() + 16)
+                    else:
+                        x0 = 0
+                        x1 = W
+
+                    bx = (x0, y0, x1, y1)
+                    final_cropped = im.crop(bx)
 
                 # Structural check
                 m_text = text_mask(
