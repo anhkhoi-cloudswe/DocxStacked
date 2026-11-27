@@ -1294,18 +1294,31 @@ class JobOrchestrator:
                                     "progress": computed_prog,
                                 })
 
-                            # Download image (rate-limited & retried via FuexamHttpClient)
-                            img_path, img_cached = await asyncio.to_thread(
-                                _call_with_client,
-                                http_client,
-                                fetch_and_cache_media_image,
-                                media_id=m_id,
-                                attachment_url=att_url,
-                                slug=slug,
-                                session=session,
-                                force_refresh=force_refresh,
-                                delay_seconds=min_delay,
-                            )
+                            # Download image (isolated per question for invalid_image so remaining questions still export)
+                            img_path: Optional[Path] = None
+                            img_cached = False
+                            source_image_invalid = False
+                            try:
+                                img_path, img_cached = await asyncio.to_thread(
+                                    _call_with_client,
+                                    http_client,
+                                    fetch_and_cache_media_image,
+                                    media_id=m_id,
+                                    attachment_url=att_url,
+                                    slug=slug,
+                                    session=session,
+                                    force_refresh=force_refresh,
+                                    delay_seconds=min_delay,
+                                )
+                            except FuexamRequestError as img_req_err:
+                                if img_req_err.error_type == "invalid_image":
+                                    source_image_invalid = True
+                                    logger.warning(
+                                        f"Exam {exam.id} Q{q_idx} (media {m_id}): source image invalid; "
+                                        f"isolating question and continuing."
+                                    )
+                                else:
+                                    raise
 
                             # Download comments (isolated per question: never crashes exam on CommentFetchError)
                             comment_fetch_failed = False
@@ -1349,28 +1362,41 @@ class JobOrchestrator:
                                 q_obj = Question(
                                     exam_id=exam.id,
                                     index=q_idx,
-                                    file_name=img_path.name,
+                                    file_name=img_path.name if img_path else f"{slug}.webp",
                                     media_id=str(m_id),
-                                    local_image_path=str(img_path.resolve()),
+                                    local_image_path=str(img_path.resolve()) if img_path else None,
                                 )
                                 db.add(q_obj)
                                 await db.flush()
                             else:
-                                q_obj.file_name = img_path.name
+                                q_obj.file_name = img_path.name if img_path else f"{slug}.webp"
                                 q_obj.media_id = str(m_id)
-                                q_obj.local_image_path = str(img_path.resolve())
+                                q_obj.local_image_path = str(img_path.resolve()) if img_path else None
 
-                            # Crop image with layout fuexam_2026
-                            cropped_out = cropped_dir / f"q{q_idx:03d}.png"
-                            crop_res = crop_question_single(img_path, output_path=cropped_out)
-                            q_obj.cropped_image_path = str(cropped_out.resolve())
-                            q_obj.crop_layout = crop_res.layout
-                            q_obj.crop_warnings = crop_res.warnings
+                            # Crop image (isolated per-question if invalid)
+                            if source_image_invalid or img_path is None:
+                                q_obj.cropped_image_path = None
+                                q_obj.crop_layout = "source_image_invalid"
+                                q_obj.crop_warnings = ["source_image_invalid"]
+                            else:
+                                try:
+                                    cropped_out = cropped_dir / f"q{q_idx:03d}.png"
+                                    crop_res = crop_question_single(img_path, output_path=cropped_out)
+                                    q_obj.cropped_image_path = str(cropped_out.resolve())
+                                    q_obj.crop_layout = crop_res.layout
+                                    q_obj.crop_warnings = crop_res.warnings
+                                except Exception as crop_err:
+                                    logger.warning(f"Exam {exam.id} Q{q_idx} crop failed ({crop_err}); marking source_image_invalid.")
+                                    source_image_invalid = True
+                                    q_obj.local_image_path = None
+                                    q_obj.cropped_image_path = None
+                                    q_obj.crop_layout = "source_image_invalid"
+                                    q_obj.crop_warnings = ["source_image_invalid"]
 
                             # Determine answer:
                             # 1. Thử đọc dải đáp án xanh từ ảnh (CONFIDENT >= 0.80) -> Không bao giờ gọi AI
-                            img_ans_res = read_answer_from_image(img_path)
-                            if img_ans_res.letter and img_ans_res.confidence >= 0.80:
+                            img_ans_res = read_answer_from_image(img_path) if (img_path and not source_image_invalid) else None
+                            if img_ans_res and img_ans_res.letter and img_ans_res.confidence >= 0.80:
                                 ans_set = img_ans_res.letters or [img_ans_res.letter]
                                 ans_status = AnswerStatus.CONFIDENT
                                 ans_conf = img_ans_res.confidence
@@ -1414,8 +1440,9 @@ class JobOrchestrator:
                                                     "message": "AI được bật nhưng chưa cấu hình khóa API (hoặc hết hạn mức). Bỏ qua bước gọi AI.",
                                                 })
                                         else:
-                                            target_img = cropped_out if cropped_out.exists() else img_path
-                                            analyses = ai_service.analyze_question_ensemble(target_img, job_id=job_id)
+                                            target_img = cropped_out if (cropped_out and cropped_out.exists()) else img_path
+                                            if target_img:
+                                                analyses = ai_service.analyze_question_ensemble(target_img, job_id=job_id)
                                             for a in analyses:
                                                 ai_votes.append({
                                                     "provider": a.provider or "ai",
@@ -1456,7 +1483,7 @@ class JobOrchestrator:
                                         exam_sources["no_data"] += 1
 
                                 # Rule 2: Kiểm tra số chữ cái đáp án so với N từ dòng '(Choose N answers)'
-                                expected_n = read_choice_hint_n(img_path, ai_service=ai_service)
+                                expected_n = read_choice_hint_n(img_path, ai_service=ai_service) if (img_path and not source_image_invalid) else None
                                 valid_answer_letters = [a for a in ans_set if a != "?"]
                                 if expected_n is not None and expected_n > 0 and valid_answer_letters:
                                     if len(valid_answer_letters) != expected_n:

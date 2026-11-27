@@ -447,10 +447,22 @@ def _render_question_to_doc(
                 )
 
     if not img_inserted:
-        run_missing = img_paragraph.add_run(f"[Ảnh câu {q.index}]")
-        run_missing.font.size = Pt(11)
-        run_missing.font.italic = True
-        run_missing.font.color.rgb = RGBColor(0x8C, 0x82, 0x78)
+        warnings_chk = getattr(q, "crop_warnings", []) or []
+        if "source_image_invalid" in warnings_chk:
+            from PIL import ImageDraw
+            ph_path = cropped_dir / f"q{q.index:03d}_invalid_placeholder.png"
+            ph_im = Image.new("RGB", (360, 64), (248, 250, 252))
+            draw = ImageDraw.Draw(ph_im)
+            draw.rectangle([0, 0, 359, 63], outline=(203, 213, 225), width=1)
+            draw.text((16, 24), f"Anh nguon khong hop le (Cau {q.index})", fill=(100, 116, 139))
+            ph_im.save(ph_path, format="PNG")
+            img_paragraph.add_run().add_picture(str(ph_path), width=Cm((360 / 120.0) * 2.54))
+            img_inserted = True
+        else:
+            run_missing = img_paragraph.add_run(f"[Ảnh câu {q.index}]")
+            run_missing.font.size = Pt(11)
+            run_missing.font.italic = True
+            run_missing.font.color.rgb = RGBColor(0x8C, 0x82, 0x78)
 
     # Note if source screenshot was clipped (only when content is lost: right/top/bottom, or explicit source_clipped_content)
     warnings_list = getattr(q, "crop_warnings", []) or []

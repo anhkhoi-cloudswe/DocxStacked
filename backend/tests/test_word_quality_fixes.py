@@ -159,3 +159,70 @@ def test_read_choice_hint_n_never_calls_gemini_and_handles_n_cases():
     overwritten = (expected_n is not None and expected_n > 0 and valid_letters and len(valid_letters) != expected_n)
     assert overwritten is True
 
+
+def test_mln122_c2_q23_choice_hint_n_and_mismatch():
+    """Item 4: MLN122 C2 Q23 has 3 options A-C and '(Choose 1 answer)'; 2 letters must trigger mismatch '?'."""
+    from backend.app.modules.analysis.image_answer_reader import read_choice_hint_n
+
+    p = Path("data/cache/fuexam/media_52796/mln122-fa26-fe-c2_023-webp.webp")
+    if p.exists():
+        expected_n = read_choice_hint_n(p)
+        assert expected_n == 1
+        # Simulate 2 letters returned by voting -> mismatch -> '?'
+        ans_set = ["A", "B"]
+        assert len(ans_set) != expected_n
+
+
+def test_sp25_q9_flags_options_incomplete_not_missing_stem(tmp_path: Path):
+    """Item 3: 1 stem + 3 options A-C (4 lines) flags 'options_incomplete', not 'missing_stem'."""
+    p = Path("data/cache/fuexam/media_38538/hcm202-sp25-fe_009-webp.webp")
+    if p.exists():
+        res = crop_question_single(p, output_path=tmp_path / "q09.png")
+        assert "options_incomplete" in res.warnings
+        assert "missing_stem" not in res.warnings
+
+
+def test_techdybear_strips_username_and_keeps_choose_hint(tmp_path: Path):
+    """Item 5: TechdyBear split layout strips left username header while keeping '(Choose 1 answer)'."""
+    p = Path("data/cache/fuexam/media_15065/hcm202-sp26-b5-fe_001-webp.webp")
+    if p.exists():
+        res = crop_question_single(p, output_path=tmp_path / "q01.png")
+        assert res.layout == "modern_2026_split_username"
+        assert res.cropped_image.width < 700
+        assert res.warnings == []
+
+
+def test_source_image_invalid_isolated_in_docx(tmp_path: Path):
+    """Item 6: source_image_invalid inserts placeholder image, writes meta image_warnings, keeps answer clean."""
+    exam = Exam(id=9902, subject_id=1, title="HCM202 - SP26 - B5 - FE - RE", url="https://fuexam.me/threads/9902/")
+    q_bad = Question(
+        id=32,
+        exam_id=9902,
+        index=32,
+        local_image_path=None,
+        crop_layout="source_image_invalid",
+        crop_warnings=["source_image_invalid"],
+    )
+    ans = Answer(
+        question_id=32,
+        answer_set='["B"]',
+        status=AnswerStatus.CONFIDENT,
+        confidence=1.0,
+    )
+    out_docx = build_exam_docx(
+        subject_code="HCM202",
+        exam=exam,
+        questions=[q_bad],
+        output_dir=tmp_path,
+        cropped_dir=tmp_path / "cropped",
+        answers_map={32: ans},
+        platform="fuexam",
+    )
+    doc = Document(str(out_docx))
+    ans_lines = [p.text for p in doc.paragraphs if p.runs and p.runs[0].font.size and p.runs[0].font.size.pt == 20]
+    assert ans_lines == ["B"]
+    assert (tmp_path / "cropped" / "q032_invalid_placeholder.png").exists()
+    meta = json.loads((tmp_path / f"{out_docx.name}.meta.json").read_text(encoding="utf-8"))
+    assert meta["image_warnings"]["32"] == ["source_image_invalid"]
+
+

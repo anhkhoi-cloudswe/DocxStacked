@@ -21,8 +21,12 @@ fixtures/raw/
 
 # Databases & SQLite temp
 *.db
+*.sqlite
 *.db-wal
 *.db-shm
+*.har
+*storage_state*
+docs/screenshots/
 
 
 # Node & Frontend

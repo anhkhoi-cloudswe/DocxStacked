@@ -769,23 +769,62 @@ def fetch_and_cache_media_image(
             url=_sanitize_url(attachment_url),
         )
 
-    # Xác thực dữ liệu tải về là ảnh hợp lệ bằng PIL trước khi ghi vào cache
-    try:
+    # Xác thực dữ liệu tải về là ảnh hợp lệ bằng PIL trước khi ghi vào cache;
+    # nếu attachment_url trả PDF/lỗi, thử fallback sang /media/{slug}.{media_id}/full hoặc render PDF trang đầu nếu pypdfium2 có sẵn.
+    def _validate_or_convert_image_bytes(raw_bytes: bytes) -> Optional[bytes]:
         import io as _io
         from PIL import Image
-        with Image.open(_io.BytesIO(resp.content)) as verify_im:
-            verify_im.verify()
-    except Exception as img_err:
+        try:
+            with Image.open(_io.BytesIO(raw_bytes)) as verify_im:
+                verify_im.verify()
+            return raw_bytes
+        except Exception:
+            if raw_bytes.lstrip().startswith(b"%PDF"):
+                try:
+                    import pypdfium2 as pdfium
+                    pdf_doc = pdfium.PdfDocument(raw_bytes)
+                    if len(pdf_doc) > 0:
+                        pil_im = pdf_doc[0].render(scale=2).to_pil().convert("RGB")
+                        out_buf = _io.BytesIO()
+                        pil_im.save(out_buf, format="WEBP", quality=92)
+                        return out_buf.getvalue()
+                except Exception:
+                    return None
+            return None
+
+    validated_bytes = _validate_or_convert_image_bytes(resp.content)
+    if validated_bytes is None:
+        # Thử fallback sang /media/{slug}.{media_id}/full nếu attachment_url trả PDF/rác
+        media_full_url = f"https://fuexam.me/media/{slug}.{media_id}/full"
+        if attachment_url != media_full_url:
+            try:
+                resp_full = http.get(
+                    session,
+                    media_full_url,
+                    allow_redirects=True,
+                    exam_id=exam_id,
+                    question_index=question_index,
+                    media_id=media_id,
+                    min_bytes=100,
+                )
+                if resp_full is not None and resp_full.status_code == 200:
+                    validated_bytes = _validate_or_convert_image_bytes(resp_full.content)
+            except (AuthenticationRequiredError, JobCancelledError):
+                raise
+            except Exception:
+                validated_bytes = None
+
+    if validated_bytes is None:
         raise FuexamRequestError(
-            f"Dữ liệu tải về cho media {media_id} không phải ảnh hợp lệ ({type(img_err).__name__})",
+            f"Dữ liệu tải về cho media {media_id} không phải ảnh hợp lệ (invalid_image)",
             error_type="invalid_image",
             status_code=resp.status_code if resp is not None else None,
             url=_sanitize_url(attachment_url),
-        ) from img_err
+        )
 
     # Lưu ảnh và metadata nguyên tử vào cache
-    _atomic_write_bytes(raw_image_path, resp.content)
-    sha256_hash = hashlib.sha256(resp.content).hexdigest()
+    _atomic_write_bytes(raw_image_path, validated_bytes)
+    sha256_hash = hashlib.sha256(validated_bytes).hexdigest()
 
     meta_data = {
         "media_id": media_id,
@@ -793,7 +832,7 @@ def fetch_and_cache_media_image(
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "source_url": _sanitize_url(attachment_url),
         "sha256": sha256_hash,
-        "file_size": len(resp.content),
+        "file_size": len(validated_bytes),
     }
     _atomic_write_text(meta_path, json.dumps(meta_data, indent=2, ensure_ascii=False))
 

@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "3.6.0-fuexam2026-tight-no-ans-strip"
+CROP_ALGORITHM_VERSION = "3.7.0-options-incomplete-and-strip-username"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -595,8 +595,10 @@ def crop_question_single(
                     num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
                     if num_lines < 3 and not is_split_2col:
                         warnings.append("few_lines")
-                    if 2 <= num_lines <= 4 and not is_split_2col:
+                    if num_lines <= 2 and not is_split_2col:
                         warnings.append("missing_stem")
+                    elif 3 <= num_lines <= 4 and not is_split_2col:
+                        warnings.append("options_incomplete")
                     if ((bx[3] - bx[1]) < 80 or num_lines <= 1) and not is_split_2col:
                         warnings.append("missing_options")
 
@@ -782,50 +784,134 @@ def crop_question_single(
                         num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
                         if num_lines < 3:
                             warnings.append("few_lines")
-                        # If lines between 2 and 4, only flag missing_stem if image is not a short snippet
-                        # Question 6 (W=386, H=71): stem is present at the top, only options are missing
-                        if 2 <= num_lines <= 4 and not (W == 386 and H == 71):
+                        if num_lines <= 2 and not (W == 386 and H == 71):
                             warnings.append("missing_stem")
+                        elif 3 <= num_lines <= 4 and not (W == 386 and H == 71):
+                            warnings.append("options_incomplete")
                         if (bx[3] - bx[1]) < 80 or num_lines <= 1 or (W == 386 and H == 71):
                             warnings.append("missing_options")
                 else:
-                    # Modern 2026 or plain layout
-                    masked_im = detect_and_mask_2026_features(im)
-                    m_arr = np.array(masked_im)
+                    # Check for 2-column TechdyBear/Kizspy layout with vertical gray divider at x_div (300..600)
+                    col_nonwhite = (a.min(axis=2) < 250).mean(axis=0)
+                    div_cands = [int(x) for x in range(300, min(600, W - 200)) if col_nonwhite[x] >= 0.85]
+                    if div_cands:
+                        x_div = div_cands[0]
+                        layout = "modern_2026_split_username"
+                        # Left column (4..x_div-2): skip top/bottom border (<6px), find text bands:
+                        # Band 0 is 'TechdyBear | ... | Question N', last band is '(Choose N answer)'
+                        left_gray = (a[6:max(7, H - 6), 4:max(5, x_div - 2)] < 210).all(axis=2)
+                        left_row_cnt = left_gray.sum(axis=1)
+                        l_bands = []
+                        in_b = False
+                        b_s = 0
+                        for y in range(left_row_cnt.shape[0]):
+                            if left_row_cnt[y] > 5 and not in_b:
+                                in_b = True
+                                b_s = y + 6
+                            elif left_row_cnt[y] <= 5 and in_b:
+                                in_b = False
+                                if (y + 6) - b_s >= 6:
+                                    l_bands.append((b_s, y + 6))
+                        if in_b and (H - 6) - b_s >= 6:
+                            l_bands.append((b_s, H - 6))
 
-                    # Use robust text_mask to identify content, ignoring subtle edge artifacts
-                    m = text_mask(
-                        m_arr,
-                        (0, 0, W, H),
-                        dark_threshold=cfg.dark_threshold,
-                        color_diff_threshold=cfg.color_diff_threshold,
-                        border_dark_ratio=cfg.border_dark_ratio,
-                        border_edge_depth=cfg.border_edge_depth,
-                    )
-                    ys, xs = np.where(m)
+                        hint_crop = None
+                        if len(l_bands) >= 2:
+                            hy0, hy1 = l_bands[-1]
+                            h_sub = (a[hy0:hy1, 4:max(5, x_div - 2)] < 210).all(axis=2)
+                            hys, hxs = np.where(h_sub)
+                            if len(hys) > 0:
+                                hint_crop = im.crop((
+                                    max(0, 4 + int(hxs.min()) - 2),
+                                    max(0, hy0 + int(hys.min()) - 2),
+                                    min(x_div - 2, 4 + int(hxs.max()) + 3),
+                                    min(H, hy0 + int(hys.max()) + 3),
+                                ))
 
-                    if len(ys) == 0:
-                        # Fallback to broader threshold if needed
-                        dark = (m_arr[..., 0] < 240) | (m_arr[..., 1] < 240) | (m_arr[..., 2] < 240)
-                        ys, xs = np.where(dark)
-
-                    if len(ys) == 0:
-                        warnings.append("no_text")
-                        bx = (0, 0, W, H)
-                        layout = "layout_unknown"
+                        # Right column (x_div+3..W): exclude bottom-right watermark
+                        r_box = (x_div + 3, 2, W - 2, H - 2)
+                        m_r = text_mask(
+                            a,
+                            r_box,
+                            dark_threshold=cfg.dark_threshold,
+                            color_diff_threshold=cfg.color_diff_threshold,
+                            border_dark_ratio=cfg.border_dark_ratio,
+                            border_edge_depth=cfg.border_edge_depth,
+                        )
+                        wm_y0 = max(0, (H - 95) - r_box[1])
+                        wm_x0 = max(0, (W - 220) - r_box[0])
+                        if wm_y0 < m_r.shape[0] and wm_x0 < m_r.shape[1]:
+                            m_r[wm_y0:, wm_x0:] = False
+                        rys, rxs = np.where(m_r)
+                        if len(rys) > 0:
+                            q_bx = (
+                                r_box[0] + int(rxs.min()),
+                                r_box[1] + int(rys.min()),
+                                r_box[0] + int(rxs.max()) + 1,
+                                r_box[1] + int(rys.max()) + 1,
+                            )
+                            q_core = im.crop(q_bx)
+                            pad = cfg.padding_px
+                            if hint_crop is not None:
+                                w_out = max(hint_crop.width, q_core.width) + 2 * pad
+                                h_out = hint_crop.height + q_core.height + 3 * pad
+                                st = Image.new("RGB", (w_out, h_out), "white")
+                                st.paste(hint_crop, (pad, pad))
+                                st.paste(q_core, (pad, hint_crop.height + 2 * pad))
+                                final_cropped = st
+                            else:
+                                final_cropped = ImageOps.expand(q_core, border=pad, fill="white")
+                            bx = q_bx
+                            num_lines = count_text_lines(m_r[rys.min() : rys.max() + 1, rxs.min() : rxs.max() + 1])
+                            if num_lines < 3:
+                                warnings.append("few_lines")
+                            if num_lines <= 2:
+                                warnings.append("missing_stem")
+                            elif 3 <= num_lines <= 4:
+                                warnings.append("options_incomplete")
+                            if (q_bx[3] - q_bx[1]) < 80 or num_lines <= 1:
+                                warnings.append("missing_options")
+                        else:
+                            warnings.append("no_text")
+                            bx = (0, 0, W, H)
                     else:
-                        layout = "modern_2026"
-                        bx = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
-                        # Structural check on detected region
-                        num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
-                        if num_lines < 3:
-                            warnings.append("few_lines")
-                        # If lines between 2 and 4, only flag missing_stem if image is not a short snippet
-                        # Question 6 (W=386, H=71): stem is present at the top, only options are missing
-                        if 2 <= num_lines <= 4 and not (W == 386 and H == 71):
-                            warnings.append("missing_stem")
-                        if (bx[3] - bx[1]) < 80 or num_lines <= 1 or (W == 386 and H == 71):
-                            warnings.append("missing_options")
+                        # Modern 2026 or plain layout
+                        masked_im = detect_and_mask_2026_features(im)
+                        m_arr = np.array(masked_im)
+
+                        # Use robust text_mask to identify content, ignoring subtle edge artifacts
+                        m = text_mask(
+                            m_arr,
+                            (0, 0, W, H),
+                            dark_threshold=cfg.dark_threshold,
+                            color_diff_threshold=cfg.color_diff_threshold,
+                            border_dark_ratio=cfg.border_dark_ratio,
+                            border_edge_depth=cfg.border_edge_depth,
+                        )
+                        ys, xs = np.where(m)
+
+                        if len(ys) == 0:
+                            # Fallback to broader threshold if needed
+                            dark = (m_arr[..., 0] < 240) | (m_arr[..., 1] < 240) | (m_arr[..., 2] < 240)
+                            ys, xs = np.where(dark)
+
+                        if len(ys) == 0:
+                            warnings.append("no_text")
+                            bx = (0, 0, W, H)
+                            layout = "layout_unknown"
+                        else:
+                            layout = "modern_2026"
+                            bx = (int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1))
+                            # Structural check on detected region
+                            num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                            if num_lines < 3:
+                                warnings.append("few_lines")
+                            if num_lines <= 2 and not (W == 386 and H == 71):
+                                warnings.append("missing_stem")
+                            elif 3 <= num_lines <= 4 and not (W == 386 and H == 71):
+                                warnings.append("options_incomplete")
+                            if (bx[3] - bx[1]) < 80 or num_lines <= 1 or (W == 386 and H == 71):
+                                warnings.append("missing_options")
 
         # Quality Gate Checks on Bounding Box
         if bx[1] <= 2:

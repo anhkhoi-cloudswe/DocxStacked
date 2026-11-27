@@ -504,12 +504,118 @@ def generate_answer_strips_grid(
     return output_path
 
 
+def _classify_digit_glyph(crop_bool: np.ndarray) -> Optional[int]:
+    """Classify a single binary digit glyph ('1'..'4') using aspect ratio and PIL template IoU."""
+    h, w = crop_bool.shape
+    if h < 6 or w < 2:
+        return None
+    if (h / max(w, 1)) >= 1.85:
+        return 1
+
+    # Resize to 16x24 and match against rendered digit templates '1'..'4'
+    from PIL import ImageDraw, ImageFont
+    g_im = Image.fromarray((crop_bool.astype(np.uint8) * 255)).resize((16, 24), Image.Resampling.BILINEAR)
+    g_bin = np.array(g_im) > 127
+
+    font = None
+    for fp in ("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        if Path(fp).exists():
+            try:
+                font = ImageFont.truetype(fp, 24)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    best_digit = None
+    best_score = -1.0
+    for d in (1, 2, 3, 4):
+        canvas = Image.new("L", (40, 40), 0)
+        draw = ImageDraw.Draw(canvas)
+        draw.text((4, 4), str(d), fill=255, font=font)
+        t_arr = np.array(canvas) > 100
+        tys, txs = np.where(t_arr)
+        if len(tys) == 0:
+            continue
+        t_crop = Image.fromarray((t_arr[tys.min():tys.max()+1, txs.min():txs.max()+1].astype(np.uint8) * 255)).resize((16, 24), Image.Resampling.BILINEAR)
+        t_bin = np.array(t_crop) > 127
+        inter = np.logical_and(g_bin, t_bin).sum()
+        union = np.logical_or(g_bin, t_bin).sum()
+        score = inter / max(union, 1)
+        if score > best_score:
+            best_score = score
+            best_digit = d
+
+    return best_digit if best_score >= 0.25 else None
+
+
+def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
+    """
+    Find a horizontal line containing '(Choose N answer(s))' or 'Choose N answer(s)'
+    by grouping connected components into words and classifying the single-glyph N word.
+    """
+    lab, n_components = ndi.label(sub_bool)
+    if n_components < 10:
+        return None
+    objs = ndi.find_objects(lab)
+    boxes = []
+    for sl in objs:
+        if sl is None:
+            continue
+        y_sl, x_sl = sl
+        h = y_sl.stop - y_sl.start
+        w = x_sl.stop - x_sl.start
+        if 6 <= h <= 35 and 1 <= w <= 40:
+            boxes.append((x_sl.start, y_sl.start, x_sl.stop, y_sl.stop))
+    if len(boxes) < 10:
+        return None
+
+    # Group boxes by horizontal line (y-center within 12px)
+    boxes.sort(key=lambda b: (b[1] + b[3]) * 0.5)
+    lines: List[List[Tuple[int, int, int, int]]] = []
+    for b in boxes:
+        cy = (b[1] + b[3]) * 0.5
+        if not lines or abs(cy - ((lines[-1][0][1] + lines[-1][0][3]) * 0.5)) > 12:
+            lines.append([b])
+        else:
+            lines[-1].append(b)
+
+    for ln in lines:
+        if len(ln) < 10:
+            continue
+        ln.sort(key=lambda b: b[0])
+        widths = [b[2] - b[0] for b in ln]
+        med_w = float(np.median(widths)) if widths else 8.0
+        gap_thr = max(3.0, 0.55 * med_w)
+
+        # Split line into words by x-gap
+        words: List[List[Tuple[int, int, int, int]]] = [[ln[0]]]
+        for b in ln[1:]:
+            prev_x1 = max(x[2] for x in words[-1])
+            if (b[0] - prev_x1) > gap_thr:
+                words.append([b])
+            else:
+                words[-1].append(b)
+
+        # Look for pattern: [Word0 (~5-7 chars: '(Choose'/'Choose')] [Word1 (1 char: N)] [Word2 (>=5 chars: 'answer(s)')]
+        for idx in range(len(words) - 2):
+            w0, w1, w2 = words[idx], words[idx + 1], words[idx + 2]
+            if 4 <= len(w0) <= 9 and len(w1) == 1 and len(w2) >= 5:
+                db = w1[0]
+                digit_crop = sub_bool[db[1]:db[3], db[0]:db[2]]
+                d = _classify_digit_glyph(digit_crop)
+                if d is not None and d >= 1:
+                    return d
+    return None
+
+
 def read_choice_hint_n(
     image_input: Union[Path, str, Image.Image],
     ai_service: Optional[Any] = None,
 ) -> Optional[int]:
     """
-    Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' ở dải đầu ảnh đề thi fuexam (y: 170..280, x: 40..500).
+    Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' trên các layout fuexam.
     Chỉ dùng nhận dạng cục bộ (không gọi Gemini AI để tránh tốn hạn mức).
     Trả về số nguyên N (>= 1) hoặc None nếu không nhận diện được.
     """
@@ -518,32 +624,26 @@ def read_choice_hint_n(
     else:
         im = image_input
 
-    a = np.array(im)
-    if a.shape[1] >= 1200 and a.shape[0] >= 500:
-        dark_mask = (a < 180).all(axis=2)
-        # Quét vùng dải chứa dòng (Choose N answer/answers)
-        sub = dark_mask[170:280, 40:500]
-        lab, n_components = ndi.label(sub)
-        if n_components >= 12:
-            objs = ndi.find_objects(lab)
-            valid_boxes = []
-            for sl in objs:
-                y_sl, x_sl = sl
-                h = y_sl.stop - y_sl.start
-                w = x_sl.stop - x_sl.start
-                if 8 <= h <= 35 and 2 <= w <= 40:
-                    valid_boxes.append((x_sl.start, y_sl.start, x_sl.stop, y_sl.stop))
-            valid_boxes.sort(key=lambda b: b[0])
-            if len(valid_boxes) >= 12:
-                # Ký tự số N nằm ở vị trí thứ 7 (chỉ số 6) sau các ký tự '(', 'C', 'h', 'o', 'o', 's', 'e'
-                d_box = valid_boxes[6]
-                w = d_box[2] - d_box[0]
-                h = d_box[3] - d_box[1]
-                # Chữ số '1': đặc trưng cột thẳng hẹp (w ~ 8..13, h ~ 24..32, h/w >= 2.2)
-                if 7 <= w <= 13 and 24 <= h <= 32 and (h / w) >= 2.2:
-                    return 1
+    a = np.array(im.convert("RGB"))
+    H, W = a.shape[:2]
 
-    # Không gọi Gemini AI; nếu không đọc được N cục bộ thì trả None để bỏ qua kiểm tra N.
+    # Candidate regions across known layouts:
+    # 1. fuexam_2026 (W >= 1200, H >= 500): y=170..280, x=40..500
+    # 2. red_bar 1920x780 & TechdyBear left panel: y=32..140, x=0..260
+    # 3. su26 yellow pill top-right: y=10..60, x=int(0.75*W)..int(0.95*W)
+    regions = []
+    if W >= 1200 and H >= 500:
+        regions.append(((a[170:280, 40:500] < 180).all(axis=2)))
+    if W >= 400 and H >= 140:
+        regions.append(((a[32:min(140, H), 0:min(260, W)] < 210).all(axis=2)))
+    if W >= 1200 and H >= 100:
+        regions.append(((a[10:60, int(0.75 * W):int(0.95 * W)] < 200).all(axis=2)))
+
+    for sub in regions:
+        res = _extract_n_from_choose_region(sub)
+        if res is not None and res >= 1:
+            return res
+
     return None
 
 
