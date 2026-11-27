@@ -1252,6 +1252,7 @@ class JobOrchestrator:
                         exam_sources = {"image": 0, "comments": 0, "ai": 0, "no_data": 0}
                         fetch_failed_questions: List[int] = []
                         fetch_failed_details: List[Dict[str, Any]] = []
+                        non_question_attachments: List[Dict[str, Any]] = []
 
                         # Cấu hình AI cho fuexam (Requirement 6)
                         ai_service = get_ai_check_service()
@@ -1293,6 +1294,29 @@ class JobOrchestrator:
                                     "message": f"[{exam_idx}/{total_exams}] Đang xử lý câu {q_idx}/{tot_q} cho đề: {exam.title}",
                                     "progress": computed_prog,
                                 })
+
+                            # Skip non-question PDF/document attachments (e.g. '-pdf.' header sheet)
+                            if "-pdf." in att_url.lower() or att_url.lower().rstrip("/").endswith(".pdf"):
+                                logger.info(
+                                    f"Exam {exam.id} attachment #{q_idx} ({att_url}) is a non-question PDF; "
+                                    f"excluding from questions/Word and recording in non_question_attachments."
+                                )
+                                non_question_attachments.append({
+                                    "index": q_idx,
+                                    "media_id": m_id,
+                                    "slug": slug,
+                                    "attachment_url": att_url,
+                                    "reason": "Tệp PDF/tài liệu hướng dẫn, không phải ảnh câu hỏi",
+                                })
+                                # Remove any stale Question row from earlier runs for this index
+                                stale_q_res = await db.execute(
+                                    select(Question).where(Question.exam_id == exam.id, Question.index == q_idx)
+                                )
+                                stale_q = stale_q_res.scalar_one_or_none()
+                                if stale_q:
+                                    await db.delete(stale_q)
+                                    await db.flush()
+                                continue
 
                             # Download image (isolated per question for invalid_image so remaining questions still export)
                             img_path: Optional[Path] = None
@@ -1565,6 +1589,7 @@ class JobOrchestrator:
                             ai_status=ai_skipped_reason,
                             fetch_failed_questions=fetch_failed_questions,
                             fetch_failed_details=fetch_failed_details,
+                            non_question_attachments=non_question_attachments,
                         )
 
                         all_sources_count["image"] += exam_sources["image"]
@@ -1606,6 +1631,7 @@ class JobOrchestrator:
                             "no_data_count": meta_info.get("no_data_count", 0),
                             "review_needed_questions": meta_info.get("review_needed_questions", []),
                             "image_warnings": meta_info.get("image_warnings", {}),
+                            "non_question_attachments": meta_info.get("non_question_attachments", non_question_attachments),
                             "fetch_failed_questions": meta_info.get("fetch_failed_questions", fetch_failed_questions),
                         }
                         existing_idx = next(

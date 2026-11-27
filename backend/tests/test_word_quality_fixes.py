@@ -226,3 +226,66 @@ def test_source_image_invalid_isolated_in_docx(tmp_path: Path):
     assert meta["image_warnings"]["32"] == ["source_image_invalid"]
 
 
+def test_sp25_q22_deterministic_tie_break_20_runs():
+    """Item 2 (round 4): Tie-break must be 100% deterministic across 20 runs even with shuffled input comments."""
+    import random
+    from backend.app.db.models import Comment
+    from backend.app.modules.analysis.voting import tally_votes
+
+    raw_comms = [
+        ("12994", "d471bdc2be23", "c"),
+        ("14286", "ab50d762b74e", "B"),
+        ("14410", "503afc4bd66d", "C"),
+        ("15624", "46f1bf31276d", "C"),
+        ("17323", "33045cf7e530", "b"),
+        ("17415", "05ea6bad6ff7", "hả thế B hay C"),
+        ("17884", "8873c37a48d0", "C"),
+        ("18052", "097ba38b36b9", "b"),
+        ("20848", "fa94e03e7c4b", "b"),
+        ("21330", "5d614d6ac341", "a"),
+    ]
+    results = []
+    rng = random.Random(42)
+    for _ in range(20):
+        shuffled = list(raw_comms)
+        rng.shuffle(shuffled)
+        objs = [
+            Comment(question_id=2032, comment_id=cid, author_hash=ah, raw_text=txt, upvotes=0)
+            for cid, ah, txt in shuffled
+        ]
+        res = tally_votes(objs, max_option_letter="D")
+        assert res.status == AnswerStatus.CONFLICT
+        results.append((tuple(res.answer_set), res.status, res.confidence))
+
+    assert len(set(results)) == 1
+    assert results[0][0] == ("B",)
+
+
+def test_cau_n_web_ui_crop_and_non_question_meta(tmp_path: Path):
+    """Item 1: Thread 464 'Câu N' web UI crops cleanly without crop_too_large/right_edge, and meta records non_question_attachments."""
+    p1 = Path("data/cache/fuexam/media_18119/hcm202-sp26-b5-fe-re_01-webp.webp")
+    if p1.exists():
+        res = crop_question_single(p1, output_path=tmp_path / "q001.png")
+        assert res.layout == "cau_n_web_ui"
+        assert res.cropped_image.height < 600
+        assert "crop_too_large" not in res.warnings
+        assert "right_edge" not in res.warnings
+
+    exam = Exam(id=9903, subject_id=1, title="HCM202 - SP26 - B5 - FE - RE", url="https://fuexam.me/threads/9903/")
+    q1 = Question(id=1, exam_id=9903, index=1, local_image_path=None)
+    out_docx = build_exam_docx(
+        subject_code="HCM202",
+        exam=exam,
+        questions=[q1],
+        output_dir=tmp_path,
+        cropped_dir=tmp_path / "cropped",
+        answers_map={1: Answer(question_id=1, answer_set='["A"]', status=AnswerStatus.CONFIDENT, confidence=1.0)},
+        platform="fuexam",
+        non_question_attachments=[{"index": 32, "media_id": 37128, "reason": "Tệp PDF"}],
+    )
+    meta = json.loads((tmp_path / f"{out_docx.name}.meta.json").read_text(encoding="utf-8"))
+    assert meta["questions_count"] == 1
+    assert meta["non_question_attachments"] == [{"index": 32, "media_id": 37128, "reason": "Tệp PDF"}]
+
+
+

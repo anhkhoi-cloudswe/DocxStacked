@@ -155,7 +155,7 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "3.7.0-options-incomplete-and-strip-username"
+CROP_ALGORITHM_VERSION = "3.8.0-cau-n-web-ui-and-clean-meta"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -755,9 +755,97 @@ def crop_question_single(
                 if (bx[3] - bx[1]) < 80 or num_lines <= 1:
                     warnings.append("missing_options")
             else:
-                # 5. No red bar and not fuexam: check top-left white panel first (software layouts with gray background, FUO watermark, and Q:N corner tag)
-                tl_wp = find_top_left_white_panel(a, min_val=cfg.white_min_val)
-                if tl_wp:
+                # 5. Check for 'Câu N' web exam UI layout (W >= 1200, H >= 600):
+                # Top header divider at y=45..85, yellow 'Choose N answer' pill at top-right, left A-D circles (x < 165)
+                row_nw_top = (a[45:min(85, H), :].min(axis=2) < 245).mean(axis=1) if H > 100 else np.array([])
+                top_div_ys = [45 + int(i) for i, frac in enumerate(row_nw_top) if frac > 0.65]
+                pill_region = a[8:60, int(0.65 * W):int(0.94 * W)] if (W >= 1200 and H >= 200) else None
+                has_yellow_pill = False
+                if pill_region is not None and pill_region.size > 0:
+                    has_yellow_pill = int(((pill_region[..., 0] > 230) & (pill_region[..., 1] > 205) & (pill_region[..., 2] < 215) & ((pill_region[..., 0].astype(int) - pill_region[..., 2].astype(int)) >= 25)).sum()) >= 80
+
+                tl_wp = None
+                if W >= 1200 and H >= 600 and top_div_ys and has_yellow_pill:
+                    layout = "cau_n_web_ui"
+                    y_div = top_div_ys[-1]
+                    # Footer dark bar (if present at bottom)
+                    bot_dark_ys = [y for y in range(max(y_div + 100, H - 60), H) if a[y].mean() < 110]
+                    y_bot = (min(bot_dark_ys) - 8) if bot_dark_ys else (H - 8)
+
+                    # Find vertical whitespace gap between left A-D circles (x ~ 60..160) and question text (x >= 165)
+                    x_start_q = 165
+                    body_dark = (a[y_div + 10:y_bot, :min(300, W)] < 200).all(axis=2)
+                    col_sums = body_dark.sum(axis=0)
+                    # Find first zero-column gap after the A-D circles (scan x=120..220)
+                    for x_scan in range(120, min(220, W)):
+                        if col_sums[x_scan] == 0 and x_scan >= 145:
+                            # Confirm text exists to the right
+                            if col_sums[x_scan:min(280, W)].sum() > 20:
+                                x_start_q = x_scan
+                                break
+
+                    # Extract yellow 'Choose N answer' pill from top header
+                    hint_crop = None
+                    px0, py0, px1, py1 = int(0.65 * W), 6, int(0.92 * W), max(12, y_div - 4)
+                    p_sub = a[py0:py1, px0:px1]
+                    y_mask = (p_sub[..., 0] > 230) & (p_sub[..., 1] > 205) & (p_sub[..., 2] < 215) & ((p_sub[..., 0].astype(int) - p_sub[..., 2].astype(int)) >= 25)
+                    y_ys, y_xs = np.where(y_mask)
+                    if len(y_ys) >= 40:
+                        hint_crop = im.crop((
+                            px0 + int(y_xs.min()),
+                            py0 + int(y_ys.min()),
+                            px0 + int(y_xs.max()) + 1,
+                            py0 + int(y_ys.max()) + 1,
+                        ))
+
+                    box = (x_start_q, y_div + 6, W - 4, y_bot)
+                    m = text_mask(
+                        a,
+                        box,
+                        dark_threshold=cfg.dark_threshold,
+                        color_diff_threshold=cfg.color_diff_threshold,
+                        border_dark_ratio=cfg.border_dark_ratio,
+                        border_edge_depth=cfg.border_edge_depth,
+                    )
+                    # Mask bottom-right FuExam watermark (y > H-140, x > W-260)
+                    wm_y0 = max(0, (H - 140) - box[1])
+                    wm_x0 = max(0, (W - 260) - box[0])
+                    if wm_y0 < m.shape[0] and wm_x0 < m.shape[1]:
+                        m[wm_y0:, wm_x0:] = False
+
+                    ys, xs = np.where(m)
+                    if len(ys) == 0:
+                        warnings.append("no_text")
+                        bx = box
+                    else:
+                        bx = (
+                            int(box[0] + xs.min()),
+                            int(box[1] + ys.min()),
+                            int(box[0] + xs.max() + 1),
+                            int(box[1] + ys.max() + 1),
+                        )
+                        q_core = im.crop(bx)
+                        pad = max(16, cfg.padding_px)
+                        if hint_crop is not None:
+                            w_out = max(hint_crop.width, q_core.width) + 2 * pad
+                            h_out = hint_crop.height + q_core.height + 3 * pad
+                            st = Image.new("RGB", (w_out, h_out), "white")
+                            st.paste(hint_crop, (pad, pad))
+                            st.paste(q_core, (pad, hint_crop.height + 2 * pad))
+                            final_cropped = st
+                        else:
+                            final_cropped = ImageOps.expand(q_core, border=pad, fill="white")
+
+                        num_lines = count_text_lines(m[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1])
+                        if num_lines < 3:
+                            warnings.append("few_lines")
+                        if num_lines <= 2:
+                            warnings.append("missing_stem")
+                        elif 3 <= num_lines <= 4:
+                            warnings.append("options_incomplete")
+                        if (bx[3] - bx[1]) < 80 or num_lines <= 1:
+                            warnings.append("missing_options")
+                elif (tl_wp := find_top_left_white_panel(a, min_val=cfg.white_min_val)):
                     layout = "top_left_white_panel"
                     box = tl_wp
                     # Extract text strictly inside top-left white panel, isolating out watermark FUO and bottom-right yellow label
@@ -917,12 +1005,12 @@ def crop_question_single(
         if bx[1] <= 2:
             warnings.append("top_edge")
         right_panel_edge = box[2] if box else W
-        if (bx[2] >= right_panel_edge - 3 or bx[2] >= W - 3) and layout != "fuexam_2026":
+        if (bx[2] >= right_panel_edge - 3 or bx[2] >= W - 3) and layout not in ("fuexam_2026", "cau_n_web_ui", "modern_2026_split_username"):
             warnings.append("right_edge")
         crop_area = (bx[2] - bx[0]) * (bx[3] - bx[1])
         panel_area = (box[2] - box[0]) * (box[3] - box[1]) if box else (W * H)
         is_already_cropped = box is not None and (panel_area >= 0.95 * W * H)
-        if crop_area > cfg.crop_too_large_ratio * W * H and not is_already_cropped and layout != "fuexam_2026":
+        if crop_area > cfg.crop_too_large_ratio * W * H and not is_already_cropped and layout not in ("fuexam_2026", "cau_n_web_ui", "modern_2026_split_username"):
             warnings.append("crop_too_large")
 
         # source_clipped check:

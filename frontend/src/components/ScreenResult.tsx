@@ -512,6 +512,12 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                         {Object.keys(file.image_warnings).length > 6 ? '…' : ''}
                       </div>
                     )}
+                    {file.non_question_attachments && file.non_question_attachments.length > 0 && (
+                      <div data-testid="non-question-attachments-note" style={{ fontSize: '11px', color: '#475569', marginTop: '3px' }}>
+                        Đính kèm không phải câu hỏi ({file.non_question_attachments.length}):{' '}
+                        {file.non_question_attachments.map((a) => `#${a.index} (${a.reason})`).join('; ')}
+                      </div>
+                    )}
                     {file.fetch_failed_questions && file.fetch_failed_questions.length > 0 && (
                       <div
                         data-testid="fetch-failed-warning"

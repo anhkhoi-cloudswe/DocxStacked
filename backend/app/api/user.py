@@ -40,6 +40,7 @@ class DocumentItem(BaseModel):
     source_breakdown: Optional[Dict[str, Any]] = None
     review_needed_questions: Optional[List[int]] = None
     image_warnings: Optional[Dict[str, List[str]]] = None
+    non_question_attachments: Optional[List[Dict[str, Any]]] = None
 
 
 class UserProfileResponse(BaseModel):
@@ -281,6 +282,7 @@ async def get_my_documents(
                 source_breakdown=sidecar_meta.get("source_breakdown", {}),
                 review_needed_questions=sidecar_meta.get("review_needed_questions", []),
                 image_warnings=sidecar_meta.get("image_warnings", {}),
+                non_question_attachments=sidecar_meta.get("non_question_attachments", []),
             )
         )
 

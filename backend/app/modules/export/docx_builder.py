@@ -657,6 +657,7 @@ def build_exam_docx(
     ai_status: Optional[str] = None,
     fetch_failed_questions: Optional[List[int]] = None,
     fetch_failed_details: Optional[List[Dict[str, Any]]] = None,
+    non_question_attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """
     Build Word (.docx) document following the exact reference style (MLN122, PRN232):
@@ -902,6 +903,8 @@ def build_exam_docx(
     }
     if fetch_failed_details:
         sidecar_meta["fetch_failed_details"] = fetch_failed_details
+    if non_question_attachments:
+        sidecar_meta["non_question_attachments"] = non_question_attachments
     if ai_status:
         sidecar_meta["ai_status"] = ai_status
     tmp_meta = output_dir / f".{filename}.meta.json.tmp_{os.getpid()}"

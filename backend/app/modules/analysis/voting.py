@@ -115,10 +115,15 @@ def tally_votes(
 
     # 2. Group comments by author_hash and keep the newest valid comment per author
     # Order: assume comments passed in or sorted by ID/timestamp
-    # Sort descending so first seen per author is newest
+    # Sort descending so first seen per author is newest (deterministic even when c.id is None)
+    def _comment_sort_key(c: Comment):
+        cid_str = str(getattr(c, "comment_id", "") or "")
+        cid_num = int(cid_str) if cid_str.isdigit() else 0
+        return (int(getattr(c, "id", 0) or 0), cid_num, cid_str, str(getattr(c, "author_hash", "") or ""))
+
     sorted_comments = sorted(
         comments,
-        key=lambda c: (c.id or 0),
+        key=_comment_sort_key,
         reverse=True,
     )
 
@@ -446,7 +451,7 @@ def tally_votes(
             for l in cv.answers:
                 comm_weights[l] = comm_weights.get(l, 0.0) + cv.weight
         if comm_weights:
-            comm_winner = max(comm_weights.items(), key=lambda x: x[1])[0]
+            comm_winner = sorted(comm_weights.items(), key=lambda x: (-x[1], x[0]))[0][0]
             for a_contrib in ai_contributions:
                 if comm_winner not in [a.upper() for a in a_contrib.answers]:
                     ai_disagreed = True
@@ -473,13 +478,18 @@ def tally_votes(
         curr_voters_cnt = len(comm_voters_per_opt.get(current_winner, set()))
         best_alt = None
         best_alt_voters = curr_voters_cnt
-        for alt_opt, voters_set in comm_voters_per_opt.items():
+        for alt_opt, voters_set in sorted(
+            comm_voters_per_opt.items(),
+            key=lambda kv: (-len(kv[1]), -weights_per_option.get(kv[0], 0.0), kv[0]),
+        ):
             if alt_opt != current_winner and alt_opt in ai_chosen_opts and current_winner not in ai_chosen_opts:
                 if len(voters_set) > best_alt_voters:
                     best_alt = alt_opt
                     best_alt_voters = len(voters_set)
                 elif len(voters_set) == best_alt_voters and best_alt is not None:
-                    if weights_per_option.get(alt_opt, 0.0) > weights_per_option.get(best_alt, 0.0):
+                    alt_w = weights_per_option.get(alt_opt, 0.0)
+                    best_w = weights_per_option.get(best_alt, 0.0)
+                    if (alt_w > best_w) or (alt_w == best_w and alt_opt < best_alt):
                         best_alt = alt_opt
 
         if best_alt:
