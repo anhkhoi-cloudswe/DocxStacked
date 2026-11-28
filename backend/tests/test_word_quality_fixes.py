@@ -300,6 +300,35 @@ def test_380_q39_choice_hint_n_is_1_and_ai_tiebreak_meta(tmp_path: Path):
     if p43.exists():
         assert read_choice_hint_n(p43) == 3
 
+
+def test_sp24_three_exams_crop_tight_and_no_edge_clipping(tmp_path: Path):
+    """SP24 round: 1043, 1044, 1045 must crop tightly (<=600px tall, no UI/gray/Answer sidebar, no clipped letters)."""
+    samples = [
+        ("1043_001", Path("data/cache/fuexam/media_38770/hcm202-sp24-b5-fe_001-webp.webp")),
+        ("1043_021", Path("data/cache/fuexam/media_38790/hcm202-sp24-b5-fe_021-webp.webp")),
+        ("1044_001", Path("data/cache/fuexam/media_38830/hcm202-sp24-fe-re_001-webp.webp")),
+        ("1045_001", Path("data/cache/fuexam/media_38879/hcm202-sp24-fe_001-webp.webp")),
+        ("1045_024", Path("data/cache/fuexam/media_38902/hcm202-sp24-fe_024-webp.webp")),
+    ]
+    for label, p in samples:
+        if not p.exists():
+            continue
+        res = crop_question_single(p, output_path=tmp_path / f"{label}.png")
+        assert res.layout == "red_bar+white_panel", f"{label} got {res.layout}"
+        assert res.cropped_image.height <= 400, f"{label} too tall: {res.cropped_image.size}"
+        assert "text_clipped_right" not in res.warnings
+        fc = np.array(res.cropped_image.convert("RGB"))
+        # All 4 padded outer edges must be clean white
+        assert (fc[0, :, :] > 240).all()
+        assert (fc[-1, :, :] > 240).all()
+        assert (fc[:, 0, :] > 240).all()
+        assert (fc[:, -1, :] > 240).all()
+        # First text band must not be sliced in half (top cap height >= 10px)
+        dark_rows = (fc.mean(axis=2) < 150).any(axis=1)
+        first_dark = int(np.argmax(dark_rows))
+        first_gap = int(np.argmax(~dark_rows[first_dark:]))
+        assert first_gap >= 10, f"{label} first line too thin ({first_gap}px), possible top slice"
+
     exam = Exam(id=9904, subject_id=1, title="HCM202 - SP25 - FE", url="https://fuexam.me/threads/9904/")
     q1 = Question(id=1, exam_id=9904, index=22, local_image_path=None)
     ans_tb = Answer(

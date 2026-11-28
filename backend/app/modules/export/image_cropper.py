@@ -133,20 +133,22 @@ def text_mask(
         is_neutral = (p.max(2) - p.min(2)) < color_diff_threshold
     m = is_dark & is_neutral
 
-    # Discard border lines near outer perimeter
+    # Discard border lines near outer perimeter (vertical borders require >= 0.72 so stacked 'A./B./C./D.' stems are preserved)
     H_m, W_m = m.shape
     depth = min(border_edge_depth, H_m, W_m)
+    row_border_thr = max(border_dark_ratio, 0.58)
+    col_border_thr = max(border_dark_ratio, 0.72)
     for r in range(min(depth, H_m)):
-        if m[r].mean() > border_dark_ratio:
+        if m[r].mean() > row_border_thr:
             m[max(0, r - 1) : min(H_m, r + 2)] = False
-    for r in range(max(0, H_m - depth), H_m):
-        if m[r].mean() > border_dark_ratio:
+    for r in range(max(0, H_m - max(depth, 45)), H_m):
+        if m[r].mean() > row_border_thr:
             m[max(0, r - 1) : min(H_m, r + 2)] = False
     for c in range(min(depth, W_m)):
-        if m[:, c].mean() > border_dark_ratio:
+        if m[:, c].mean() > col_border_thr:
             m[:, max(0, c - 1) : min(W_m, c + 2)] = False
     for c in range(max(0, W_m - depth), W_m):
-        if m[:, c].mean() > border_dark_ratio:
+        if m[:, c].mean() > col_border_thr:
             m[:, max(0, c - 1) : min(W_m, c + 2)] = False
 
     # Note: Do NOT remove speckles < 6 pixels as this strips punctuation marks
@@ -213,7 +215,7 @@ def _detect_right_edge_text_clipping(
     return False
 
 
-CROP_ALGORITHM_VERSION = "3.9.0-fix-right-clip-and-gate"
+CROP_ALGORITHM_VERSION = "3.10.0-fix-sp24-crop"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -568,64 +570,94 @@ def crop_question_single(
                     if (bx[3] - bx[1]) < 60 or num_lines <= 1:
                         warnings.append("missing_options")
             else:
-                x0 = bar[1] + 4
+                x0 = bar[1] + 2
 
-                # Check if this is a split 2-column question (e.g. Kizspy layout with text on left, chart on right)
-                # Conditions: bar is to the right (bar[0] >= 0.25 * W) and left area contains substantial question text.
-                is_split_2col = False
-                box_l = None
-                if bar[0] >= int(0.25 * W):
-                    left_q_area = a[50:min(700, H), 10:bar[0]]
-                    dark_l = (left_q_area.mean(2) < cfg.dark_threshold) & (
-                        (left_q_area.max(2) - left_q_area.min(2)) < cfg.color_diff_threshold
-                    )
-                    if dark_l.sum() > 1500:
-                        ys_l, xs_l = np.where(dark_l)
-                        if xs_l.max() - xs_l.min() > 200:
-                            is_split_2col = True
-                            box_l = (
-                                int(10 + xs_l.min()),
-                                int(50 + ys_l.min()),
-                                int(10 + xs_l.max() + 1),
-                                int(50 + ys_l.max() + 1),
-                            )
-
-                # In 2024 software layouts (narrow left bar, x0 < 350), detect horizontal divider line below progress bar
+                # Detect solid horizontal divider line below top progress bar ("There are 60 questions...")
                 y_start = 0
-                if x0 < 350:
-                    top_region = a[:min(70, H), x0:].astype(int)
-                    row_means = top_region.mean(axis=(1, 2))
-                    dark_rows = [y for y, m in enumerate(row_means) if m < 185]
-                    if dark_rows and 38 <= max(dark_rows) <= 58:
+                top_x1 = min(W - 45, x0 + 700) if x0 >= 350 else W
+                if top_x1 > x0 + 100:
+                    top_region = a[:min(105, H), x0:top_x1].astype(int)
+                    solid_frac = (top_region.mean(axis=2) < 205).mean(axis=1)
+                    dark_rows = [y for y, sf in enumerate(solid_frac) if 35 <= y <= 100 and sf > 0.82]
+                    if dark_rows:
                         y_start = max(dark_rows) + 1
 
                 box = (x0, y_start, W, H)
 
-                # 2. Search for white panel containing question (or right-hand graphic)
+                # 2. Search for white panel containing question (exclude outer white margin & bottom-right Q:N badge)
+                wp_slice = a[y_start : max(y_start + 50, H - 65), : max(x0 + 50, W - 45)]
                 wp = white_panel(
-                    a[y_start:, :],
+                    wp_slice,
                     x0,
                     min_area_ratio=cfg.white_panel_min_area_ratio,
                     max_width_ratio=cfg.white_panel_max_width_ratio,
                     closing_size=cfg.closing_kernel_size,
                     min_val=cfg.white_min_val,
                 )
+                if wp and wp[1] > 150:
+                    # A bottom margin strip was larger than a compact question card near top; re-search upper region
+                    wp_top = white_panel(
+                        wp_slice[: min(wp_slice.shape[0], 450), :],
+                        x0,
+                        min_area_ratio=0.01,
+                        max_width_ratio=cfg.white_panel_max_width_ratio,
+                        closing_size=cfg.closing_kernel_size,
+                        min_val=cfg.white_min_val,
+                    )
+                    if wp_top:
+                        wp = wp_top
                 if wp:
                     layout = "red_bar+white_panel"
-                    # Check whether canvas outside panel has gray background (SP 2024 layouts with watermark / corner tag)
-                    # or pure white canvas (FA 2024 wide layouts where text flows across container).
                     right_bg_mean = float(a[100 : max(101, H - 100), max(0, W - 50) :].mean())
                     bottom_bg_mean = float(a[max(0, H - 50) :, 100 : max(101, W - 100)].mean())
                     is_gray_canvas = (right_bg_mean < 246) or (bottom_bg_mean < 246)
+                    is_bounded_card = (wp[2] < W - 100) and (wp[3] + y_start < H - 70)
 
-                    if is_gray_canvas or bar[0] < 350:
-                        # In gray canvas layouts (e.g. PRM392 SP24 FE/RE), constrain search to white card panel (+ 30px)
-                        # to isolate out FUO watermark in mid canvas and yellow "Q: N" tag in bottom-right corner.
-                        box = (wp[0], wp[1] + y_start, min(W, wp[2] + 30), min(H, wp[3] + y_start + 30))
+                    if is_gray_canvas or is_bounded_card or bar[0] < 350:
+                        box = (
+                            min(x0, wp[0]),
+                            wp[1] + y_start,
+                            min(W, wp[2] + 20),
+                            min(H, wp[3] + y_start + 10),
+                        )
                     else:
-                        # For pure white wide layouts (e.g. FA 2024 RE), search spans full right canvas (W, H)
-                        # so text overflowing panel boundary is never clamped or truncated.
-                        box = (wp[0], wp[1] + y_start, W, H)
+                        box = (min(x0, wp[0]), wp[1] + y_start, W, H)
+
+                # Check if this is a real split 2-column question (text on left, chart on right).
+                # Do NOT trigger on SP24 Answer-sidebar layouts where the left column is Answer/Back/Next/(Choose 1 answer)
+                # and the right white_panel already contains the question + A./B./C./D. options.
+                is_split_2col = False
+                box_l = None
+                if bar[0] >= int(0.25 * W):
+                    right_pre_m = text_mask(
+                        a,
+                        box,
+                        dark_threshold=cfg.dark_threshold,
+                        color_diff_threshold=cfg.color_diff_threshold,
+                        allow_subpixel=True,
+                        border_dark_ratio=cfg.border_dark_ratio,
+                        border_edge_depth=cfg.border_edge_depth,
+                    )
+                    ry_pre, rx_pre = np.where(right_pre_m)
+                    right_has_mcq = (
+                        len(ry_pre) > 0
+                        and count_text_lines(right_pre_m[ry_pre.min() : ry_pre.max() + 1, rx_pre.min() : rx_pre.max() + 1]) >= 3
+                    )
+                    if not right_has_mcq:
+                        left_q_area = a[50:min(580, H), 80:bar[0]]
+                        dark_l = (left_q_area.mean(2) < cfg.dark_threshold) & (
+                            (left_q_area.max(2) - left_q_area.min(2)) < cfg.color_diff_threshold
+                        )
+                        if dark_l.sum() > 1500:
+                            ys_l, xs_l = np.where(dark_l)
+                            if xs_l.max() - xs_l.min() > 200:
+                                is_split_2col = True
+                                box_l = (
+                                    int(80 + xs_l.min()),
+                                    int(50 + ys_l.min()),
+                                    int(80 + xs_l.max() + 1),
+                                    int(50 + ys_l.max() + 1),
+                                )
 
                 # 3. Text mask
                 m = text_mask(
