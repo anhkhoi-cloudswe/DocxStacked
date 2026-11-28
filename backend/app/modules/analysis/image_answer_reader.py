@@ -556,7 +556,7 @@ def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
     by grouping connected components into words and classifying the single-glyph N word.
     """
     lab, n_components = ndi.label(sub_bool)
-    if n_components < 10:
+    if n_components < 6:
         return None
     objs = ndi.find_objects(lab)
     boxes = []
@@ -568,7 +568,7 @@ def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
         w = x_sl.stop - x_sl.start
         if 6 <= h <= 35 and 1 <= w <= 40:
             boxes.append((x_sl.start, y_sl.start, x_sl.stop, y_sl.stop))
-    if len(boxes) < 10:
+    if len(boxes) < 6:
         return None
 
     # Group boxes by horizontal line (y-center within 12px)
@@ -582,12 +582,12 @@ def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
             lines[-1].append(b)
 
     for ln in lines:
-        if len(ln) < 10:
+        if len(ln) < 6:
             continue
         ln.sort(key=lambda b: b[0])
         widths = [b[2] - b[0] for b in ln]
         med_w = float(np.median(widths)) if widths else 8.0
-        gap_thr = max(3.0, 0.55 * med_w)
+        gap_thr = max(1.5, 0.28 * med_w)
 
         # Split line into words by x-gap
         words: List[List[Tuple[int, int, int, int]]] = [[ln[0]]]
@@ -598,10 +598,12 @@ def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
             else:
                 words[-1].append(b)
 
-        # Look for pattern: [Word0 (~5-7 chars: '(Choose'/'Choose')] [Word1 (1 char: N)] [Word2 (>=5 chars: 'answer(s)')]
+        # Look for pattern: [Word0 (Choose)] [Word1 (1 char: N)] [Word2 (answer(s))]
         for idx in range(len(words) - 2):
             w0, w1, w2 = words[idx], words[idx + 1], words[idx + 2]
-            if 4 <= len(w0) <= 9 and len(w1) == 1 and len(w2) >= 5:
+            w0_width = max(b[2] for b in w0) - min(b[0] for b in w0)
+            w2_width = max(b[2] for b in w2) - min(b[0] for b in w2)
+            if 3 <= len(w0) <= 9 and w0_width >= 22 and len(w1) == 1 and w2_width >= 18:
                 db = w1[0]
                 digit_crop = sub_bool[db[1]:db[3], db[0]:db[2]]
                 d = _classify_digit_glyph(digit_crop)
@@ -629,15 +631,24 @@ def read_choice_hint_n(
 
     # Candidate regions across known layouts:
     # 1. fuexam_2026 (W >= 1200, H >= 500): y=170..280, x=40..500
-    # 2. red_bar 1920x780 & TechdyBear left panel: y=32..140, x=0..260
-    # 3. su26 yellow pill top-right: y=10..60, x=int(0.75*W)..int(0.95*W)
+    # 2. TechdyBear (W >= 800, H <= 400): y=36..72, x=5..240 (faint gray italic)
+    # 3. red_bar 1920x780 (Kizspy/2025): y=45..110, x=0..220
+    # 4. SU24/SP24 software UI inside white box: y=108..150, x=132..320
+    # 5. cau_n_web_ui yellow pill top-right: y=8..65, x=int(0.55*W)..int(0.96*W)
     regions = []
     if W >= 1200 and H >= 500:
         regions.append(((a[170:280, 40:500] < 180).all(axis=2)))
+    if W >= 800 and H <= 400:
+        regions.append((a[38:min(68, H), 5:min(240, W)].mean(axis=2) < 210))
     if W >= 400 and H >= 140:
-        regions.append(((a[32:min(140, H), 0:min(260, W)] < 210).all(axis=2)))
+        regions.append(((a[45:min(115, H), 0:min(220, W)] < 185).all(axis=2)))
+    if W >= 1850 and H >= 700:
+        regions.append(((a[108:min(134, H), 132:min(260, W)] < 180).all(axis=2)))
     if W >= 1200 and H >= 100:
-        regions.append(((a[10:60, int(0.75 * W):int(0.95 * W)] < 200).all(axis=2)))
+        pill_box = a[8:65, int(0.55 * W):int(0.96 * W)]
+        has_yellow = int(((pill_box[..., 0] > 230) & (pill_box[..., 1] > 205) & (pill_box[..., 2] < 215) & ((pill_box[..., 0].astype(int) - pill_box[..., 2].astype(int)) >= 25)).sum()) >= 80
+        if has_yellow:
+            regions.append((pill_box.mean(axis=2) < 175))
 
     for sub in regions:
         res = _extract_n_from_choose_region(sub)

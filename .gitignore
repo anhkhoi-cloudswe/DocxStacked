@@ -27,6 +27,8 @@ fixtures/raw/
 *.har
 *storage_state*
 docs/screenshots/
+docs/*recon*.md
+docs/site_notes.md
 
 
 # Node & Frontend

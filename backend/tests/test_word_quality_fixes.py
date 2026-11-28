@@ -288,4 +288,38 @@ def test_cau_n_web_ui_crop_and_non_question_meta(tmp_path: Path):
     assert meta["non_question_attachments"] == [{"index": 32, "media_id": 37128, "reason": "Tệp PDF"}]
 
 
+def test_380_q39_choice_hint_n_is_1_and_ai_tiebreak_meta(tmp_path: Path):
+    """Items 1 & 3 (round 5): 380 Q39 reads N=1 (not 3), and ai_tiebreak_questions is recorded in .meta.json."""
+    from backend.app.modules.analysis.image_answer_reader import read_choice_hint_n
+
+    p39 = Path("data/cache/fuexam/media_15103/hcm202-sp26-b5-fe_039-webp.webp")
+    if p39.exists():
+        assert read_choice_hint_n(p39) == 1
+
+    exam = Exam(id=9904, subject_id=1, title="HCM202 - SP25 - FE", url="https://fuexam.me/threads/9904/")
+    q1 = Question(id=1, exam_id=9904, index=22, local_image_path=None)
+    ans_tb = Answer(
+        question_id=1,
+        answer_set='["C"]',
+        status=AnswerStatus.CONFLICT,
+        confidence=0.524,
+        vote_breakdown={"_source": "comments", "B": 4.0, "C": 4.5, "_ai_votes": [{"provider": "gemini", "answers": ["C"]}]},
+    )
+    out_docx = build_exam_docx(
+        subject_code="HCM202",
+        exam=exam,
+        questions=[q1],
+        output_dir=tmp_path,
+        cropped_dir=tmp_path / "cropped",
+        answers_map={1: ans_tb},
+        platform="fuexam",
+    )
+    meta = json.loads((tmp_path / f"{out_docx.name}.meta.json").read_text(encoding="utf-8"))
+    assert meta["ai_tiebreak_questions"] == [22]
+    assert meta["ai_count"] == 1
+    assert meta["source_breakdown"]["ai_tiebreak"] == 1
+    assert 22 in meta["review_needed_questions"]
+
+
+
 

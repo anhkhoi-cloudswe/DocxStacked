@@ -821,7 +821,8 @@ def build_exam_docx(
     confident_cnt = 0
     weak_cnt = 0
     conflict_cnt = 0
-    ai_cnt = 0
+    ai_only_cnt = 0
+    ai_tiebreak_qs: List[int] = []
     image_cnt = 0
     comment_cnt = 0
     no_data_cnt = 0
@@ -841,15 +842,22 @@ def build_exam_docx(
         ans_text = rendered_answers_map.get(q.id, "")
         is_q_mark = (ans_text == "?" or ans_text.startswith("?"))
         st = (ans.status.value if hasattr(ans.status, "value") else str(getattr(ans, "status", "") or "")).upper() if ans else ""
-        src = ans.vote_breakdown.get("_source", "") if (ans and ans.vote_breakdown and isinstance(ans.vote_breakdown, dict)) else ""
-        is_ai = getattr(ans, "source", None) == "ai" or src == "ai" or st == "AI"
+        vb = ans.vote_breakdown if (ans and ans.vote_breakdown and isinstance(ans.vote_breakdown, dict)) else {}
+        src = vb.get("_source", "")
+        has_ai_votes = bool(vb.get("_ai_votes"))
+        is_ai_only = getattr(ans, "source", None) == "ai" or src == "ai" or st == "AI"
+        is_ai_tiebreak = (not is_ai_only) and has_ai_votes and src == "comments" and st == "CONFLICT"
 
         if not ans or is_q_mark or st == "NO_DATA" or src == "no_data":
             no_data_cnt += 1
             review_needed_qs.append(q.index)
-        elif is_ai:
-            ai_cnt += 1
+        elif is_ai_only:
+            ai_only_cnt += 1
             review_needed_qs.append(q.index)
+        elif is_ai_tiebreak:
+            ai_tiebreak_qs.append(q.index)
+            review_needed_qs.append(q.index)
+            conflict_cnt += 1
         elif st == "CONFLICT":
             conflict_cnt += 1
             review_needed_qs.append(q.index)
@@ -874,6 +882,7 @@ def build_exam_docx(
             no_data_cnt += 1
             review_needed_qs.append(q.index)
 
+    ai_cnt = ai_only_cnt + len(ai_tiebreak_qs)
     sidecar_meta = {
         "filename": filename,
         "subject_code": subject_code.upper().strip(),
@@ -887,13 +896,15 @@ def build_exam_docx(
         "weak_count": weak_cnt,
         "conflict_count": conflict_cnt,
         "ai_count": ai_cnt,
+        "ai_tiebreak_questions": sorted(list(set(ai_tiebreak_qs))),
         "image_count": image_cnt,
         "comment_count": comment_cnt,
         "no_data_count": no_data_cnt,
         "source_breakdown": {
             "image": image_cnt,
             "comments": comment_cnt,
-            "ai": ai_cnt,
+            "ai": ai_only_cnt,
+            "ai_tiebreak": len(ai_tiebreak_qs),
             "no_data": no_data_cnt,
         },
         "review_needed_questions": sorted(list(set(review_needed_qs))),
