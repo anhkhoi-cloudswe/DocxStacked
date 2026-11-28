@@ -296,6 +296,10 @@ def test_380_q39_choice_hint_n_is_1_and_ai_tiebreak_meta(tmp_path: Path):
     if p39.exists():
         assert read_choice_hint_n(p39) == 1
 
+    p43 = Path("data/cache/fuexam/media_15107/hcm202-sp26-b5-fe_043-webp.webp")
+    if p43.exists():
+        assert read_choice_hint_n(p43) == 3
+
     exam = Exam(id=9904, subject_id=1, title="HCM202 - SP25 - FE", url="https://fuexam.me/threads/9904/")
     q1 = Question(id=1, exam_id=9904, index=22, local_image_path=None)
     ans_tb = Answer(

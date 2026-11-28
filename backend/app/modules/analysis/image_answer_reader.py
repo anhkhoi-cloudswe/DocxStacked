@@ -622,14 +622,25 @@ def _classify_digit_structural(crop_bool: np.ndarray) -> Optional[int]:
 
     right_half = int(crop_bool[:, w // 2 :].sum())
     left_half = int(crop_bool[:, : max(1, w // 2)].sum())
+    lower_mid = crop_bool[max(1, int(0.45 * h)) : max(2, int(0.85 * h)), :]
+    lm_right = int(lower_mid[:, w // 2 :].sum())
+    lm_left = int(lower_mid[:, : max(1, w // 2)].sum())
 
-    # '2': strong bottom baseline and curved/wide top, NOT just a narrow bottom stem
-    if bot_max >= max(3, int(0.68 * w)) and top_max >= max(2, int(0.48 * w)) and cross_max < bot_max:
-        return 2
     # '4': pronounced horizontal crossbar in [0.50..0.82]h while bottom is narrower stem
     if cross_max >= max(3, int(0.75 * w)) and bot_max <= max(3, int(0.55 * w)):
         return 4
-    # '3': strongly right-weighted with curved top & bottom caps
+    # '3': strongly right-weighted overall AND in lower-middle rows (open left cavity vs '2' diagonal)
+    if (
+        top_max >= max(2, int(0.45 * w))
+        and bot_max >= max(2, int(0.45 * w))
+        and right_half >= int(1.30 * max(left_half, 1))
+        and lm_right >= max(lm_left + 2, int(1.40 * max(lm_left, 1)))
+    ):
+        return 3
+    # '2': strong bottom baseline and curved/wide top, with lower-mid diagonal reaching left side
+    if bot_max >= max(3, int(0.68 * w)) and top_max >= max(2, int(0.48 * w)) and cross_max < bot_max:
+        return 2
+    # Fallback '3' if still clearly right-weighted
     if top_max >= max(2, int(0.45 * w)) and bot_max >= max(2, int(0.45 * w)) and right_half >= int(1.25 * max(left_half, 1)):
         return 3
     return None
@@ -673,6 +684,12 @@ def _classify_digit_glyph_detailed(crop_bool: np.ndarray) -> Tuple[Optional[int]
         best_digit = 1
         high_conf = (h >= 11 and scores.get(1, 0.0) >= 0.35 and margin >= 0.05)
         return 1, high_conf, float(max(best_score, scores.get(1, 0.0)))
+
+    # Disambiguate structural '3' vs '2' when italic low-res glyph IoU is close
+    if struct_d == 3 and best_digit == 2 and scores.get(3, 0.0) >= 0.30 and (best_score - scores.get(3, 0.0)) <= 0.10:
+        best_digit = 3
+        best_score = scores.get(3, best_score)
+        margin = best_score - scores.get(2, 0.0)
 
     if best_score < 0.25:
         return None, False, float(best_score)
@@ -730,7 +747,7 @@ def _extract_n_detailed_from_choose_region(sub_bool: np.ndarray) -> Tuple[Option
         ln.sort(key=lambda b: b[0])
         widths = [b[2] - b[0] for b in ln]
         med_w = float(np.median(widths)) if widths else 8.0
-        gap_thr = max(1.5, 0.28 * med_w)
+        gap_thr = max(2.2, 0.34 * med_w)
 
         # Split line into words by x-gap
         words: List[List[Tuple[int, int, int, int]]] = [[ln[0]]]
