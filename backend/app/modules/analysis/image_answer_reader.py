@@ -504,21 +504,24 @@ def generate_answer_strips_grid(
     return output_path
 
 
-def _classify_digit_glyph(crop_bool: np.ndarray) -> Optional[int]:
-    """Classify a single binary digit glyph ('1'..'4') using aspect ratio and PIL template IoU."""
-    h, w = crop_bool.shape
-    if h < 6 or w < 2:
-        return None
-    if (h / max(w, 1)) >= 1.85:
-        return 1
+_DIGIT_TEMPLATE_CACHE: Optional[Dict[int, List[np.ndarray]]] = None
+_OPT_LETTER_TEMPLATE_CACHE: Optional[Dict[str, np.ndarray]] = None
 
-    # Resize to 16x24 and match against rendered digit templates '1'..'4'
+
+def _get_digit_templates() -> Dict[int, List[np.ndarray]]:
+    """Build cached 16x24 upright and italic-sheared binary digit templates ('1'..'4')."""
+    global _DIGIT_TEMPLATE_CACHE
+    if _DIGIT_TEMPLATE_CACHE is not None:
+        return _DIGIT_TEMPLATE_CACHE
+
     from PIL import ImageDraw, ImageFont
-    g_im = Image.fromarray((crop_bool.astype(np.uint8) * 255)).resize((16, 24), Image.Resampling.BILINEAR)
-    g_bin = np.array(g_im) > 127
 
     font = None
-    for fp in ("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+    for fp in (
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
         if Path(fp).exists():
             try:
                 font = ImageFont.truetype(fp, 24)
@@ -528,36 +531,176 @@ def _classify_digit_glyph(crop_bool: np.ndarray) -> Optional[int]:
     if font is None:
         font = ImageFont.load_default()
 
-    best_digit = None
-    best_score = -1.0
+    templates: Dict[int, List[np.ndarray]] = {}
     for d in (1, 2, 3, 4):
+        canvas = Image.new("L", (48, 48), 0)
+        draw = ImageDraw.Draw(canvas)
+        draw.text((8, 6), str(d), fill=255, font=font)
+        variants = [
+            canvas,
+            canvas.transform(canvas.size, Image.Transform.AFFINE, (1, 0.22, -4, 0, 1, 0)),
+        ]
+        bins: List[np.ndarray] = []
+        for var_im in variants:
+            t_arr = np.array(var_im) > 100
+            tys, txs = np.where(t_arr)
+            if len(tys) == 0:
+                continue
+            t_crop = Image.fromarray(
+                (t_arr[tys.min():tys.max() + 1, txs.min():txs.max() + 1].astype(np.uint8) * 255)
+            ).resize((16, 24), Image.Resampling.BILINEAR)
+            bins.append(np.array(t_crop) > 127)
+        templates[d] = bins
+    _DIGIT_TEMPLATE_CACHE = templates
+    return templates
+
+
+def _get_option_letter_templates() -> Dict[str, np.ndarray]:
+    """Build cached 16x20 templates for option letters 'A'..'F'."""
+    global _OPT_LETTER_TEMPLATE_CACHE
+    if _OPT_LETTER_TEMPLATE_CACHE is not None:
+        return _OPT_LETTER_TEMPLATE_CACHE
+
+    from PIL import ImageDraw, ImageFont
+
+    font = None
+    for fp in (
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ):
+        if Path(fp).exists():
+            try:
+                font = ImageFont.truetype(fp, 22)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+
+    templates: Dict[str, np.ndarray] = {}
+    for ch in ("A", "B", "C", "D", "E", "F"):
         canvas = Image.new("L", (40, 40), 0)
         draw = ImageDraw.Draw(canvas)
-        draw.text((4, 4), str(d), fill=255, font=font)
+        draw.text((6, 4), ch, fill=255, font=font)
         t_arr = np.array(canvas) > 100
         tys, txs = np.where(t_arr)
-        if len(tys) == 0:
-            continue
-        t_crop = Image.fromarray((t_arr[tys.min():tys.max()+1, txs.min():txs.max()+1].astype(np.uint8) * 255)).resize((16, 24), Image.Resampling.BILINEAR)
-        t_bin = np.array(t_crop) > 127
-        inter = np.logical_and(g_bin, t_bin).sum()
-        union = np.logical_or(g_bin, t_bin).sum()
-        score = inter / max(union, 1)
-        if score > best_score:
-            best_score = score
-            best_digit = d
+        if len(tys) > 0:
+            t_crop = Image.fromarray(
+                (t_arr[tys.min():tys.max() + 1, txs.min():txs.max() + 1].astype(np.uint8) * 255)
+            ).resize((16, 20), Image.Resampling.BILINEAR)
+            templates[ch] = np.array(t_crop) > 127
+    _OPT_LETTER_TEMPLATE_CACHE = templates
+    return templates
 
-    return best_digit if best_score >= 0.25 else None
+
+def _classify_digit_structural(crop_bool: np.ndarray) -> Optional[int]:
+    """
+    Independent geometry/stroke classifier for digits '1'..'4' (no template rendering).
+    Used both to disambiguate slanted '1' vs '4' and as a second verifier for high-confidence N.
+    """
+    h, w = crop_bool.shape
+    if h < 6 or w < 2:
+        return None
+    aspect = h / max(w, 1)
+    row_sums = crop_bool.sum(axis=1)
+    mid_rows = row_sums[max(1, int(0.2 * h)) : min(h - 1, int(0.8 * h))]
+    mid_med = float(np.median(mid_rows)) if len(mid_rows) else float(row_sums.mean())
+
+    # Narrow tall stroke or slanted '1' with narrow middle rows
+    if aspect >= 1.72 and (aspect >= 1.90 or (mid_med <= max(2.2, 0.52 * w) and crop_bool.mean() <= 0.65)):
+        return 1
+
+    # Check lower-middle horizontal crossbar ('4') vs bottom horizontal base ('2') vs right backbone ('3')
+    cross_band = row_sums[int(0.50 * h) : max(int(0.50 * h) + 1, int(0.82 * h))]
+    bot_band = row_sums[max(0, int(0.80 * h)) :]
+    top_band = row_sums[: max(1, int(0.25 * h))]
+
+    cross_max = int(cross_band.max()) if len(cross_band) else 0
+    bot_max = int(bot_band.max()) if len(bot_band) else 0
+    top_max = int(top_band.max()) if len(top_band) else 0
+
+    right_half = int(crop_bool[:, w // 2 :].sum())
+    left_half = int(crop_bool[:, : max(1, w // 2)].sum())
+
+    # '2': strong bottom baseline and curved/wide top, NOT just a narrow bottom stem
+    if bot_max >= max(3, int(0.68 * w)) and top_max >= max(2, int(0.48 * w)) and cross_max < bot_max:
+        return 2
+    # '4': pronounced horizontal crossbar in [0.50..0.82]h while bottom is narrower stem
+    if cross_max >= max(3, int(0.75 * w)) and bot_max <= max(3, int(0.55 * w)):
+        return 4
+    # '3': strongly right-weighted with curved top & bottom caps
+    if top_max >= max(2, int(0.45 * w)) and bot_max >= max(2, int(0.45 * w)) and right_half >= int(1.25 * max(left_half, 1)):
+        return 3
+    return None
+
+
+def _classify_digit_glyph_detailed(crop_bool: np.ndarray) -> Tuple[Optional[int], bool, float]:
+    """
+    Classify a binary digit glyph ('1'..'4') returning:
+      (digit, is_high_confidence_glyph, best_template_iou)
+    """
+    h, w = crop_bool.shape
+    if h < 6 or w < 2:
+        return None, False, 0.0
+
+    struct_d = _classify_digit_structural(crop_bool)
+    if (h / max(w, 1)) >= 1.85:
+        return 1, (h >= 11 and struct_d == 1), 1.0
+
+    g_im = Image.fromarray((crop_bool.astype(np.uint8) * 255)).resize((16, 24), Image.Resampling.BILINEAR)
+    g_bin = np.array(g_im) > 127
+    templates = _get_digit_templates()
+
+    scores: Dict[int, float] = {}
+    for d, bins in templates.items():
+        d_best = -1.0
+        for t_bin in bins:
+            inter = np.logical_and(g_bin, t_bin).sum()
+            union = np.logical_or(g_bin, t_bin).sum()
+            sc = inter / max(union, 1)
+            if sc > d_best:
+                d_best = sc
+        scores[d] = d_best
+
+    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    best_digit, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin = best_score - second_score
+
+    # Disambiguate tight structural '1' on slanted italic small glyphs
+    if struct_d == 1 and best_digit in (4, 1) and (h / max(w, 1)) >= 1.72:
+        best_digit = 1
+        high_conf = (h >= 11 and scores.get(1, 0.0) >= 0.35 and margin >= 0.05)
+        return 1, high_conf, float(max(best_score, scores.get(1, 0.0)))
+
+    if best_score < 0.25:
+        return None, False, float(best_score)
+
+    is_high = (h >= 11) and (struct_d == best_digit) and (best_score >= 0.42) and (margin >= 0.06)
+    return best_digit, is_high, float(best_score)
+
+
+def _classify_digit_glyph(crop_bool: np.ndarray) -> Optional[int]:
+    """Classify a single binary digit glyph ('1'..'4') using aspect ratio and PIL template IoU."""
+    d, _, _ = _classify_digit_glyph_detailed(crop_bool)
+    return d
 
 
 def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
+    d, _ = _extract_n_detailed_from_choose_region(sub_bool)
+    return d
+
+
+def _extract_n_detailed_from_choose_region(sub_bool: np.ndarray) -> Tuple[Optional[int], bool]:
     """
     Find a horizontal line containing '(Choose N answer(s))' or 'Choose N answer(s)'
     by grouping connected components into words and classifying the single-glyph N word.
+    Returns (n_val, is_high_confidence).
     """
     lab, n_components = ndi.label(sub_bool)
     if n_components < 6:
-        return None
+        return None, False
     objs = ndi.find_objects(lab)
     boxes = []
     for sl in objs:
@@ -569,7 +712,7 @@ def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
         if 6 <= h <= 35 and 1 <= w <= 40:
             boxes.append((x_sl.start, y_sl.start, x_sl.stop, y_sl.stop))
     if len(boxes) < 6:
-        return None
+        return None, False
 
     # Group boxes by horizontal line (y-center within 12px)
     boxes.sort(key=lambda b: (b[1] + b[3]) * 0.5)
@@ -606,20 +749,24 @@ def _extract_n_from_choose_region(sub_bool: np.ndarray) -> Optional[int]:
             if 3 <= len(w0) <= 9 and w0_width >= 22 and len(w1) == 1 and w2_width >= 18:
                 db = w1[0]
                 digit_crop = sub_bool[db[1]:db[3], db[0]:db[2]]
-                d = _classify_digit_glyph(digit_crop)
+                d, glyph_high, _ = _classify_digit_glyph_detailed(digit_crop)
                 if d is not None and d >= 1:
-                    return d
-    return None
+                    # Second independent consistency check: singular 'answer' vs plural 'answers' width relative to 'Choose'
+                    ratio_w2_w0 = w2_width / max(w0_width, 1)
+                    plural_consistent = (d == 1 and ratio_w2_w0 <= 1.06) or (d >= 2 and ratio_w2_w0 >= 0.98)
+                    is_high = bool(glyph_high and plural_consistent)
+                    return d, is_high
+    return None, False
 
 
-def read_choice_hint_n(
+def read_choice_hint_n_detailed(
     image_input: Union[Path, str, Image.Image],
     ai_service: Optional[Any] = None,
-) -> Optional[int]:
+) -> Tuple[Optional[int], bool]:
     """
     Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' trên các layout fuexam.
-    Chỉ dùng nhận dạng cục bộ (không gọi Gemini AI để tránh tốn hạn mức).
-    Trả về số nguyên N (>= 1) hoặc None nếu không nhận diện được.
+    Trả về (N, is_high_confidence): is_high_confidence=True chỉ khi độ phân giải chữ đủ rõ,
+    template IoU + hình học độc lập và từ 'answer/answers' đồng thuận.
     """
     if isinstance(image_input, (str, Path)):
         im = Image.open(image_input)
@@ -629,12 +776,6 @@ def read_choice_hint_n(
     a = np.array(im.convert("RGB"))
     H, W = a.shape[:2]
 
-    # Candidate regions across known layouts:
-    # 1. fuexam_2026 (W >= 1200, H >= 500): y=170..280, x=40..500
-    # 2. TechdyBear (W >= 800, H <= 400): y=36..72, x=5..240 (faint gray italic)
-    # 3. red_bar 1920x780 (Kizspy/2025): y=45..110, x=0..220
-    # 4. SU24/SP24 software UI inside white box: y=108..150, x=132..320
-    # 5. cau_n_web_ui yellow pill top-right: y=8..65, x=int(0.55*W)..int(0.96*W)
     regions = []
     if W >= 1200 and H >= 500:
         regions.append(((a[170:280, 40:500] < 180).all(axis=2)))
@@ -651,10 +792,193 @@ def read_choice_hint_n(
             regions.append((pill_box.mean(axis=2) < 175))
 
     for sub in regions:
-        res = _extract_n_from_choose_region(sub)
+        res, is_high = _extract_n_detailed_from_choose_region(sub)
         if res is not None and res >= 1:
-            return res
+            return res, is_high
 
+    return None, False
+
+
+def read_choice_hint_n(
+    image_input: Union[Path, str, Image.Image],
+    ai_service: Optional[Any] = None,
+) -> Optional[int]:
+    """
+    Đọc N từ dòng '(Choose N answers)' hoặc '(Choose 1 answer)' trên các layout fuexam.
+    Chỉ dùng nhận dạng cục bộ (không gọi Gemini AI để tránh tốn hạn mức).
+    Trả về số nguyên N (>= 1) hoặc None nếu không nhận diện được.
+    """
+    n_val, _ = read_choice_hint_n_detailed(image_input, ai_service=ai_service)
+    return n_val
+
+
+def count_visible_options(
+    image_input: Union[Path, str, Image.Image],
+) -> Optional[int]:
+    """
+    Đếm số phương án trắc nghiệm (A., B., C., D., E., F.) hiển thị rõ trong ảnh câu hỏi.
+    Trả về số lượng (>= 2) hoặc None nếu không xác định được chắc chắn.
+    """
+    try:
+        if isinstance(image_input, (str, Path)):
+            im = Image.open(image_input)
+        else:
+            im = image_input
+        a = np.array(im.convert("RGB"))
+    except Exception:
+        return None
+
+    m = (a < 150).all(axis=2)
+    rows = m.any(axis=1)
+    bands: List[Tuple[int, int]] = []
+    in_b, b_s = False, 0
+    for y, v in enumerate(rows):
+        if v and not in_b:
+            in_b, b_s = True, y
+        elif not v and in_b:
+            in_b = False
+            if (y - b_s) >= 7:
+                bands.append((b_s, y))
+    if in_b and (len(rows) - b_s) >= 7:
+        bands.append((b_s, len(rows)))
+
+    if len(bands) < 2:
+        return None
+
+    templates = _get_option_letter_templates()
+    candidates: List[Tuple[str, int, int]] = []  # (letter, x0, y0)
+    for y0, y1 in bands:
+        sub = m[y0:y1, :]
+        xs = np.where(sub.any(axis=0))[0]
+        if len(xs) == 0:
+            continue
+        x0 = int(xs.min())
+        head = sub[:, x0 : min(sub.shape[1], x0 + 42)]
+        lab, _ = ndi.label(head)
+        objs = ndi.find_objects(lab)
+        comps = [
+            (s[1].start, s[0].start, s[1].stop, s[0].stop)
+            for s in objs
+            if s is not None
+        ]
+        comps.sort(key=lambda b: b[0])
+        if not comps:
+            continue
+        c0 = comps[0]
+        cw = c0[2] - c0[0]
+        ch = c0[3] - c0[1]
+        if ch < 8 or ch > 32 or cw < 4 or cw > 28:
+            continue
+        # Look for period '.' near baseline immediately to the right of c0
+        has_dot = any(
+            (b[2] - b[0]) <= 5
+            and (b[3] - b[1]) <= 6
+            and 0 <= (b[0] - c0[2]) <= 7
+            and b[1] >= int(0.45 * (y1 - y0))
+            for b in comps[1:4]
+        )
+        if not has_dot:
+            continue
+
+        # Match c0 against option letter templates A..F
+        l_arr = head[c0[1]:c0[3], c0[0]:c0[2]]
+        l_im = Image.fromarray((l_arr.astype(np.uint8) * 255)).resize((16, 20), Image.Resampling.BILINEAR)
+        l_bin = np.array(l_im) > 127
+        best_ch, best_sc = None, 0.0
+        for ch_key, t_bin in templates.items():
+            inter = np.logical_and(l_bin, t_bin).sum()
+            union = np.logical_or(l_bin, t_bin).sum()
+            sc = inter / max(union, 1)
+            if sc > best_sc:
+                best_sc = sc
+                best_ch = ch_key
+        if best_ch and best_sc >= 0.25:
+            candidates.append((best_ch, x0, y0))
+
+    if len(candidates) < 2:
+        return None
+
+    # Keep only candidates aligned near the modal left option column (+/- 12px)
+    xs_vals = sorted(c[1] for c in candidates)
+    med_x0 = xs_vals[len(xs_vals) // 2]
+    aligned = [c for c in candidates if abs(c[1] - med_x0) <= 12]
+    if len(aligned) >= 2:
+        return len(aligned)
     return None
+
+
+@dataclass
+class ChoiceCountDecision:
+    answer_set: List[str]
+    status: Any
+    confidence: float
+    overridden: bool = False
+    warning_entry: Optional[Dict[str, Any]] = None
+    override_entry: Optional[Dict[str, Any]] = None
+
+
+def evaluate_choice_count_consistency(
+    question_index: int,
+    answer_set: List[str],
+    status: Any,
+    confidence: float,
+    source: str,
+    raw_img_path: Optional[Path],
+    cropped_img_path: Optional[Path] = None,
+    ai_service: Optional[Any] = None,
+) -> ChoiceCountDecision:
+    """
+    Compare answer_set letter count against local '(Choose N answer(s))' hint.
+      - Normal mismatch: NEVER overwrite valid community/AI/image answer to '?';
+        preserve answer_set, flag CONFLICT, and emit a choice_count_warnings entry.
+      - Strong override ONLY when BOTH:
+          (1) two independent local checks agree with high confidence on N, AND
+          (2) the answer is structurally impossible/absurd relative to visible options
+              (e.g. len(letters) > visible_options or >=2 letters on a 3-option Choose-1 image).
+    """
+    from backend.app.db.models import AnswerStatus
+
+    valid_letters = [a for a in answer_set if a != "?"]
+    if not raw_img_path or not valid_letters:
+        return ChoiceCountDecision(answer_set=list(answer_set), status=status, confidence=confidence)
+
+    expected_n, hint_high_conf = read_choice_hint_n_detailed(raw_img_path, ai_service=ai_service)
+    if expected_n is None or expected_n <= 0 or len(valid_letters) == expected_n:
+        return ChoiceCountDecision(answer_set=list(answer_set), status=status, confidence=confidence)
+
+    opt_target = cropped_img_path if (cropped_img_path and cropped_img_path.exists()) else raw_img_path
+    visible_opts = count_visible_options(opt_target)
+    is_absurd_count = (visible_opts is not None) and (
+        len(valid_letters) > visible_opts
+        or (visible_opts <= 3 and expected_n == 1 and len(valid_letters) >= 2)
+    )
+
+    if hint_high_conf and is_absurd_count:
+        return ChoiceCountDecision(
+            answer_set=["?"],
+            status=AnswerStatus.CONFLICT,
+            confidence=0.0,
+            overridden=True,
+            override_entry={
+                "question": question_index,
+                "hint_n": expected_n,
+                "before": valid_letters,
+                "after": ["?"],
+                "visible_options": visible_opts,
+            },
+        )
+
+    return ChoiceCountDecision(
+        answer_set=list(answer_set),
+        status=AnswerStatus.CONFLICT,
+        confidence=confidence,
+        overridden=False,
+        warning_entry={
+            "question": question_index,
+            "hint_n": expected_n,
+            "answer_letters": valid_letters,
+            "source": source,
+        },
+    )
 
 

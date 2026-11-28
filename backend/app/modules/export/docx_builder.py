@@ -658,6 +658,8 @@ def build_exam_docx(
     fetch_failed_questions: Optional[List[int]] = None,
     fetch_failed_details: Optional[List[Dict[str, Any]]] = None,
     non_question_attachments: Optional[List[Dict[str, Any]]] = None,
+    choice_count_warnings: Optional[List[Dict[str, Any]]] = None,
+    choice_count_overrides: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """
     Build Word (.docx) document following the exact reference style (MLN122, PRN232):
@@ -916,6 +918,23 @@ def build_exam_docx(
         sidecar_meta["fetch_failed_details"] = fetch_failed_details
     if non_question_attachments:
         sidecar_meta["non_question_attachments"] = non_question_attachments
+    derived_cc_warns = list(choice_count_warnings or [])
+    derived_cc_overrides = list(choice_count_overrides or [])
+    warn_seen_qs = {w.get("question") for w in derived_cc_warns if isinstance(w, dict)}
+    ov_seen_qs = {o.get("question") for o in derived_cc_overrides if isinstance(o, dict)}
+    for q in sorted_questions:
+        ans = answers_map.get(q.id) if answers_map else getattr(q, "answer", None)
+        vb = ans.vote_breakdown if (ans and ans.vote_breakdown and isinstance(ans.vote_breakdown, dict)) else {}
+        if vb.get("_choice_count_warning") and q.index not in warn_seen_qs:
+            derived_cc_warns.append(vb["_choice_count_warning"])
+            warn_seen_qs.add(q.index)
+        if vb.get("_choice_count_override") and q.index not in ov_seen_qs:
+            derived_cc_overrides.append(vb["_choice_count_override"])
+            ov_seen_qs.add(q.index)
+    if derived_cc_warns:
+        sidecar_meta["choice_count_warnings"] = sorted(derived_cc_warns, key=lambda x: x.get("question", 0))
+    if derived_cc_overrides:
+        sidecar_meta["choice_count_overrides"] = sorted(derived_cc_overrides, key=lambda x: x.get("question", 0))
     if ai_status:
         sidecar_meta["ai_status"] = ai_status
     tmp_meta = output_dir / f".{filename}.meta.json.tmp_{os.getpid()}"

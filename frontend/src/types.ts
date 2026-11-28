@@ -140,6 +140,8 @@ export interface JobFile {
   review_needed_questions?: number[];
   image_warnings?: Record<string, string[]>;
   non_question_attachments?: Array<{ index: number; reason: string; media_id?: number }>;
+  choice_count_warnings?: Array<{ question: number; hint_n: number; answer_letters: string[]; source: string }>;
+  choice_count_overrides?: Array<{ question: number; hint_n: number; before: string[]; after: string[]; visible_options?: number }>;
   fetch_failed_questions?: number[];
 }
 

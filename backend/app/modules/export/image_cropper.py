@@ -155,7 +155,65 @@ def text_mask(
     return m
 
 
-CROP_ALGORITHM_VERSION = "3.8.0-cau-n-web-ui-and-clean-meta"
+def _detect_right_edge_text_clipping(
+    a: np.ndarray,
+    bx: Tuple[int, int, int, int],
+    box: Optional[Tuple[int, int, int, int]],
+    final_cropped: Image.Image,
+    cfg: ImageCropConfig,
+    warnings: List[str],
+) -> bool:
+    """
+    Detect if text was clipped at the right edge across any layout:
+      1. Dark ink touches the rightmost column of final_cropped (e.g. unpadded crop/fallback).
+      2. Crop stopped inside canvas/panel while dark text ink continues immediately beyond bx[2].
+      3. Crop hits canvas/panel right boundary with dark character strokes touching the edge.
+    """
+    if "no_text" in warnings or "source_image_invalid" in warnings:
+        return False
+    H, W = a.shape[:2]
+    x0, y0, x1, y1 = bx
+    if x1 <= x0 or y1 <= y0:
+        return False
+
+    def _dark_text_pixels(rgb_slice: np.ndarray) -> np.ndarray:
+        arr = rgb_slice.astype(int)
+        return (arr.mean(axis=2) < cfg.dark_threshold) & (
+            (arr.max(axis=2) - arr.min(axis=2)) < cfg.color_diff_threshold
+        )
+
+    # Check 1: Final cropped rightmost column contains dark text ink (excluding vertical border lines)
+    fc_arr = np.array(final_cropped.convert("RGB"))
+    fc_last = _dark_text_pixels(fc_arr[:, -1:, :])[:, 0]
+    last_cnt = int(fc_last.sum())
+    if last_cnt >= 3 and (last_cnt / max(fc_arr.shape[0], 1)) <= cfg.border_dark_ratio:
+        return True
+
+    # Check 2: Dark text ink continues immediately outside bx[2] inside canvas/panel
+    panel_r = box[2] if (box is not None and box[2] > x0) else W
+    span_h = max(y1 - y0, 1)
+    if x1 < panel_r - 1:
+        outside_x1 = min(panel_r, x1 + 3)
+        sub_out = _dark_text_pixels(a[y0:y1, x1:outside_x1, :])
+        adj_in = _dark_text_pixels(a[y0:y1, max(x0, x1 - 3):x1, :]).any(axis=1)
+        row_dilated = np.convolve(adj_in.astype(int), np.ones(5, dtype=int), mode="same") > 0
+        for c in range(sub_out.shape[1]):
+            col_cnt = int(sub_out[:, c].sum())
+            if col_cnt >= 2 and (col_cnt / span_h) <= cfg.border_dark_ratio:
+                if int((sub_out[:, c] & row_dilated).sum()) >= 2:
+                    return True
+
+    # Check 3: Crop hits source canvas or inner panel right boundary with dark text strokes
+    if x1 >= W - 1 or (box is not None and x1 >= panel_r - 1):
+        edge_col = _dark_text_pixels(a[y0:y1, max(0, x1 - 2):x1, :])
+        last_col_dark = int(edge_col[:, -1].sum())
+        if last_col_dark >= 3 and (last_col_dark / span_h) <= cfg.border_dark_ratio:
+            return True
+
+    return False
+
+
+CROP_ALGORITHM_VERSION = "3.9.0-fix-right-clip-and-gate"
 
 
 def find_top_left_white_panel(a: np.ndarray, min_val: int = 248) -> Optional[Tuple[int, int, int, int]]:
@@ -926,10 +984,13 @@ def crop_question_single(
                             border_dark_ratio=cfg.border_dark_ratio,
                             border_edge_depth=cfg.border_edge_depth,
                         )
-                        wm_y0 = max(0, (H - 95) - r_box[1])
-                        wm_x0 = max(0, (W - 220) - r_box[0])
+                        # Only suppress faint/medium-gray artifacts in the bottom-right corner;
+                        # crisp dark text ink (mean < 115) in wide Option D lines must never be masked out.
+                        wm_y0 = max(0, (H - 48) - r_box[1])
+                        wm_x0 = max(0, (W - 140) - r_box[0])
                         if wm_y0 < m_r.shape[0] and wm_x0 < m_r.shape[1]:
-                            m_r[wm_y0:, wm_x0:] = False
+                            sub_a = a[r_box[1] + wm_y0 : r_box[3], r_box[0] + wm_x0 : r_box[2]].astype(int)
+                            m_r[wm_y0:, wm_x0:] &= (sub_a.mean(axis=2) < 115)
                         rys, rxs = np.where(m_r)
                         if len(rys) > 0:
                             q_bx = (
@@ -1060,6 +1121,11 @@ def crop_question_single(
                 warnings.append("crop_too_small_fallback")
             final_cropped = im
             bx = (0, 0, W, H)
+
+        # Automated check for right-edge text clipping across ALL layouts
+        if _detect_right_edge_text_clipping(a, bx, box, final_cropped, cfg, warnings):
+            if "text_clipped_right" not in warnings:
+                warnings.append("text_clipped_right")
 
         if output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)

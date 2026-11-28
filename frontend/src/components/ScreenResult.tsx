@@ -512,6 +512,16 @@ export const ScreenResult: React.FC<Props> = ({ jobId, files, details, onRestart
                         {Object.keys(file.image_warnings).length > 6 ? '…' : ''}
                       </div>
                     )}
+                    {file.choice_count_warnings && file.choice_count_warnings.length > 0 && (
+                      <div data-testid="choice-count-warnings-note" style={{ fontSize: '11px', color: '#B45309', marginTop: '3px' }}>
+                        Lệch số lượng đáp án ({file.choice_count_warnings.length} câu):{' '}
+                        {file.choice_count_warnings
+                          .slice(0, 6)
+                          .map((w) => `Câu ${w.question} (đề=${w.hint_n}, giữ ${w.answer_letters.join(',')})`)
+                          .join('; ')}
+                        {file.choice_count_warnings.length > 6 ? '…' : ''}
+                      </div>
+                    )}
                     {file.non_question_attachments && file.non_question_attachments.length > 0 && (
                       <div data-testid="non-question-attachments-note" style={{ fontSize: '11px', color: '#475569', marginTop: '3px' }}>
                         Đính kèm không phải câu hỏi ({file.non_question_attachments.length}):{' '}

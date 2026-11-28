@@ -1006,7 +1006,11 @@ class JobOrchestrator:
         )
         from backend.app.modules.crawler.fuexam_subjects import load_subject_map
         from backend.app.modules.export.image_cropper import crop_question_single
-        from backend.app.modules.analysis.image_answer_reader import read_answer_from_image, read_choice_hint_n
+        from backend.app.modules.analysis.image_answer_reader import (
+            evaluate_choice_count_consistency,
+            read_answer_from_image,
+            read_choice_hint_n,
+        )
         from backend.app.modules.analysis.voting import tally_votes
         from backend.app.modules.export.docx_builder import build_exam_docx
 
@@ -1253,6 +1257,8 @@ class JobOrchestrator:
                         fetch_failed_questions: List[int] = []
                         fetch_failed_details: List[Dict[str, Any]] = []
                         non_question_attachments: List[Dict[str, Any]] = []
+                        choice_count_warnings: List[Dict[str, Any]] = []
+                        choice_count_overrides: List[Dict[str, Any]] = []
 
                         # Cấu hình AI cho fuexam (Requirement 6)
                         ai_service = get_ai_check_service()
@@ -1507,20 +1513,38 @@ class JobOrchestrator:
                                         exam_sources["no_data"] += 1
 
                                 # Rule 2: Kiểm tra số chữ cái đáp án so với N từ dòng '(Choose N answers)'
-                                expected_n = read_choice_hint_n(img_path, ai_service=ai_service) if (img_path and not source_image_invalid) else None
-                                valid_answer_letters = [a for a in ans_set if a != "?"]
-                                if expected_n is not None and expected_n > 0 and valid_answer_letters:
-                                    if len(valid_answer_letters) != expected_n:
+                                if img_path and not source_image_invalid:
+                                    cropped_check_p = Path(q_obj.cropped_image_path) if q_obj.cropped_image_path else None
+                                    cc_decision = evaluate_choice_count_consistency(
+                                        question_index=q_idx,
+                                        answer_set=ans_set,
+                                        status=ans_status,
+                                        confidence=ans_conf,
+                                        source=vb.get("_source", "comments"),
+                                        raw_img_path=img_path,
+                                        cropped_img_path=cropped_check_p,
+                                        ai_service=ai_service,
+                                    )
+                                    ans_set = cc_decision.answer_set
+                                    ans_status = cc_decision.status
+                                    ans_conf = cc_decision.confidence
+                                    if cc_decision.override_entry:
                                         logger.warning(
-                                            f"Exam {exam.id} Question {q_idx}: Answer count mismatch. "
-                                            f"Expected {expected_n} answers but got {valid_answer_letters}. "
-                                            f"Flagging as '?' and moving to review_needed."
+                                            f"Exam {exam.id} Question {q_idx}: Strong N override "
+                                            f"{cc_decision.override_entry['before']} -> '?' "
+                                            f"(hint_n={cc_decision.override_entry['hint_n']}, "
+                                            f"visible_options={cc_decision.override_entry['visible_options']})."
                                         )
-                                        ans_set = ["?"]
-                                        ans_status = AnswerStatus.CONFLICT
-                                        ans_conf = 0.0
-                                        vb["_mismatch_expected_n"] = expected_n
-                                        vb["_original_answers"] = valid_answer_letters
+                                        vb["_choice_count_override"] = cc_decision.override_entry
+                                        choice_count_overrides.append(cc_decision.override_entry)
+                                    elif cc_decision.warning_entry:
+                                        logger.warning(
+                                            f"Exam {exam.id} Question {q_idx}: Choice count mismatch "
+                                            f"(hint_n={cc_decision.warning_entry['hint_n']}, "
+                                            f"kept={cc_decision.warning_entry['answer_letters']}); flagging CONFLICT/review."
+                                        )
+                                        vb["_choice_count_warning"] = cc_decision.warning_entry
+                                        choice_count_warnings.append(cc_decision.warning_entry)
 
                             if comment_fetch_failed:
                                 vb["_comment_fetch_failed"] = True
@@ -1590,6 +1614,8 @@ class JobOrchestrator:
                             fetch_failed_questions=fetch_failed_questions,
                             fetch_failed_details=fetch_failed_details,
                             non_question_attachments=non_question_attachments,
+                            choice_count_warnings=choice_count_warnings,
+                            choice_count_overrides=choice_count_overrides,
                         )
 
                         all_sources_count["image"] += exam_sources["image"]
@@ -1632,6 +1658,8 @@ class JobOrchestrator:
                             "review_needed_questions": meta_info.get("review_needed_questions", []),
                             "image_warnings": meta_info.get("image_warnings", {}),
                             "non_question_attachments": meta_info.get("non_question_attachments", non_question_attachments),
+                            "choice_count_warnings": meta_info.get("choice_count_warnings", choice_count_warnings),
+                            "choice_count_overrides": meta_info.get("choice_count_overrides", choice_count_overrides),
                             "fetch_failed_questions": meta_info.get("fetch_failed_questions", fetch_failed_questions),
                         }
                         existing_idx = next(

@@ -321,5 +321,158 @@ def test_380_q39_choice_hint_n_is_1_and_ai_tiebreak_meta(tmp_path: Path):
     assert 22 in meta["review_needed_questions"]
 
 
+def test_380_q51_no_right_clip_and_detector(tmp_path: Path):
+    """Round 6 Item 3: 380 Q51 Option D ('Việt Nam') must not clip right edge; synthetic clipped image triggers text_clipped_right."""
+    from PIL import ImageDraw
+
+    p51 = Path("data/cache/fuexam/media_15115/hcm202-sp26-b5-fe_051-webp.webp")
+    if p51.exists():
+        res = crop_question_single(p51, output_path=tmp_path / "q051.png")
+        assert res.layout == "modern_2026_split_username"
+        assert "text_clipped_right" not in res.warnings
+        # Source Option D extends through x=957 (past old watermark clip at x=808)
+        assert res.box[2] >= 955
+        # Verify final output rightmost columns are padded white (no right-edge clipping)
+        fc_arr = np.array(res.cropped_image.convert("RGB"))
+        assert (fc_arr[:, -1] > 240).all()
+
+    # Synthetic unpadded right-clipped image (black text strokes hitting x = W - 1)
+    clipped_im = Image.new("RGB", (400, 180), "white")
+    draw = ImageDraw.Draw(clipped_im)
+    for yy in range(30, 150, 25):
+        draw.rectangle([20, yy, 399, yy + 10], fill="black")
+    clip_src = tmp_path / "clipped_src.png"
+    clipped_im.save(clip_src)
+    res_clip = crop_question_single(clip_src, output_path=tmp_path / "clipped_out.png")
+    assert "text_clipped_right" in res_clip.warnings
+
+
+def test_choice_hint_n_mismatch_keeps_answer_and_strong_override(tmp_path: Path):
+    """
+    Round 6 Item 1:
+    - Normal N mismatch keeps valid answer, marks CONFLICT, records choice_count_warnings in .meta.json.
+    - Strong override ONLY applies when high-confidence N disagrees impossibly vs visible options (e.g. MLN122 C2 Q23).
+    """
+    from unittest.mock import patch
+    from PIL import ImageDraw, ImageFont
+    from backend.app.modules.analysis.image_answer_reader import (
+        count_visible_options,
+        evaluate_choice_count_consistency,
+        read_choice_hint_n_detailed,
+    )
+
+    # 1. Synthetic noisy low-confidence N=4 vs valid community answer ['A'] -> keep ['A'] + choice_count_warnings
+    dummy_img = tmp_path / "dummy_low_conf.png"
+    Image.new("RGB", (500, 200), "white").save(dummy_img)
+
+    with patch(
+        "backend.app.modules.analysis.image_answer_reader.read_choice_hint_n_detailed",
+        return_value=(4, False),
+    ):
+        dec_keep = evaluate_choice_count_consistency(
+            question_index=51,
+            answer_set=["A"],
+            status=AnswerStatus.CONFIDENT,
+            confidence=0.95,
+            source="comments",
+            raw_img_path=dummy_img,
+        )
+    assert dec_keep.overridden is False
+    assert dec_keep.answer_set == ["A"]
+    assert dec_keep.status == AnswerStatus.CONFLICT
+    assert dec_keep.warning_entry == {
+        "question": 51,
+        "hint_n": 4,
+        "answer_letters": ["A"],
+        "source": "comments",
+    }
+
+    # 2. High-confidence N=1 on 3-option question (like MLN122 C2 Q23) with 2 answer letters -> override to '?'
+    synth_3opt = tmp_path / "synth_3opt.png"
+    im3 = Image.new("RGB", (1400, 700), "white")
+    d3 = ImageDraw.Draw(im3)
+    try:
+        font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 22)
+    except Exception:
+        font = ImageFont.load_default()
+    d3.text((120, 200), "(Choose 1 answer)", fill="black", font=font)
+    d3.text((120, 320), "Cau hoi co 3 phuong an?", fill="black", font=font)
+    d3.text((120, 390), "A. Option one", fill="black", font=font)
+    d3.text((120, 450), "B. Option two", fill="black", font=font)
+    d3.text((120, 510), "C. Option three", fill="black", font=font)
+    im3.save(synth_3opt)
+
+    assert count_visible_options(synth_3opt) == 3
+    p_mln = Path("data/cache/fuexam/media_52796/mln122-fa26-fe-c2_023-webp.webp")
+    if p_mln.exists():
+        n_mln, high_mln = read_choice_hint_n_detailed(p_mln)
+        assert (n_mln, high_mln) == (1, True)
+        assert count_visible_options(p_mln) == 3
+
+    with patch(
+        "backend.app.modules.analysis.image_answer_reader.read_choice_hint_n_detailed",
+        return_value=(1, True),
+    ):
+        dec_ov = evaluate_choice_count_consistency(
+            question_index=23,
+            answer_set=["A", "B"],
+            status=AnswerStatus.CONFIDENT,
+            confidence=0.90,
+            source="comments",
+            raw_img_path=synth_3opt,
+        )
+    assert dec_ov.overridden is True
+    assert dec_ov.answer_set == ["?"]
+    assert dec_ov.status == AnswerStatus.CONFLICT
+    assert dec_ov.override_entry == {
+        "question": 23,
+        "hint_n": 1,
+        "before": ["A", "B"],
+        "after": ["?"],
+        "visible_options": 3,
+    }
+
+    # 3. Verify .meta.json persistence for both choice_count_warnings and choice_count_overrides
+    exam = Exam(id=9905, subject_id=1, title="HCM202 - SP26 - B5 - FE", url="https://fuexam.me/threads/9905/")
+    q1 = Question(id=1, exam_id=9905, index=1, local_image_path=None)
+    q51 = Question(id=51, exam_id=9905, index=51, local_image_path=None)
+    q23 = Question(id=23, exam_id=9905, index=23, local_image_path=None)
+    ans1 = Answer(
+        question_id=1,
+        answer_set='["B"]',
+        status=AnswerStatus.CONFIDENT,
+        confidence=1.0,
+        vote_breakdown={"_source": "comments"},
+    )
+    ans51 = Answer(
+        question_id=51,
+        answer_set='["A"]',
+        status=AnswerStatus.CONFLICT,
+        confidence=0.95,
+        vote_breakdown={"_source": "comments", "_choice_count_warning": dec_keep.warning_entry},
+    )
+    ans23 = Answer(
+        question_id=23,
+        answer_set='["?"]',
+        status=AnswerStatus.CONFLICT,
+        confidence=0.0,
+        vote_breakdown={"_source": "comments", "_choice_count_override": dec_ov.override_entry},
+    )
+    out_docx = build_exam_docx(
+        subject_code="HCM202",
+        exam=exam,
+        questions=[q1, q23, q51],
+        output_dir=tmp_path,
+        cropped_dir=tmp_path / "cropped",
+        answers_map={1: ans1, 23: ans23, 51: ans51},
+        platform="fuexam",
+    )
+    meta = json.loads((tmp_path / f"{out_docx.name}.meta.json").read_text(encoding="utf-8"))
+    assert meta["choice_count_warnings"] == [dec_keep.warning_entry]
+    assert meta["choice_count_overrides"] == [dec_ov.override_entry]
+    assert 51 in meta["review_needed_questions"]
+    assert 23 in meta["review_needed_questions"]
+
+
 
 
